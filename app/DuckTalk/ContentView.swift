@@ -35,6 +35,16 @@ struct ContentView: View {
                 .font(.footnote.monospaced())
                 .foregroundStyle(.secondary)
                 .accessibilityLabel("Status")
+                .accessibilityValue("\(session.status.rawValue), sent \(kb(session.bytesUp)), received \(kb(session.bytesDown))")
+
+            // The audio route, on screen: a wrong one is why the model can hear
+            // itself, or hear nothing. Cheaper to read than to diagnose.
+            Text(AudioPipe.route)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .accessibilityLabel("Audio route")
 
             Button(live ? "Stop" : "Connect") {
                 if live {

@@ -83,6 +83,22 @@ final class AudioPipe {
         player.play()
     }
 
+    /// What the system actually gave us: route in → out, and the rate we capture at.
+    /// iOS chooses the route; an app can only ask (`setPreferredInput`) among the
+    /// inputs the system exposes, and cannot pick an output at all. In the simulator
+    /// the route mirrors whatever the Mac's default devices are.
+    static var route: String {
+        let session = AVAudioSession.sharedInstance()
+        let name = { (ports: [AVAudioSessionPortDescription]) in
+            ports.map(\.portName).joined(separator: "+")
+        }
+        let inputs = name(session.currentRoute.inputs)
+        let outputs = name(session.currentRoute.outputs)
+        let choices = session.availableInputs?.count ?? 0
+        return "\(inputs.isEmpty ? "—" : inputs) → \(outputs.isEmpty ? "—" : outputs)"
+            + "  \(Int(session.sampleRate)) Hz, \(choices) input\(choices == 1 ? "" : "s")"
+    }
+
     func stop() {
         engine.inputNode.removeTap(onBus: 0)
         player.stop()
