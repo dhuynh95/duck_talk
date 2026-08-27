@@ -11,3 +11,4 @@ xcuserdata/
 app/DuckTalk/Resources/Info.plist
 __pycache__/
 app/.venv/
+server/node_modules/

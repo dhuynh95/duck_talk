@@ -10,7 +10,7 @@
  */
 
 import { WebSocketServer, type WebSocket } from 'ws';
-import { GoogleGenAI, Modality, type LiveServerMessage } from '@google/genai';
+import { GoogleGenAI, Modality, type LiveServerMessage, type Session } from '@google/genai';
 
 const PORT = Number(process.env['PORT'] ?? 8765);
 const MODEL = process.env['GEMINI_MODEL'] ?? 'gemini-3.1-flash-live-preview';
@@ -52,7 +52,28 @@ async function relay(ws: WebSocket, log: (m: string) => void): Promise<void> {
   let down = 0;
   let speechEndedAt = 0; // latency instrument: inputTranscription → first audio
 
-  const session = await ai.live.connect({
+  // Gemini takes ~1s to accept the setup; audio that arrives meanwhile is held, not dropped.
+  let session: Session | null = null;
+  const backlog: Buffer[] = [];
+  const forward = (pcm: Buffer) =>
+    session?.sendRealtimeInput({
+      audio: { data: pcm.toString('base64'), mimeType: 'audio/pcm;rate=16000' },
+    });
+
+  ws.on('message', (data, isBinary) => {
+    if (!isBinary) return;
+    const pcm = data as Buffer;
+    up += pcm.length;
+    if (session) forward(pcm);
+    else backlog.push(pcm);
+  });
+
+  ws.on('close', () => {
+    log(`close  ↑${kb(up)}  ↓${kb(down)}`);
+    session?.close();
+  });
+
+  session = await ai.live.connect({
     model: MODEL,
     config: {
       responseModalities: [Modality.AUDIO],
@@ -101,19 +122,11 @@ async function relay(ws: WebSocket, log: (m: string) => void): Promise<void> {
     },
   });
 
-  ws.on('message', (data, isBinary) => {
-    if (!isBinary) return;
-    const buf = data as Buffer;
-    up += buf.length;
-    session.sendRealtimeInput({
-      audio: { data: buf.toString('base64'), mimeType: 'audio/pcm;rate=16000' },
-    });
-  });
-
-  ws.on('close', () => {
-    log(`close  ↑${kb(up)}  ↓${kb(down)}`);
+  if (ws.readyState !== ws.OPEN) {
     session.close();
-  });
+    return;
+  }
+  backlog.splice(0).forEach(forward);
 }
 
 function send(ws: WebSocket, msg: { type: string; text?: string }): void {
