@@ -1,0 +1,16 @@
+{
+  "name": "duck-talk-voice",
+  "private": true,
+  "type": "module",
+  "description": "Minimal voice relay: phone ⇄ WebSocket ⇄ Gemini Live",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=../.env --watch server.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^1.41.0",
+    "ws": "^8.18.0"
+  }
+}

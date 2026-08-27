@@ -28,6 +28,10 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        NSMicrophoneUsageDescription: Duck Talk streams your voice to your Mac so you can talk to it.
+        # ws:// to a LAN address is blocked by App Transport Security otherwise.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.conception.ducktalk
