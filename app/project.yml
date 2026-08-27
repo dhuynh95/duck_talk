@@ -1,0 +1,35 @@
+name: DuckTalk
+options:
+  bundleIdPrefix: dev.conception.ducktalk
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  DuckTalk:
+    type: application
+    platform: iOS
+    sources:
+      - path: DuckTalk
+    # XcodeGen writes Resources/Info.plist from these on every `./dt gen`,
+    # filling in CFBundleIdentifier and friends. Don't hand-edit that file.
+    info:
+      path: DuckTalk/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Duck Talk
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.conception.ducktalk
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_PREVIEWS: YES

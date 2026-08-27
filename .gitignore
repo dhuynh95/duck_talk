@@ -3,3 +3,9 @@ dist/
 .DS_Store
 .env
 .logs/
+
+# iOS app — .xcodeproj is generated from app/project.yml by xcodegen
+app/*.xcodeproj
+app/.build/
+xcuserdata/
+app/DuckTalk/Resources/Info.plist

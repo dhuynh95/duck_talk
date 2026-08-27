@@ -1,0 +1,105 @@
+#!/bin/bash
+# Build/run/inspect the iOS app from the CLI. Everything an agent needs to close
+# the loop without opening Xcode: xcodegen + xcodebuild + simctl, nothing else.
+#
+#   ./dt build            regenerate project, build for the simulator
+#   ./dt run              build, boot sim, install, launch (relaunches if running)
+#   ./dt shot [file]      screenshot the booted sim (default: .build/shot.png)
+#   ./dt logs [seconds]   app's stdout/stderr + os_log for N seconds (default 10)
+#   ./dt clean            drop derived data
+#
+# Override the simulator with SIM=... (name or UDID).
+
+set -euo pipefail
+cd "$(dirname "$0")"
+
+SCHEME=DuckTalk
+PROJECT=DuckTalk.xcodeproj
+BUNDLE_ID=dev.conception.ducktalk
+SIM="${SIM:-iPhone 17 Pro}"
+DERIVED=.build
+
+require_xcode() {
+  if ! xcodebuild -version >/dev/null 2>&1; then
+    echo "error: full Xcode is required (found only Command Line Tools)." >&2
+    echo "  Install Xcode, then: sudo xcode-select -s /Applications/Xcode.app" >&2
+    exit 1
+  fi
+}
+
+# Only the lines worth reading: errors, warnings, and the final status.
+filter() {
+  grep -E '(error|warning|note):|^\*\* .* \*\*|Testing failed|failed with' || true
+}
+
+gen() {
+  xcodegen generate --quiet
+}
+
+build() {
+  require_xcode
+  gen
+  set -o pipefail
+  xcodebuild -project "$PROJECT" -scheme "$SCHEME" \
+    -destination "platform=iOS Simulator,name=$SIM" \
+    -derivedDataPath "$DERIVED" \
+    -quiet build 2>&1 | filter
+}
+
+# UDID of the target simulator, booting it if needed.
+boot() {
+  local udid
+  udid=$(xcrun simctl list devices available -j \
+    | python3 -c "
+import json,sys
+want=sys.argv[1].lower()
+data=json.load(sys.stdin)['devices']
+for runtime in sorted(data, reverse=True):
+    for d in data[runtime]:
+        if want in (d['name'].lower(), d['udid'].lower()):
+            print(d['udid']); sys.exit(0)
+sys.exit('no available simulator matching %r' % sys.argv[1])
+" "$SIM")
+  xcrun simctl bootstatus "$udid" -b >/dev/null 2>&1 || xcrun simctl boot "$udid"
+  open -ga Simulator
+  echo "$udid"
+}
+
+app_path() {
+  echo "$DERIVED/Build/Products/Debug-iphonesimulator/$SCHEME.app"
+}
+
+run() {
+  build
+  local udid
+  udid=$(boot)
+  xcrun simctl terminate "$udid" "$BUNDLE_ID" >/dev/null 2>&1 || true
+  xcrun simctl install "$udid" "$(app_path)"
+  xcrun simctl launch "$udid" "$BUNDLE_ID"
+}
+
+shot() {
+  local out="${1:-$DERIVED/shot.png}"
+  mkdir -p "$(dirname "$out")"
+  xcrun simctl io booted screenshot --type=png "$out"
+  echo "$out"
+}
+
+logs() {
+  local secs="${1:-10}"
+  # simctl spawn log stream needs a subsystem filter or it drowns in system noise.
+  timeout "$secs" xcrun simctl spawn booted log stream \
+    --level debug --style compact \
+    --predicate "subsystem CONTAINS \"$BUNDLE_ID\" OR processImagePath CONTAINS \"$SCHEME\"" \
+    2>/dev/null || true
+}
+
+case "${1:-run}" in
+  gen)   gen ;;
+  build) build ;;
+  run)   run ;;
+  shot)  shot "${2:-}" ;;
+  logs)  logs "${2:-10}" ;;
+  clean) rm -rf "$DERIVED" && echo "cleaned $DERIVED" ;;
+  *)     sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' ; exit 1 ;;
+esac
