@@ -3,7 +3,7 @@
  *
  *   ↑ binary  raw PCM Int16 LE, 16 kHz, mono          (mic)
  *   ↓ binary  raw PCM Int16 LE, 24 kHz, mono          (Gemini voice)
- *   ↓ text    {"type":"user"|"model"|"interrupted"|"error","text"?:string}
+ *   ↓ text    {"type":"user"|"model"|"interrupted"|"turn_end"|"error","text"?:string}
  *
  * `?echo=1` sends binary frames straight back and never opens Gemini —
  * that tests the phone half by itself.
@@ -98,6 +98,12 @@ async function relay(ws: WebSocket, log: (m: string) => void): Promise<void> {
         }
         if (sc.outputTranscription?.text) {
           send(ws, { type: 'model', text: sc.outputTranscription.text });
+        }
+        // The only signal that a turn is over. Without it every client has to
+        // guess with a timer or by matching words.
+        if (sc.turnComplete) {
+          send(ws, { type: 'turn_end' });
+          log('turn end');
         }
         for (const part of sc.modelTurn?.parts ?? []) {
           const b64 = part.inlineData?.data;

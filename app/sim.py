@@ -13,10 +13,12 @@ geometry constants, no per-device configuration.
 """
 
 import asyncio
+import atexit
 import itertools
 import json
 import re
 import shlex
+import subprocess
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
@@ -215,59 +217,192 @@ async def type_text(text: str) -> Image:
     return await _act(_axe("type", "--file", TYPE_FILE))
 
 
-@mcp.tool
-async def ui(x: int | None = None, y: int | None = None) -> str:
-    """The accessibility tree: what's on screen as structured data, with frames in
-    point space, so you can tap what you find. Pass x and y to describe only the
-    element at that point (matching something you see in a screenshot). Nodes with
-    no label, identifier, or value are omitted unless they're containers."""
-    if x is not None and y is not None:
-        out, err, code = await _axe("describe-ui", "--point", f"{x},{y}")
-        if code != 0:
-            raise RuntimeError((err or out).strip())
-        # `describe-ui` returns a list of roots; `--point` returns the one node.
-        tree = [cast(AXNode, json.loads(out))]
-    else:
-        tree = await _ax_tree()
+# --------------------------------------------------------------------------- #
+# Voice: inject a turn, measure the audio that comes back                      #
+# --------------------------------------------------------------------------- #
+# Two virtual audio devices, kept apart on purpose:
+#
+#   inject  say -a "BlackHole 2ch"  -> the device the app listens to
+#   capture ffmpeg <- "BlackHole 16ch" <- the device the app plays into
+#
+# Nothing becomes sound, so a conversation in the room cannot reach the app and
+# the app's own reply cannot reach its microphone. Recording both devices in ONE
+# ffmpeg process puts the question and the reply on one timebase, so latency is a
+# subtraction between two sample positions — no wall clocks, no device-open slop.
 
-    interesting = {
-        "Application",
-        "ScrollView",
-        "Table",
-        "CollectionView",
-        "NavigationBar",
-    }
-    lines: list[str] = []
+VOICE_IN = "BlackHole 2ch"  # app's microphone; we play into it
+VOICE_OUT = "BlackHole 16ch"  # app's speaker; we record it
+SAY_VOICE = "Samantha"
+TURN_WAV = "/tmp/ios_turn.wav"
+QUIET_DB = -50  # both channels are digital, so the floor is real silence
+_orig_route: tuple[str, str] | None = None
 
-    def walk(node: AXNode, depth: int = 0) -> None:
-        f = node.get("frame") or {}
-        label, ident = node.get("AXLabel"), node.get("AXUniqueId")
-        value, kind = node.get("AXValue"), node.get("type") or node.get("role")
-        if label or ident or value or kind in interesting:
-            parts = [kind or "?"]
-            if ident:
-                parts.append(f'id="{ident}"')
-            if label:
-                parts.append(f'label="{label}"')
-            if value not in (None, ""):
-                parts.append(f'value="{value}"')
-            parts.append(
-                "frame=[{},{},{},{}]".format(
-                    *(round(f.get(k, 0)) for k in ("x", "y", "width", "height"))
-                )
+
+async def _device(kind: str) -> str:
+    out, _, _ = await _sh(f"SwitchAudioSource -c -t {kind}")
+    return out.strip()
+
+
+async def _av_index(name: str) -> str:
+    """avfoundation renumbers devices between runs — always resolve by name."""
+    out, err, _ = await _sh('ffmpeg -f avfoundation -list_devices true -i ""')
+    in_audio = False
+    for line in (out + err).splitlines():
+        if "audio devices" in line:
+            in_audio = True
+            continue
+        m = re.search(r"\[(\d+)\] (.+)$", line)
+        if in_audio and m and m.group(2).strip() == name:
+            return m.group(1)
+    raise RuntimeError(f"no audio device named {name!r} — is BlackHole installed?")
+
+
+async def _ensure_route() -> bool:
+    """Point the simulator at the virtual devices. Returns True if it had to change.
+
+    A route change while the device is booted leaves its audio session broken —
+    every connect then fails with an invalid input format — so the caller must
+    reboot the simulator afterwards.
+    """
+    global _orig_route
+    have = (await _device("input"), await _device("output"))
+    if have == (VOICE_IN, VOICE_OUT):
+        return False
+    if _orig_route is None:
+        _orig_route = have
+        _ = atexit.register(_restore_route_sync)
+    _ = await _sh(f'SwitchAudioSource -t input -s "{VOICE_IN}"')
+    _ = await _sh(f'SwitchAudioSource -t output -s "{VOICE_OUT}"')
+    now = (await _device("input"), await _device("output"))
+    if now != (VOICE_IN, VOICE_OUT):
+        raise RuntimeError(
+            f"audio route would not stick: wanted {(VOICE_IN, VOICE_OUT)}, got {now}"
+        )
+    return True
+
+
+def _restore_route_sync() -> None:
+    """Put the user's audio devices back when this server exits."""
+    if _orig_route:
+        for kind, name in zip(("input", "output"), _orig_route):
+            _ = subprocess.run(
+                ["SwitchAudioSource", "-t", kind, "-s", name], capture_output=True
             )
-            if node.get("enabled") is False:
-                parts.append("disabled")
-            lines.append("  " * depth + " ".join(parts))
-            depth += 1
-        for child in node.get("children") or []:
-            walk(child, depth)
 
-    for root in tree:
-        walk(root)
-    w, h = await _point_size()
-    header = f"screen: {w}x{h} points"
-    return header + "\n" + ("\n".join(lines) or "(nothing labelled on screen)")
+
+def _findall(pattern: str, text: str) -> list[str]:
+    """re.findall types as Any; keep the noise contained to one place."""
+    return cast("list[str]", re.findall(pattern, text))
+
+
+def _spans(detect: str, floor: float) -> list[tuple[float, float]]:
+    """Turn ffmpeg's silence report into the (start, end) spans that hold sound."""
+    starts = [float(x) for x in _findall(r"silence_start: ([-\d.]+)", detect)]
+    ends = [float(x) for x in _findall(r"silence_end: ([\d.]+)", detect)]
+    edges = sorted([(s, False) for s in starts] + [(e, True) for e in ends])
+    spans: list[tuple[float, float]] = []
+    open_at = 0.0 if (not edges or not edges[0][1]) else None
+    for at, is_start in edges:
+        if is_start:
+            open_at = at
+        elif open_at is not None:
+            spans.append((open_at, at))
+            open_at = None
+    return [s for s in spans if s[1] - s[0] >= floor]
+
+
+async def _channel(
+    channel: int, min_len: float
+) -> tuple[list[tuple[float, float]], float | None]:
+    out, err, _ = await _sh(
+        f"ffmpeg -i {TURN_WAV} -filter_complex "
+        + f'"[0:a]pan=mono|c0=c{channel},silencedetect='
+        + f'noise={QUIET_DB}dB:d=0.2,volumedetect" -f null -'
+    )
+    det = out + err
+    peak = re.search(r"max_volume: (-?[\d.]+) dB", det)
+    return _spans(det, min_len), float(peak.group(1)) if peak else None
+
+
+@mcp.tool
+async def play_audio(
+    text: str | None = None, file: str | None = None, listen: float = 12.0
+):
+    """Speak to the app as a user would, then report what came back — the whole
+    voice turn in one call.
+
+    Plays `text` (synthesized) or an audio `file` into the device the app listens
+    to, records the device it plays into for `listen` seconds, and returns timing
+    measured from the recorded waveform plus a screenshot of the app.
+
+    latency_ms is the number that matters: end of the question to the first sound
+    of the reply, as a user would experience it. reply_ms is how long the reply
+    played, peak_db proves it really played, and gaps counts silences of 0.4s or
+    more inside the reply — a dropout looks like this, but so does a natural pause
+    between two sentences, so read it alongside reply_ms.
+
+    Requires BlackHole (`brew install --cask blackhole-2ch blackhole-16ch`). The
+    app must be connected — tap Connect first. Nothing is audible."""
+    if not text and not file:
+        raise ValueError("give either text or a file")
+
+    if await _ensure_route():
+        # The simulator caches its audio session; a route change breaks it until
+        # the device restarts.
+        udid = await _udid()
+        _ = await _sh(f"xcrun simctl shutdown {udid}")
+        _ = await _sh(f"xcrun simctl boot {udid} && xcrun simctl bootstatus {udid} -b")
+        return (
+            "Audio route changed and the simulator was rebooted, which closes "
+            + "the app. Call run(), tap Connect, then play_audio again."
+        )
+
+    q_index, r_index = await _av_index(VOICE_IN), await _av_index(VOICE_OUT)
+    record = await asyncio.create_subprocess_shell(
+        f"ffmpeg -y -f avfoundation -i :{q_index} -f avfoundation -i :{r_index} "
+        + '-filter_complex "[0:a]pan=mono|c0=c0[q];[1:a]pan=mono|c0=c0[r];'
+        + '[q][r]amerge=inputs=2[a]" '
+        + f'-map "[a]" -t {listen} {TURN_WAV}',
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await asyncio.sleep(1.5)  # leading silence, and time for both devices to open
+    if file:
+        # audiotoolbox plays to a named device, so the default output stays put.
+        _ = await _sh(
+            f"ffmpeg -v error -i {shlex.quote(file)} -f audiotoolbox "
+            + f"-audio_device_index {q_index} -"
+        )
+    else:
+        _ = await _sh(
+            f"say -a {shlex.quote(VOICE_IN)} -v {SAY_VOICE} -- {shlex.quote(text or '')}"
+        )
+    _ = await record.wait()
+
+    question, _ = await _channel(0, 0.25)
+    reply, peak = await _channel(1, 0.15)
+
+    if not question:
+        return "FAILED: the question never reached the app's microphone."
+    if not reply:
+        return [
+            "FAILED: no reply audio. The app heard the question but played nothing back.",
+            await _shot(),
+        ]
+
+    q_end = question[0][1]
+    heard = [s for s in reply if s[0] > q_end] or reply
+    # A pause under 0.4s is speech, not a dropout.
+    dropouts = sum(1 for a, b in zip(heard, heard[1:]) if b[0] - a[1] >= 0.4)
+    metrics = {
+        "latency_ms": round((heard[0][0] - q_end) * 1000),
+        "reply_ms": round((heard[-1][1] - heard[0][0]) * 1000),
+        "question_ms": round((question[0][1] - question[0][0]) * 1000),
+        "peak_db": peak,
+        "gaps": dropouts,
+        "wav": TURN_WAV,
+    }
+    return [json.dumps(metrics), await _shot()]
 
 
 @mcp.tool

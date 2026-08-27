@@ -33,15 +33,26 @@ generated from `project.yml`, so change project settings there and re-run
 
 `sim.py` is an MCP server (registered as `ios-sim` in `../.mcp.json`) that gives
 Claude eight tools over the simulator: `run` — build, install, launch and show the
-result in one call — plus `screenshot`, `tap`, `swipe`, `type_text`, `ui`, `logs`,
-and `exec_code`. Every action that changes the screen returns the screen.
+result in one call — plus `screenshot`, `tap`, `swipe`, `type_text`, `play_audio`,
+`logs`, and `exec_code`. Every action that changes the screen returns the screen.
 
 Coordinates are points (402×874 on an iPhone 17 Pro), and screenshots are scaled to
-exactly that, so what you read off an image is what `tap` takes — and what `ui()`
-reports. `tap(label="Quack")` works too, matching accessibility labels.
+exactly that, so what you read off an image is what `tap` takes. `tap(label="Quack")`
+works too, matching accessibility labels, and needs no coordinates at all.
 
 `dt` owns the app lifecycle; `sim.py` exposes it and adds input through `axe`. One
 job each, no duplicated logic.
+
+`play_audio(text=...)` speaks a voice turn to the app and returns latency measured
+from the recorded waveform (`latency_ms` = end of question → first sound of the
+reply) plus a screenshot. It plays into `BlackHole 2ch`, which the app listens to,
+and records `BlackHole 16ch`, which the app plays into — two separate virtual
+devices, so nothing becomes sound and no echo is possible. Install them with
+`brew install --cask blackhole-2ch blackhole-16ch`.
+
+Note that changing the Mac's audio route while the simulator is booted breaks its
+audio session until the device restarts; `play_audio` handles that and tells you when
+to relaunch.
 
 Its environment is `app/.venv` (gitignored), which `../.mcp.json` and the type
 checker both point at. On a fresh clone:

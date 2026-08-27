@@ -8,14 +8,42 @@ the wired client (session list, chat, SSE against `src/server`) is parked on the
 
 `run()` is the whole loop: it builds, installs, launches, and returns a screenshot —
 or the compiler's errors, or the log tail if the app died. Then `tap(label="…")`,
-`swipe`, `type_text`, and `ui()` drive the app, each returning the screen it produced.
+`swipe`, and `type_text` drive the app, each returning the screen it produced.
 
 Never claim a UI change works off a successful compile — `run()` hands you the
 screen, so look at it.
 
 Coordinates are **points** (402×874 on an iPhone 17 Pro), and screenshots are scaled
-to exactly that, so a coordinate read off an image goes straight back into `tap`.
-`ui()` reports frames in the same space. No conversion anywhere.
+to exactly that, so a coordinate read off an image goes straight back into `tap`. No
+conversion anywhere. `tap(label="Connect")` matches accessibility labels and needs no
+coordinates at all — prefer it. There is no `ui` tool: the screenshot shows what's on
+screen, and `exec_code` has `ax_tree()` if you ever need the raw tree.
+
+## Voice turns
+
+`play_audio(text="what is two plus two")` speaks to the app as a user would and
+returns timing measured from the recorded waveform, plus a screenshot:
+
+```
+{"latency_ms": 971, "reply_ms": 997, "question_ms": 1030, "peak_db": -10.7, "gaps": 0}
+```
+
+`latency_ms` is end of question → first sound of the reply, as a user hears it.
+
+It works through two virtual audio devices, kept apart on purpose: we play into
+`BlackHole 2ch` (what the app listens to) and record `BlackHole 16ch` (what the app
+plays into). Nothing becomes sound, so a conversation in the room can't reach the
+app and the app's reply can't reach its own microphone. Both devices are recorded by
+one ffmpeg process, so the question and reply share a timebase and latency is a
+subtraction — no clocks. Needs `brew install --cask blackhole-2ch blackhole-16ch`.
+
+**Changing the audio route while the simulator is booted breaks its audio session** —
+every Connect then fails with "microphone format can't be converted". `play_audio`
+sets the route and reboots the device for you, then asks you to call `run()` and tap
+Connect again. Tap Connect before the first `play_audio`; the app must be live.
+
+For the Mac half alone, with no simulator and no audio devices: `node server/probe.ts
+"what is two plus two"` returns what Gemini heard and said in about a second.
 
 Same machinery from a terminal, for humans:
 

@@ -31,6 +31,13 @@ final class AudioPipe {
 
         let input = engine.inputNode
         let hardwareFormat = input.outputFormat(forBus: 0)
+        // installTap throws an ObjC exception on a 0 Hz / 0 channel format, which Swift
+        // cannot catch — the app would die instead of reporting. Some inputs report
+        // exactly that: no microphone, a virtual device with no clock, a Bluetooth
+        // device that dropped. Check first and fail like anything else.
+        guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0 else {
+            throw AudioError.unsupportedFormat
+        }
         guard let converter = AVAudioConverter(from: hardwareFormat, to: micFormat) else {
             throw AudioError.unsupportedFormat
         }
