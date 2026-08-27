@@ -9,3 +9,5 @@ app/*.xcodeproj
 app/.build/
 xcuserdata/
 app/DuckTalk/Resources/Info.plist
+__pycache__/
+app/.venv/

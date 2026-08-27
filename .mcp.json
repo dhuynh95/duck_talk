@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ios-sim": {
+      "command": "/Users/dhuynh95/duck_talk/app/.venv/bin/fastmcp",
+      "args": ["run", "/Users/dhuynh95/duck_talk/app/sim.py"]
+    }
+  }
+}

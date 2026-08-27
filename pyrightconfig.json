@@ -1,0 +1,5 @@
+{
+  "venvPath": "app",
+  "venv": ".venv",
+  "include": ["app/sim.py"]
+}

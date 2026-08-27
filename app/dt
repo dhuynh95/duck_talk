@@ -6,6 +6,7 @@
 #   ./dt run              build, boot sim, install, launch (relaunches if running)
 #   ./dt shot [file]      screenshot the booted sim (default: .build/shot.png)
 #   ./dt logs [seconds]   app's stdout/stderr + os_log for N seconds (default 10)
+#   ./dt udid             UDID of the target simulator, booting it if needed
 #   ./dt clean            drop derived data
 #
 # Override the simulator with SIM=... (name or UDID).
@@ -100,6 +101,7 @@ case "${1:-run}" in
   run)   run ;;
   shot)  shot "${2:-}" ;;
   logs)  logs "${2:-10}" ;;
+  udid)  boot ;;
   clean) rm -rf "$DERIVED" && echo "cleaned $DERIVED" ;;
-  *)     sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' ; exit 1 ;;
+  *)     sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2 ; exit 1 ;;
 esac
