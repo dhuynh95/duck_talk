@@ -1,8 +1,9 @@
 # app/ — Duck Talk iOS client
 
-SwiftUI, iOS 17+, no external Swift packages. Currently a placeholder screen —
-the wired client (session list, chat, SSE against `src/server`) is parked on the
-`ios/wired-mvp` branch; pull pieces over from there rather than rewriting them.
+SwiftUI, iOS 17+, no external Swift packages. One screen: a voice session against
+`server/` (mic → relay → Gemini → speaker). The earlier chat client (session list,
+SSE against `src/server`) is parked on the `ios/wired-mvp` branch; pull pieces over
+from there rather than rewriting them.
 
 ## Working loop — the `ios-sim` MCP
 

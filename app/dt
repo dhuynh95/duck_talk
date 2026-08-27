@@ -76,6 +76,8 @@ run() {
   udid=$(boot)
   xcrun simctl terminate "$udid" "$BUNDLE_ID" >/dev/null 2>&1 || true
   xcrun simctl install "$udid" "$(app_path)"
+  # Granting a permission terminates the app if it is running, so grant before launch.
+  xcrun simctl privacy "$udid" grant microphone "$BUNDLE_ID"
   xcrun simctl launch "$udid" "$BUNDLE_ID"
 }
 
