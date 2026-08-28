@@ -53,9 +53,24 @@ The request path end to end (phone → relay → Gemini), the test harness, and 
 
 ## Local dev
 
-Relay: `cd server && npm install && npm start` (:8765, `--watch`, no build step — Node ≥ 22.6 runs the `.ts`). Needs `GEMINI_API_KEY` from the root `.env` or the shell. Mac-half check in one second, no simulator: `node server/probe.ts "what is two plus two"`.
+Two servers, both started by hand, neither spawned for you. Each keeps running in its own terminal.
 
-App: the `ios-sim` MCP is an HTTP server you start yourself — `cd app && ./dt mcp` (:8766, venv at `app/.venv`), which `.mcp.json` points at by URL and which reloads on every edit to `sim.py`. If the tools are missing, it isn't running. `run()` builds, installs, launches and returns the screen; `play_audio(text=)` drives one voice turn and reports it, connecting the app itself. Humans use `app/dt`. Simulator default URL `ws://localhost:8765` works as-is; a physical iPhone needs the Mac's LAN address in the URL field.
+```bash
+cd server && npm install && npm start   # relay,       :8765, --watch
+cd app    && ./dt mcp                   # ios-sim MCP, :8766, hot reload
+```
+
+**Start the MCP before Claude Code**, or its tools are simply absent — `.mcp.json` points at a URL and launches nothing. Started it late? `/mcp` reconnects. `ConnectionRefused` there means the server is down, not that the config is wrong.
+
+Relay: no build step, Node ≥ 22.6 runs the `.ts`. Needs `GEMINI_API_KEY` from the root `.env` or the shell. Mac-half check in one second, no simulator and no audio devices: `node server/probe.ts "what is two plus two"`.
+
+App: `run()` builds, installs, launches and returns the screen; `play_audio(text=)` drives one voice turn and reports it, connecting the app itself. Humans use `app/dt`. Simulator default URL `ws://localhost:8765` works as-is; a physical iPhone needs the Mac's LAN address in the URL field.
+
+Fresh clone also needs `brew install xcodegen cameroncooke/axe/axe`, `brew install --cask blackhole-2ch`, and the venv `.mcp.json` and `dt mcp` both point at:
+
+```bash
+uv venv --python 3.13 app/.venv && uv pip install --python app/.venv/bin/python fastmcp
+```
 
 Original web app: `npm install && npm run dev` at the root (:8000 + Vite). Untouched by, and unaware of, `server/`.
 
