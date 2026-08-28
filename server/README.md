@@ -18,7 +18,9 @@ npm start          # node --env-file-if-exists=../.env --watch server.ts  (port 
 Needs `GEMINI_API_KEY` and `ANTHROPIC_API_KEY` (or a logged-in `claude`) in the root
 `.env` or the shell, and `claude` on PATH. `PROJECT_CWD` is the repo Claude works in
 (default: the repo root). `GEMINI_MODEL`, `CLAUDE_MODEL`, `CLAUDE_PERMISSION_MODE`
-(default `plan`) override the rest. No build step — Node ≥ 22.6 runs the `.ts`.
+(default `plan`) override the rest. `TURN_TIMEOUT_MS` (default 180000, `0` disables)
+caps one turn — a turn that never finishes is interrupted and the session recovers.
+No build step — Node ≥ 22.6 runs the `.ts`.
 
 ## Protocol
 

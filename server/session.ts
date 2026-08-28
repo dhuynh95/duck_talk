@@ -47,6 +47,11 @@ export interface Phone {
 
 const TURNS = new URL('./.turns.jsonl', import.meta.url).pathname;
 
+// A turn that never returns to `listening` — Claude died, the voice stalled, or a
+// task ran away — would hang the session forever. One ceiling on the whole turn
+// catches every cause, since they all look the same: stuck off `listening`. 0 disables.
+const TURN_TIMEOUT_MS = Number(process.env['TURN_TIMEOUT_MS'] ?? 180_000);
+
 export class Session {
   private ears!: Ears;
   private voice!: Voice;
@@ -57,6 +62,7 @@ export class Session {
   private muted = false;
   private claude!: Claude;
   private closed = false;
+  private watchdog: ReturnType<typeof setTimeout> | null = null;
   // ears + voice take ~1s to connect; audio that arrives meanwhile is held, not dropped.
   private ready = false;
   private backlog: Buffer[] = [];
@@ -151,6 +157,7 @@ export class Session {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.disarm();
     this.claude?.close();
     this.ears?.close();
     this.voice?.close();
@@ -183,6 +190,7 @@ export class Session {
     this.log(`converse: ${instruction}`);
     if (this.mode === 'review') {
       this.state = 'holding';
+      this.arm();
       this.voice.say(instruction);
       this.voice.finish();
       this.phone.event({ type: 'approval', text: instruction });
@@ -217,8 +225,20 @@ export class Session {
 
   private run(instruction: string): void {
     this.state = 'working';
+    this.arm();
     if (this.mode === 'review') this.turn.approval = 'accepted';
     this.claude.send(instruction); // the callbacks wired in open() carry the reply
+  }
+
+  // --- Watchdog: one ceiling on the whole turn -------------------------------
+
+  private arm(): void {
+    this.disarm();
+    if (TURN_TIMEOUT_MS > 0) this.watchdog = setTimeout(() => this.cancel('timeout'), TURN_TIMEOUT_MS);
+  }
+
+  private disarm(): void {
+    if (this.watchdog) { clearTimeout(this.watchdog); this.watchdog = null; }
   }
 
   // --- Teardown --------------------------------------------------------------
@@ -235,6 +255,7 @@ export class Session {
 
   private endTurn(): void {
     if (this.state === 'listening') return; // nothing in flight
+    this.disarm();
     this.phone.event({ type: 'turn_end' });
     void this.record(this.turn);
     this.turn = this.blank();
