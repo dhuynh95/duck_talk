@@ -16,10 +16,12 @@ import asyncio
 import atexit
 import itertools
 import json
+import os
 import re
 import shlex
 import subprocess
-from collections.abc import Awaitable, Callable
+import time
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
@@ -30,6 +32,8 @@ mcp = FastMCP("iOS Simulator")
 
 APP_DIR = Path(__file__).parent
 DT = str(APP_DIR / "dt")
+HOST = os.environ.get("SIM_HOST", "127.0.0.1")
+PORT = int(os.environ.get("SIM_PORT", "8766"))
 SHOT_RAW = "/tmp/ios_screen.png"
 SHOT_PT = "/tmp/ios_screen_pt.png"
 TYPE_FILE = "/tmp/ios_type.txt"
@@ -93,6 +97,21 @@ async def _ax_tree() -> list[AXNode]:
     return cast(list[AXNode], json.loads(out))
 
 
+def _walk(nodes: list[AXNode]) -> Iterator[AXNode]:
+    for node in nodes:
+        yield node
+        yield from _walk(node.get("children", []))
+
+
+async def _status() -> str:
+    """What the app's status line says: idle, connecting or live. The screen is the
+    only place the session state is published, so read it there."""
+    for node in _walk(await _ax_tree()):
+        if node.get("AXLabel") == "Status":
+            return (node.get("AXValue") or "").split(",")[0].strip()
+    return "unknown"
+
+
 async def _point_size() -> tuple[int, int]:
     """Screen size in points, read from the accessibility root's own frame.
     Cached — it's a property of the simulator, not of the moment."""
@@ -131,7 +150,15 @@ async def run():
     """Build the app, install it, launch it, and show the result — the whole
     edit-and-see loop in one call. Returns a screenshot when the app is running,
     the compiler's errors when the build failed, or the log tail when it launched
-    and then died. Call this after editing Swift; there is no separate build step."""
+    and then died. Call this after editing Swift; there is no separate build step.
+
+    Also points the Mac's microphone at the virtual device, so the app that comes up
+    is always one `play_audio` can talk to."""
+    # An app builds its audio session at launch from the devices the Mac has then,
+    # and a route change afterwards breaks it. Set the route first; if it moved,
+    # shut the simulator down and let `dt run` boot it again underneath.
+    if await _ensure_route():
+        _ = await _sh(f"xcrun simctl shutdown {await _udid()}")
     out, err, code = await _dt("run")
     if code != 0:
         return f"BUILD FAILED\n{(out + err).strip() or '(no output)'}"
@@ -218,24 +245,23 @@ async def type_text(text: str) -> Image:
 
 
 # --------------------------------------------------------------------------- #
-# Voice: inject a turn, measure the audio that comes back                      #
+# Voice: speak to the app, then read what the turn actually did                #
 # --------------------------------------------------------------------------- #
-# Two virtual audio devices, kept apart on purpose:
+# Injection is a black box: `say` plays into "BlackHole 2ch", the device the app
+# listens to, so a turn goes through the real microphone path. The result is not
+# inferred from sound — the relay writes every finished turn to .turns.jsonl, with
+# the phone's own timestamp for when the reply reached it.
 #
-#   inject  say -a "BlackHole 2ch"  -> the device the app listens to
-#   capture ffmpeg <- "BlackHole 16ch" <- the device the app plays into
-#
-# Nothing becomes sound, so a conversation in the room cannot reach the app and
-# the app's own reply cannot reach its microphone. Recording both devices in ONE
-# ffmpeg process puts the question and the reply on one timebase, so latency is a
-# subtraction between two sample positions — no wall clocks, no device-open slop.
+# The phone (in the simulator), the relay and this file all run on this Mac, so
+# every timestamp is the same clock and latency is a subtraction. Nothing is
+# thresholded, calibrated or detected.
 
 VOICE_IN = "BlackHole 2ch"  # app's microphone; we play into it
-VOICE_OUT = "BlackHole 16ch"  # app's speaker; we record it
 SAY_VOICE = "Samantha"
-TURN_WAV = "/tmp/ios_turn.wav"
-QUIET_DB = -50  # both channels are digital, so the floor is real silence
-_orig_route: tuple[str, str] | None = None
+TURNS = APP_DIR.parent / "server" / ".turns.jsonl"
+ROUTE_MEMO = (
+    APP_DIR / ".build" / "audio-route.json"
+)  # the user's input device, before we moved it
 
 
 async def _device(kind: str) -> str:
@@ -258,149 +284,167 @@ async def _av_index(name: str) -> str:
 
 
 async def _ensure_route() -> bool:
-    """Point the simulator at the virtual devices. Returns True if it had to change.
+    """Point the app's microphone at the virtual device. Returns True if it had to
+    change, which run() answers by restarting the simulator — an audio session built
+    before the change keeps using the old device and every connect fails.
 
-    A route change while the device is booted leaves its audio session broken —
-    every connect then fails with an invalid input format — so the caller must
-    reboot the simulator afterwards.
-    """
-    global _orig_route
-    have = (await _device("input"), await _device("output"))
-    if have == (VOICE_IN, VOICE_OUT):
+    Only the input is ours. The reply plays out of whatever the Mac already uses, so
+    you can hear the turn happen, and no second virtual device has to be working."""
+    have = await _device("input")
+    if have == VOICE_IN:
         return False
-    if _orig_route is None:
-        _orig_route = have
-        _ = atexit.register(_restore_route_sync)
+    # Remember the user's device in a file rather than a global: the reloader
+    # replaces this process on every edit, and a device only a dead process
+    # remembered is one the user has to put back by hand.
+    if not ROUTE_MEMO.exists():
+        ROUTE_MEMO.parent.mkdir(parents=True, exist_ok=True)
+        _ = ROUTE_MEMO.write_text(json.dumps(have))
     _ = await _sh(f'SwitchAudioSource -t input -s "{VOICE_IN}"')
-    _ = await _sh(f'SwitchAudioSource -t output -s "{VOICE_OUT}"')
-    now = (await _device("input"), await _device("output"))
-    if now != (VOICE_IN, VOICE_OUT):
-        raise RuntimeError(
-            f"audio route would not stick: wanted {(VOICE_IN, VOICE_OUT)}, got {now}"
-        )
+    if await _device("input") != VOICE_IN:
+        raise RuntimeError(f"input would not switch to {VOICE_IN!r}")
     return True
 
 
-def _restore_route_sync() -> None:
-    """Put the user's audio devices back when this server exits."""
-    if _orig_route:
-        for kind, name in zip(("input", "output"), _orig_route):
-            _ = subprocess.run(
-                ["SwitchAudioSource", "-t", kind, "-s", name], capture_output=True
-            )
+@atexit.register
+def _restore_route() -> None:
+    """Put the user's microphone back when this server stops for good.
 
-
-def _findall(pattern: str, text: str) -> list[str]:
-    """re.findall types as Any; keep the noise contained to one place."""
-    return cast("list[str]", re.findall(pattern, text))
-
-
-def _spans(detect: str, floor: float) -> list[tuple[float, float]]:
-    """Turn ffmpeg's silence report into the (start, end) spans that hold sound."""
-    starts = [float(x) for x in _findall(r"silence_start: ([-\d.]+)", detect)]
-    ends = [float(x) for x in _findall(r"silence_end: ([\d.]+)", detect)]
-    edges = sorted([(s, False) for s in starts] + [(e, True) for e in ends])
-    spans: list[tuple[float, float]] = []
-    open_at = 0.0 if (not edges or not edges[0][1]) else None
-    for at, is_start in edges:
-        if is_start:
-            open_at = at
-        elif open_at is not None:
-            spans.append((open_at, at))
-            open_at = None
-    return [s for s in spans if s[1] - s[0] >= floor]
-
-
-async def _channel(
-    channel: int, min_len: float
-) -> tuple[list[tuple[float, float]], float | None]:
-    out, err, _ = await _sh(
-        f"ffmpeg -i {TURN_WAV} -filter_complex "
-        + f'"[0:a]pan=mono|c0=c{channel},silencedetect='
-        + f'noise={QUIET_DB}dB:d=0.2,volumedetect" -f null -'
+    A hot reload kills the worker without running this, which is what we want — the
+    device has to survive an edit, or the app running on it goes deaf mid-session."""
+    if not ROUTE_MEMO.exists():
+        return
+    _ = subprocess.run(
+        ["SwitchAudioSource", "-t", "input", "-s", json.loads(ROUTE_MEMO.read_text())],
+        capture_output=True,
     )
-    det = out + err
-    peak = re.search(r"max_volume: (-?[\d.]+) dB", det)
-    return _spans(det, min_len), float(peak.group(1)) if peak else None
+    ROUTE_MEMO.unlink()
+
+
+async def _require_route() -> None:
+    have = await _device("input")
+    if have != VOICE_IN:
+        raise RuntimeError(
+            f"the app's microphone is {have!r}, not {VOICE_IN!r} — call run(), "
+            + "which sets it before the simulator boots."
+        )
+
+
+def _turns() -> list[dict[str, object]]:
+    """Every turn the relay has recorded, oldest first."""
+    if not TURNS.exists():
+        return []
+    return [json.loads(line) for line in TURNS.read_text().splitlines() if line.strip()]
+
+
+async def _find(identifier: str) -> str | None:
+    """The text of the view with this accessibility identifier, if it is on screen."""
+    for node in _walk(await _ax_tree()):
+        if node.get("AXUniqueId") == identifier:
+            return node.get("AXLabel") or node.get("AXValue")
+    return None
+
+
+async def _try_connect() -> bool:
+    if await _status() == "live":
+        return True
+    _ = await _axe("tap", "--label", "Connect", "--wait-timeout", "3")
+    for _attempt in range(10):
+        await asyncio.sleep(0.5)
+        if await _status() == "live":
+            return True
+    return False
+
+
+async def _require_live() -> None:
+    """The app can only answer while connected, so connect it rather than failing."""
+    if await _try_connect():
+        return
+    # CoreAudio changing under a booted simulator — a device switch, a coreaudiod
+    # restart, a sleep — leaves every audio session inside it unable to open the
+    # microphone, and relaunching the app does not clear it. Restarting the
+    # simulator does. There is no way to see that state coming, so recover from it.
+    problem = await _find("error")
+    _ = await _sh(f"xcrun simctl shutdown {await _udid()}")
+    _ = await _dt("run")
+    await asyncio.sleep(1.5)
+    if await _try_connect():
+        return
+    raise RuntimeError(
+        "the app would not go live, even after restarting the simulator. "
+        + f"It says: {await _find('error') or problem or '(no error on screen)'}"
+    )
 
 
 @mcp.tool
 async def play_audio(
-    text: str | None = None, file: str | None = None, listen: float = 12.0
+    text: str | None = None, file: str | None = None, wait: float = 30.0
 ):
-    """Speak to the app as a user would, then report what came back — the whole
-    voice turn in one call.
+    """Speak to the app as a user would, then report what the turn actually did —
+    the whole voice turn in one call.
 
-    Plays `text` (synthesized) or an audio `file` into the device the app listens
-    to, records the device it plays into for `listen` seconds, and returns timing
-    measured from the recorded waveform plus a screenshot of the app.
+    Plays `text` (synthesized) or an audio `file` into the device the app listens to,
+    then waits up to `wait` seconds for the relay to finish a turn and reads it from
+    `server/.turns.jsonl`. Returns that turn plus a screenshot of the app.
 
-    latency_ms is the number that matters: end of the question to the first sound
-    of the reply, as a user would experience it. reply_ms is how long the reply
-    played, peak_db proves it really played, and gaps counts silences of 0.4s or
-    more inside the reply — a dropout looks like this, but so does a natural pause
-    between two sentences, so read it alongside reply_ms.
+    latency_ms  question finished playing → the relay sent the first reply byte.
+                Gemini's thinking plus both network legs, as a user waits through it.
+    to_phone_ms that byte → the phone says it arrived. What relaying through the Mac
+                costs, which is the question Architecture B has to answer.
+    voice_ms    reply audio the relay sent, exact (24 kHz Int16 is 48 bytes/ms).
+    heard/said  what Gemini made of the question, and what it answered.
 
-    Requires BlackHole (`brew install --cask blackhole-2ch blackhole-16ch`). The
-    app must be connected — tap Connect first. Nothing is audible."""
+    Every timestamp is taken on this Mac — by the harness, the relay, and the app in
+    the simulator — so these are subtractions, not measurements. Nothing is detected
+    from sound and nothing is thresholded.
+
+    Needs `brew install --cask blackhole-2ch` and an app that run() launched.
+    Connects the app if it isn't. The reply plays out loud, on purpose."""
     if not text and not file:
         raise ValueError("give either text or a file")
+    await _require_route()
+    await _require_live()
 
-    if await _ensure_route():
-        # The simulator caches its audio session; a route change breaks it until
-        # the device restarts.
-        udid = await _udid()
-        _ = await _sh(f"xcrun simctl shutdown {udid}")
-        _ = await _sh(f"xcrun simctl boot {udid} && xcrun simctl bootstatus {udid} -b")
-        return (
-            "Audio route changed and the simulator was rebooted, which closes "
-            + "the app. Call run(), tap Connect, then play_audio again."
-        )
-
-    q_index, r_index = await _av_index(VOICE_IN), await _av_index(VOICE_OUT)
-    record = await asyncio.create_subprocess_shell(
-        f"ffmpeg -y -f avfoundation -i :{q_index} -f avfoundation -i :{r_index} "
-        + '-filter_complex "[0:a]pan=mono|c0=c0[q];[1:a]pan=mono|c0=c0[r];'
-        + '[q][r]amerge=inputs=2[a]" '
-        + f'-map "[a]" -t {listen} {TURN_WAV}',
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await asyncio.sleep(1.5)  # leading silence, and time for both devices to open
+    before = len(_turns())
     if file:
         # audiotoolbox plays to a named device, so the default output stays put.
+        index = await _av_index(VOICE_IN)
         _ = await _sh(
             f"ffmpeg -v error -i {shlex.quote(file)} -f audiotoolbox "
-            + f"-audio_device_index {q_index} -"
+            + f"-audio_device_index {index} -"
         )
     else:
         _ = await _sh(
             f"say -a {shlex.quote(VOICE_IN)} -v {SAY_VOICE} -- {shlex.quote(text or '')}"
         )
-    _ = await record.wait()
+    asked_at = time.time() * 1000  # `say` returns once the audio has been played
 
-    question, _ = await _channel(0, 0.25)
-    reply, peak = await _channel(1, 0.15)
-
-    if not question:
-        return "FAILED: the question never reached the app's microphone."
-    if not reply:
+    deadline = time.monotonic() + wait
+    turn: dict[str, object] | None = None
+    while time.monotonic() < deadline:
+        recorded = _turns()
+        if len(recorded) > before:
+            turn = recorded[-1]
+            break
+        await asyncio.sleep(0.2)
+    if turn is None:
         return [
-            "FAILED: no reply audio. The app heard the question but played nothing back.",
+            f"FAILED: the relay finished no turn within {wait:.0f}s. Its log says "
+            + "whether the question reached Gemini at all.",
             await _shot(),
         ]
 
-    q_end = question[0][1]
-    heard = [s for s in reply if s[0] > q_end] or reply
-    # A pause under 0.4s is speech, not a dropout.
-    dropouts = sum(1 for a, b in zip(heard, heard[1:]) if b[0] - a[1] >= 0.4)
+    out_at, in_at = turn.get("reply_out_at"), turn.get("reply_in_at")
+    if not isinstance(out_at, (int, float)):
+        return [
+            f"FAILED: the turn carried no reply audio. heard={turn.get('heard')!r}",
+            await _shot(),
+        ]
     metrics = {
-        "latency_ms": round((heard[0][0] - q_end) * 1000),
-        "reply_ms": round((heard[-1][1] - heard[0][0]) * 1000),
-        "question_ms": round((question[0][1] - question[0][0]) * 1000),
-        "peak_db": peak,
-        "gaps": dropouts,
-        "wav": TURN_WAV,
+        "latency_ms": round(out_at - asked_at),
+        "to_phone_ms": round(in_at - out_at) if isinstance(in_at, (int, float)) else None,
+        "voice_ms": round(cast(float, turn.get("voice_ms", 0))),
+        "heard": turn.get("heard"),
+        "said": turn.get("said"),
     }
     return [json.dumps(metrics), await _shot()]
 
@@ -477,5 +521,11 @@ async def exec_code(code: str):
     return [out, *(Image(path=p) for p in images)] if images else out
 
 
+# Served over HTTP at a fixed URL rather than spawned by the client over stdio, so
+# the reloader can replace this process on every edit and the next tool call already
+# runs the new code. A stdio server is owned by the client and only picks up a change
+# when the client itself restarts.
+app = mcp.http_app(path="/mcp")
+
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="http", host=HOST, port=PORT, path="/mcp")

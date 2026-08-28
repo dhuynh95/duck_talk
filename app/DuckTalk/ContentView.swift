@@ -29,13 +29,14 @@ struct ContentView: View {
                     .font(.footnote)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("error")
             }
 
-            Text("\(session.status.rawValue)   ↑ \(kb(session.bytesUp))   ↓ \(kb(session.bytesDown))")
+            Text("\(session.status.rawValue)   ↑ \(sent)   ↓ \(received)")
                 .font(.footnote.monospaced())
                 .foregroundStyle(.secondary)
                 .accessibilityLabel("Status")
-                .accessibilityValue("\(session.status.rawValue), sent \(kb(session.bytesUp)), received \(kb(session.bytesDown))")
+                .accessibilityValue("\(session.status.rawValue), sent \(sent), received \(received)")
 
             // The audio route, on screen: a wrong one is why the model can hear
             // itself, or hear nothing. Cheaper to read than to diagnose.
@@ -44,7 +45,7 @@ struct ContentView: View {
                 .foregroundStyle(.tertiary)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
-                .accessibilityLabel("Audio route")
+                .accessibilityIdentifier("route")
 
             Button(live ? "Stop" : "Connect") {
                 if live {
@@ -81,7 +82,15 @@ struct ContentView: View {
         }
     }
 
-    private func kb(_ n: Int) -> String { "\(n / 1024) KB" }
+    // Seconds of audio, not kilobytes: this is the number that can be held against
+    // what the relay logged and what a microphone heard. Mic is 16 kHz Int16
+    // (32 bytes/ms), the reply 24 kHz Int16 (48 bytes/ms).
+    private var sent: String { secs(session.bytesUp, perSecond: 32_000) }
+    private var received: String { secs(session.bytesDown, perSecond: 48_000) }
+
+    private func secs(_ bytes: Int, perSecond: Int) -> String {
+        String(format: "%.1fs", Double(bytes) / Double(perSecond))
+    }
 }
 
 #Preview {

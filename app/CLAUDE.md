@@ -7,6 +7,11 @@ from there rather than rewriting them.
 
 ## Working loop — the `ios-sim` MCP
 
+The MCP is an HTTP server you start yourself — `./dt mcp` — and `.mcp.json` points at
+its URL. Nothing spawns it, so if the tools are missing it isn't running. It reloads
+on every edit to `sim.py`, so a new tool is live on the next call without restarting
+Claude Code.
+
 `run()` is the whole loop: it builds, installs, launches, and returns a screenshot —
 or the compiler's errors, or the log tail if the app died. Then `tap(label="…")`,
 `swipe`, and `type_text` drive the app, each returning the screen it produced.
@@ -22,26 +27,45 @@ screen, and `exec_code` has `ax_tree()` if you ever need the raw tree.
 
 ## Voice turns
 
-`play_audio(text="what is two plus two")` speaks to the app as a user would and
-returns timing measured from the recorded waveform, plus a screenshot:
+`play_audio(text="what is two plus two")` speaks to the app as a user would, then
+reports what the turn actually did, plus a screenshot:
 
 ```
-{"latency_ms": 971, "reply_ms": 997, "question_ms": 1030, "peak_db": -10.7, "gaps": 0}
+{"latency_ms": 1243, "to_phone_ms": 1, "voice_ms": 4761,
+ "heard": "What is the capital of France?", "said": "The capital of France is Paris..."}
 ```
 
-`latency_ms` is end of question → first sound of the reply, as a user hears it.
+Injection is a black box and the result is not. `say` plays into `BlackHole 2ch`, the
+device the app listens to, so the question goes through the real microphone path. But
+nothing is measured from sound: the relay writes every finished turn to
+`server/.turns.jsonl`, and the app reports over the same socket the moment the first
+reply byte reached it.
 
-It works through two virtual audio devices, kept apart on purpose: we play into
-`BlackHole 2ch` (what the app listens to) and record `BlackHole 16ch` (what the app
-plays into). Nothing becomes sound, so a conversation in the room can't reach the
-app and the app's reply can't reach its own microphone. Both devices are recorded by
-one ffmpeg process, so the question and reply share a timebase and latency is a
-subtraction — no clocks. Needs `brew install --cask blackhole-2ch blackhole-16ch`.
+That works because **the app, the relay and this harness all run on this Mac, so they
+share one clock.** Every number is a subtraction between two timestamps. Nothing is
+thresholded, calibrated, or detected — there is no signal processing left to be wrong.
 
-**Changing the audio route while the simulator is booted breaks its audio session** —
-every Connect then fails with "microphone format can't be converted". `play_audio`
-sets the route and reboots the device for you, then asks you to call `run()` and tap
-Connect again. Tap Connect before the first `play_audio`; the app must be live.
+`latency_ms` is the question finishing → the relay sending the first reply byte:
+Gemini plus both network legs, which is what a user waits through. `to_phone_ms` is
+that byte reaching the phone — the cost of relaying through the Mac, and so the
+number Architecture B lives or dies on. It measures 1–20 ms. `voice_ms` is exact, not
+estimated: 24 kHz Int16 is 48 bytes per millisecond, and the relay counts the bytes.
+
+Only the microphone is ours. The reply plays out of whatever output the Mac already
+uses, so you can hear turns happen and no second virtual device has to be working.
+Needs `brew install --cask blackhole-2ch`.
+
+An audio session is built at launch from the devices the Mac has then, and a change
+afterwards breaks it — every Connect fails with "microphone format can't be
+converted". So `run()` sets the microphone *before* the simulator boots, and
+`play_audio` only checks it and connects the app if it isn't already. Two calls, no
+retry dance: `run()`, then `play_audio(...)`.
+
+Anything else that moves CoreAudio under a booted simulator — switching devices by
+hand, `killall coreaudiod`, a sleep — breaks its sessions the same way, and there is
+no way to see it coming. So `play_audio` recovers instead of predicting: if Connect
+fails it restarts the simulator once and tries again, and only then gives up, quoting
+the red line the app is showing rather than guessing at a cause.
 
 For the Mac half alone, with no simulator and no audio devices: `node server/probe.ts
 "what is two plus two"` returns what Gemini heard and said in about a second.
@@ -55,6 +79,7 @@ cd app
 ./dt shot           # screenshot -> .build/shot.png
 ./dt logs 10        # app logs for 10s
 ./dt udid           # target simulator, booting it if needed
+./dt mcp            # serve the ios-sim MCP over HTTP, reloading on every edit
 ```
 
 Override the simulator with `SIM="iPhone 17" ./dt run` (`sim.py` follows it).

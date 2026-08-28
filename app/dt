@@ -7,6 +7,7 @@
 #   ./dt shot [file]      screenshot the booted sim (default: .build/shot.png)
 #   ./dt logs [seconds]   app's stdout/stderr + os_log for N seconds (default 10)
 #   ./dt udid             UDID of the target simulator, booting it if needed
+#   ./dt mcp              serve the ios-sim MCP over HTTP, reloading on every edit
 #   ./dt clean            drop derived data
 #
 # Override the simulator with SIM=... (name or UDID).
@@ -66,6 +67,14 @@ sys.exit('no available simulator matching %r' % sys.argv[1])
   echo "$udid"
 }
 
+# The model-facing surface, served over HTTP so an edit to sim.py is live on the next
+# tool call. .mcp.json points at this URL; nothing spawns it, so it must be running.
+mcp() {
+  exec .venv/bin/uvicorn sim:app \
+    --host "${SIM_HOST:-127.0.0.1}" --port "${SIM_PORT:-8766}" \
+    --reload --reload-exclude '.venv/*' --reload-exclude '.build/*'
+}
+
 app_path() {
   echo "$DERIVED/Build/Products/Debug-iphonesimulator/$SCHEME.app"
 }
@@ -104,6 +113,7 @@ case "${1:-run}" in
   shot)  shot "${2:-}" ;;
   logs)  logs "${2:-10}" ;;
   udid)  boot ;;
+  mcp)   mcp ;;
   clean) rm -rf "$DERIVED" && echo "cleaned $DERIVED" ;;
-  *)     sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2 ; exit 1 ;;
+  *)     sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2 ; exit 1 ;;
 esac

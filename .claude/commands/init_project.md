@@ -21,7 +21,7 @@ mic ─▶ AudioPipe ─▶ VoiceSession ─ws─▶ server.ts ─▶ Gemini Liv
 🔊 ◀─ AudioPipe ◀─ VoiceSession ◀─ws─  server.ts ◀─ audio + transcripts
 ```
 
-Architecture B: the phone is a mic and a speaker, the Mac holds the Gemini session. Chosen over "phone talks to Gemini directly" because the orchestrator that will sit between Gemini and Claude Code already exists in TypeScript (`src/client/routes/live/gemini.ts`) and belongs on the server, not in two clients. Measured cost of the extra hop: none audible — 160–240 ms end-of-speech → first audio at the socket, ~1 s as a user hears it. Claude Code is **not yet** behind the relay; wiring `gemini.ts`'s `converse` tool into `server/` is the next step.
+Architecture B: the phone is a mic and a speaker, the Mac holds the Gemini session. Chosen over "phone talks to Gemini directly" because the orchestrator that will sit between Gemini and Claude Code already exists in TypeScript (`src/client/routes/live/gemini.ts`) and belongs on the server, not in two clients. Measured cost of the extra hop: **3–23 ms**, from the relay writing a reply byte to the phone reporting it arrived. A whole turn is 1.0–1.4 s, so Gemini owns essentially all of it. Every turn is recorded in `server/.turns.jsonl`; the app, the relay and the test harness all run on this Mac, so those timestamps share one clock and latency is a subtraction, never a measurement. Claude Code is **not yet** behind the relay; wiring `gemini.ts`'s `converse` tool into `server/` is the next step.
 
 ## Core files (@ loaded)
 
@@ -40,7 +40,7 @@ The request path end to end (phone → relay → Gemini), the test harness, and 
 
 ## Reference files (read on demand)
 
-- `server/README.md` — run instructions and the wire protocol table; same content as `server.ts`'s header.
+- `server/README.md` — run instructions, the wire protocol table, and what a turn leaves in `.turns.jsonl`; same content as `server.ts`'s header.
 - `src/client/routes/live/gemini.ts` — the orchestrator to port into `server/`: Gemini as STT + tool caller, `converse` tool BLOCKING while Claude streams, approval hold, stop words. Still pins `gemini-2.5-flash-native-audio-preview-12-2025`.
 - `src/client/routes/live/tts-session.ts` — second Gemini session used as a streaming TTS for Claude's text; ports with `gemini.ts`.
 - `src/client/routes/live/{tools,buffer,voice-approval}.ts` — tool declarations, sentence-boundary buffer, browser keyword listener (the last one has no server equivalent).
@@ -55,7 +55,7 @@ The request path end to end (phone → relay → Gemini), the test harness, and 
 
 Relay: `cd server && npm install && npm start` (:8765, `--watch`, no build step — Node ≥ 22.6 runs the `.ts`). Needs `GEMINI_API_KEY` from the root `.env` or the shell. Mac-half check in one second, no simulator: `node server/probe.ts "what is two plus two"`.
 
-App: the `ios-sim` MCP (`.mcp.json` → `app/sim.py`, venv at `app/.venv`) — `run()` builds, installs, launches and returns the screen; `play_audio(text=)` drives one voice turn and measures it. Humans use `app/dt`. Tap Connect before the first `play_audio`. Simulator default URL `ws://localhost:8765` works as-is; a physical iPhone needs the Mac's LAN address in the URL field.
+App: the `ios-sim` MCP is an HTTP server you start yourself — `cd app && ./dt mcp` (:8766, venv at `app/.venv`), which `.mcp.json` points at by URL and which reloads on every edit to `sim.py`. If the tools are missing, it isn't running. `run()` builds, installs, launches and returns the screen; `play_audio(text=)` drives one voice turn and reports it, connecting the app itself. Humans use `app/dt`. Simulator default URL `ws://localhost:8765` works as-is; a physical iPhone needs the Mac's LAN address in the URL field.
 
 Original web app: `npm install && npm run dev` at the root (:8000 + Vite). Untouched by, and unaware of, `server/`.
 
@@ -63,7 +63,7 @@ Original web app: `npm install && npm run dev` at the root (:8000 + Vite). Untou
 
 Both `GOOGLE_API_KEY` and `GEMINI_API_KEY` may be set in the shell; `@google/genai` prefers `GOOGLE_API_KEY` and says so in the relay's first log line. If Gemini behaves as if on a different project, that's why.
 
-Model drift is the first suspect after a pause: the relay's `gemini connected` log proves the model string and setup shape; a wrong one dies there, in Node, never in Swift. Run `probe.ts` before touching the app.
+Model drift is the first suspect after a pause: the relay's `gemini connected (Nms)` log proves the model string and setup shape; a wrong one dies there, in Node, never in Swift. Run `probe.ts` before touching the app.
 
 NEVER use AskQuestions to send structured questions. Raw text always.
 

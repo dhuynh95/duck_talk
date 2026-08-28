@@ -25,6 +25,8 @@ final class VoiceSession {
 
     private var task: URLSessionWebSocketTask?
     private var pipe: AudioPipe?
+    private var turnEnded = false
+    private var replied = false  // a reply byte has been marked for this turn
 
     func connect(url: URL) {
         guard status == .idle else { return }
@@ -72,6 +74,7 @@ final class VoiceSession {
             switch try await task.receive() {
             case .data(let pcm):
                 bytesDown += pcm.count
+                markFirstReply(task)
                 pipe?.play(pcm)
             case .string(let json):
                 handle(json)
@@ -79,6 +82,16 @@ final class VoiceSession {
                 break
             }
         }
+    }
+
+    /// Tell the relay the moment the first byte of a reply arrived. The relay already
+    /// knows when it sent that byte, and on the simulator both clocks are this Mac's,
+    /// so the two timestamps subtract into the real cost of the hop. Once per turn.
+    private func markFirstReply(_ task: URLSessionWebSocketTask) {
+        guard !replied else { return }
+        replied = true
+        let at = Int(Date().timeIntervalSince1970 * 1000)
+        task.send(.string(#"{"type":"mark","name":"reply_in","at":\#(at)}"#)) { _ in }
     }
 
     private struct Event: Decodable {
@@ -91,12 +104,17 @@ final class VoiceSession {
               let event = try? JSONDecoder().decode(Event.self, from: data) else { return }
         switch event.type {
         case "user", "model":
-            // Transcripts arrive as fragments; extend the current line while the speaker is the same.
-            if let last = lines.last, last.role == event.type {
+            // Transcripts arrive as fragments; extend the current line while the speaker
+            // is the same and the turn is still open.
+            if !turnEnded, let last = lines.last, last.role == event.type {
                 lines[lines.count - 1].text += event.text ?? ""
             } else {
+                turnEnded = false
                 lines.append(Line(role: event.type, text: event.text ?? ""))
             }
+        case "turn_end":
+            turnEnded = true
+            replied = false
         case "interrupted":
             pipe?.flush()
         case "error":
