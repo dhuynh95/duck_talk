@@ -31,8 +31,8 @@ screen, and `exec_code` has `ax_tree()` if you ever need the raw tree.
 reports what the turn actually did, plus a screenshot:
 
 ```
-{"latency_ms": 1243, "to_phone_ms": 1, "voice_ms": 4761,
- "heard": "What is the capital of France?", "said": "The capital of France is Paris..."}
+{"latency_ms": 8381, "claude_ms": 6146, "to_phone_ms": 1, "voice_ms": 5630, "cost_usd": 0.063,
+ "heard": "What time is it?", "said": "It's 8:45 AM, Friday August 28th."}
 ```
 
 Injection is a black box and the result is not. `say` plays into `BlackHole 2ch`, the
@@ -46,10 +46,12 @@ share one clock.** Every number is a subtraction between two timestamps. Nothing
 thresholded, calibrated, or detected — there is no signal processing left to be wrong.
 
 `latency_ms` is the question finishing → the relay sending the first reply byte:
-Gemini plus both network legs, which is what a user waits through. `to_phone_ms` is
-that byte reaching the phone — the cost of relaying through the Mac, and so the
-number Architecture B lives or dies on. It measures 1–20 ms. `voice_ms` is exact, not
-estimated: 24 kHz Int16 is 48 bytes per millisecond, and the relay counts the bytes.
+Gemini routing, Claude thinking, TTS, and both network legs — the whole wait, now
+dominated by Claude, not Gemini. `claude_ms` is Claude's slice of it (cold on turn
+one, then resumed and fast). `to_phone_ms` is that byte reaching the phone — the cost
+of relaying through the Mac, the number Architecture B lives or dies on; it measures
+~1 ms. `voice_ms` is exact: 24 kHz Int16 is 48 bytes per millisecond. `cost_usd` is
+what the Claude turn cost.
 
 Only the microphone is ours. The reply plays out of whatever output the Mac already
 uses, so you can hear turns happen and no second virtual device has to be working.

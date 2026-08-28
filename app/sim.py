@@ -387,11 +387,15 @@ async def play_audio(
     `server/.turns.jsonl`. Returns that turn plus a screenshot of the app.
 
     latency_ms  question finished playing → the relay sent the first reply byte.
-                Gemini's thinking plus both network legs, as a user waits through it.
-    to_phone_ms that byte → the phone says it arrived. What relaying through the Mac
-                costs, which is the question Architecture B has to answer.
+                Gemini routing, Claude thinking, TTS, and both network legs — the
+                whole wait a user sits through. Now dominated by Claude, not Gemini.
+    claude_ms   Gemini routed the instruction → Claude's first token. Claude's own
+                cost (cold start on turn one, then resumed and fast).
+    to_phone_ms first reply byte → the phone says it arrived. What relaying through
+                the Mac costs, which is the question Architecture B has to answer.
     voice_ms    reply audio the relay sent, exact (24 kHz Int16 is 48 bytes/ms).
-    heard/said  what Gemini made of the question, and what it answered.
+    cost_usd    what the Claude turn cost.
+    heard/said  what Gemini heard, and what Claude answered (read aloud).
 
     Every timestamp is taken on this Mac — by the harness, the relay, and the app in
     the simulator — so these are subtractions, not measurements. Nothing is detected
@@ -433,16 +437,22 @@ async def play_audio(
             await _shot(),
         ]
 
-    out_at, in_at = turn.get("reply_out_at"), turn.get("reply_in_at")
+    out_at, in_at = turn.get("voice_out_at"), turn.get("reply_in_at")
     if not isinstance(out_at, (int, float)):
         return [
-            f"FAILED: the turn carried no reply audio. heard={turn.get('heard')!r}",
+            f"FAILED: the turn carried no reply audio. heard={turn.get('heard')!r} "
+            + f"said={turn.get('said')!r} approval={turn.get('approval')!r}",
             await _shot(),
         ]
+    route_at, claude_at = turn.get("converse_at"), turn.get("claude_first_at")
     metrics = {
         "latency_ms": round(out_at - asked_at),
+        "claude_ms": round(claude_at - route_at)
+        if isinstance(route_at, (int, float)) and isinstance(claude_at, (int, float))
+        else None,
         "to_phone_ms": round(in_at - out_at) if isinstance(in_at, (int, float)) else None,
         "voice_ms": round(cast(float, turn.get("voice_ms", 0))),
+        "cost_usd": turn.get("cost_usd"),
         "heard": turn.get("heard"),
         "said": turn.get("said"),
     }

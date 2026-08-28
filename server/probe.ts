@@ -4,12 +4,12 @@
  *   node probe.ts "what is two plus two"     synthesize with `say`, then send it
  *   node probe.ts --file turn.wav            send an existing recording
  *
- * Prints {heard, said, first_audio_ms, reply_pcm} — `heard` is Gemini's transcript
- * of the audio it was given, `said` is its transcript of its own reply. Both come
- * from the live session, so there is one authority on what was said.
+ * Prints {heard, said, first_audio_ms, reply_pcm} — `heard` is what Gemini made of
+ * the audio, `said` is Claude's answer as it was read aloud. `first_audio_ms` now
+ * spans Gemini routing + Claude (cold on the first turn) + TTS, so it is seconds.
  *
  * This tests the Mac half only. It replaces the phone, so it cannot catch a bug in
- * AudioPipe — use the `speak()` tool for that.
+ * AudioPipe — use the `play_audio()` tool for that.
  */
 
 import { execFile } from 'node:child_process';
@@ -69,7 +69,7 @@ interface Turn {
   error?: string;
 }
 
-async function turn(pcm: Buffer, timeoutMs = 30_000): Promise<Turn> {
+async function turn(pcm: Buffer, timeoutMs = 90_000): Promise<Turn> {
   const ws = new WebSocket(URL_BASE);
   const reply: Buffer[] = [];
   const result: Turn = {
@@ -118,6 +118,9 @@ async function turn(pcm: Buffer, timeoutMs = 30_000): Promise<Turn> {
     await new Promise((r) => setTimeout(r, FRAME_MS));
   }
   sentAt = performance.now();
+  // Mark the moment the question's audio stopped, on the relay's own clock, so the
+  // turn record can isolate Gemini's STT+routing latency (speech_end → converse).
+  ws.send(JSON.stringify({ type: 'mark', name: 'speech_end', at: Date.now() }));
 
   // Keep streaming silence, exactly as the phone's open mic does. Gemini's voice
   // detection watches a continuous stream for speech turning to quiet; a client
