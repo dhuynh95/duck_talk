@@ -22,6 +22,7 @@ final class VoiceSession {
     private(set) var error: String?
     private(set) var bytesUp = 0
     private(set) var bytesDown = 0
+    private(set) var level: Float = 0  // 0…1 live loudness, for the waveform
 
     private var task: URLSessionWebSocketTask?
     private var pipe: AudioPipe?
@@ -45,6 +46,9 @@ final class VoiceSession {
             task.send(.data(data)) { _ in }
             Task { @MainActor in self?.bytesUp += data.count }
         }
+        pipe.onLevel = { [weak self] l in
+            Task { @MainActor in self?.level = l }
+        }
         self.pipe = pipe
 
         Task {
@@ -64,6 +68,7 @@ final class VoiceSession {
         task = nil
         pipe?.stop()
         pipe = nil
+        level = 0
         status = .idle
     }
 

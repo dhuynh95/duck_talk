@@ -32,6 +32,13 @@ struct ContentView: View {
                     .accessibilityIdentifier("error")
             }
 
+            // Proof the session is alive: it ripples on its own and swells with your
+            // voice or Claude's. Nothing else on screen moves between turns.
+            if live {
+                Waveform(level: CGFloat(session.level))
+                    .padding(.vertical, 8)
+            }
+
             Text("\(session.status.rawValue)   ↑ \(sent)   ↓ \(received)")
                 .font(.footnote.monospaced())
                 .foregroundStyle(.secondary)
