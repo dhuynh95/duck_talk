@@ -1,9 +1,8 @@
 import SwiftUI
 
 /// A live voice waveform: a row of bars that ripples continuously so the screen
-/// looks alive the moment a session is up, and swells with `level` (0…1) when the
-/// mic or the speaker is actually carrying sound. One amplitude, one colour — the
-/// least that reads as "I'm listening / I'm talking".
+/// looks alive the moment a session is up, and swells with `level` (0…1) as the
+/// user speaks. One amplitude, one colour — the least that reads as "I'm listening".
 struct Waveform: View {
     /// 0…1 loudness from `VoiceSession.level`.
     var level: CGFloat

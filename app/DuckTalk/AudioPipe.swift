@@ -8,8 +8,7 @@ import AVFoundation
 /// `flush()` drops whatever is queued for playback — that is barge-in.
 final class AudioPipe {
     var onChunk: ((Data) -> Void)?
-    /// A 0…1 loudness of whatever audio just moved — mic while you talk, speaker
-    /// while Claude talks. The one signal a live waveform needs to look alive.
+    /// A 0…1 loudness of the mic — how loud you're speaking. Drives the waveform.
     var onLevel: ((Float) -> Void)?
 
     private let engine = AVAudioEngine()
@@ -62,7 +61,8 @@ final class AudioPipe {
             let n = Int(out.frameLength)
             var sum: Float = 0
             for i in 0..<n { let s = Float(samples[0][i]) / 32768; sum += s * s }
-            self?.onLevel?(AudioPipe.norm(sum / Float(n)))
+            // RMS → 0…1, gained so ordinary speech fills most of the bar, not a sliver.
+            self?.onLevel?(min(1, sqrtf(sum / Float(n)) * 8))
             self?.onChunk?(Data(bytes: samples[0], count: n * 2))
         }
 
@@ -77,12 +77,10 @@ final class AudioPipe {
         guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: speakerFormat, frameCapacity: frames) else { return }
         buffer.frameLength = frames
         let out = buffer.floatChannelData![0]
-        var sum: Float = 0
         pcm.withUnsafeBytes { raw in
             let samples = raw.bindMemory(to: Int16.self)
-            for i in 0..<Int(frames) { let v = Float(samples[i]) / 32768; out[i] = v; sum += v * v }
+            for i in 0..<Int(frames) { out[i] = Float(samples[i]) / 32768 }
         }
-        onLevel?(AudioPipe.norm(sum / Float(Int(frames))))
         player.scheduleBuffer(buffer)
         if !player.isPlaying { player.play() }
     }
@@ -106,12 +104,6 @@ final class AudioPipe {
         let choices = session.availableInputs?.count ?? 0
         return "\(inputs.isEmpty ? "—" : inputs) → \(outputs.isEmpty ? "—" : outputs)"
             + "  \(Int(session.sampleRate)) Hz, \(choices) input\(choices == 1 ? "" : "s")"
-    }
-
-    /// RMS (mean-square in) → a 0…1 level with speech-range gain, so ordinary talking
-    /// fills most of the bar rather than a sliver.
-    private static func norm(_ meanSquare: Float) -> Float {
-        min(1, sqrtf(meanSquare) * 8)
     }
 
     func stop() {

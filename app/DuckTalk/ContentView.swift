@@ -32,8 +32,7 @@ struct ContentView: View {
                     .accessibilityIdentifier("error")
             }
 
-            // Proof the session is alive: it ripples on its own and swells with your
-            // voice or Claude's. Nothing else on screen moves between turns.
+            // Proof the mic is live: it ripples on its own and swells as you speak.
             if live {
                 Waveform(level: CGFloat(session.level))
                     .padding(.vertical, 8)
