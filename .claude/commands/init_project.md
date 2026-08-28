@@ -80,6 +80,8 @@ Both `GOOGLE_API_KEY` and `GEMINI_API_KEY` may be set in the shell; `@google/gen
 
 Model drift is the first suspect after a pause: the relay's `gemini connected (Nms)` log proves the model string and setup shape; a wrong one dies there, in Node, never in Swift. Run `probe.ts` before touching the app.
 
+Before starting either server, check whether it is already up and kill it if so — a previous session's process still owns the port and the new one dies on bind: `lsof -ti tcp:8765 -sTCP:LISTEN | xargs -r kill` (relay), same with `8766` (MCP).
+
 NEVER use AskQuestions to send structured questions. Raw text always.
 
 All @-referenced files are already loaded in context. Do NOT re-read them.
