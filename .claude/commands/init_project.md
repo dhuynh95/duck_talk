@@ -22,18 +22,24 @@ mic ─▶ AudioPipe ─▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts
                                                           └────────── claude ◀▶ Claude Code (the agent)
 ```
 
-Architecture B: the phone is a mic and a speaker, the Mac holds the sessions. Chosen over "phone talks to Gemini directly" because the orchestrator between Gemini and Claude Code belongs on the server, not in two clients. `session.ts` is that orchestrator: `ears` (Gemini hearing + `converse`/`stop` tools) routes to `claude` (Claude Code, streamed), and `voice` (a second Gemini session) reads Claude's answer back. Gemini's own voice is dropped in code, so only Claude is heard. Measured cost of the phone hop: **~1 ms**; the wait a user feels is now Claude (a few seconds), recorded per turn in `server/.turns.jsonl`. The app, the relay and the test harness all run on this Mac, so those timestamps share one clock and latency is a subtraction, never a measurement.
+Architecture B: the phone is a mic and a speaker, the Mac holds the sessions. Chosen over "phone talks to Gemini directly" because the orchestrator between Gemini and Claude Code belongs on the server, not in two clients. `session.ts` is that orchestrator: `ears` (Gemini hearing, routing through one `converse` tool) hands to `claude` (Claude Code, one warm streaming session), and `voice` (a second Gemini session) reads the answer back. Gemini's own voice is dropped in code, so only Claude is heard. Measured cost of the phone hop: **~1 ms**; the wait a user feels is Claude (a few seconds), recorded per turn in `server/.turns.jsonl`. The app, the relay and the test harness all run on this Mac, so those timestamps share one clock and latency is a subtraction, never a measurement.
 
 ## Core files (@ loaded)
 
-The request path end to end (phone → relay → Gemini + Claude), the test harness, and the build loop. Everything else is on-demand reference.
+The request path end to end (phone → relay → Gemini + Claude), the prompts that decide what each session does, the test harness, and the build loop. Everything else is on-demand reference, reachable from here by transitivity.
 
 - @server/server.ts
 - @server/session.ts
 - @server/ears.ts
 - @server/voice.ts
 - @server/claude.ts
+- @server/correct.ts
+- @server/corrections.ts
 - @server/probe.ts
+- @server/prompts/ears.md
+- @server/prompts/voice.md
+- @server/prompts/claude.md
+- @server/prompts/correct.md
 - @app/DuckTalk/VoiceSession.swift
 - @app/DuckTalk/AudioPipe.swift
 - @app/DuckTalk/ContentView.swift
@@ -45,15 +51,14 @@ The request path end to end (phone → relay → Gemini + Claude), the test harn
 
 ## Reference files (read on demand)
 
-- `server/README.md` — run instructions, the wire protocol table, and what a turn leaves in `.turns.jsonl`; same content as the code's headers.
-- `server/prompts/{ears,voice,claude}.md` — the system prompts for the three sessions: the silent dispatcher, the read-aloud TTS, and Claude's voice-conversation style.
-- `src/client/routes/live/gemini.ts` — the web-app original of `ears.ts` + `session.ts`: same `converse` routing, approval hold, stop words. Kept for reference (and the pieces not yet ported: correction subsystem, nudging).
-- `src/client/routes/live/{tts-session,buffer,tools,voice-approval}.ts` — the web-app originals of `voice.ts` and the keyword/tool logic now inside `ears.ts`.
-- `src/server/{routes,claude-client,cli}.ts` — the Express :8000 backend; `claude-client.ts` is the original of `server/claude.ts`. Still serves session listing and the SSE the parked chat client used.
+- `server/README.md` — run instructions and the wire protocol table; same content as `server.ts`'s header.
+- `src/client/routes/live/gemini.ts` — the web-app original of `ears.ts` + `session.ts`: same `converse` routing, approval hold, stop words. Kept for the one piece not ported, audio calibration.
+- `src/client/routes/live/{tts-session,buffer,tools,voice-approval}.ts` — the web-app originals of `voice.ts` and of the keyword matching now inside `ears.ts`.
+- `src/server/{routes,claude-client,cli}.ts` — the Express :8000 backend; `claude-client.ts` is the original of `server/claude.ts`, before it became one warm session.
 - `src/shared/types.ts` — content-block and session-entry types both old client and backend import.
 - `docs/gemini-live-api-swift-reference.md` — raw WebSocket protocol for Gemini Live; the SDK in `server/` hides it, useful when a field name drifts.
 - `docs/ios-codebase-guide.md` — describes the parked `ios/wired-mvp` chat client (under its old name, Reduck), not the current app.
-- `todos/` — web-app-era problems. Muting, stop words, voice approval and tool streaming are now built into `session.ts`; STT corrections and the localStorage/close-error ones are not (they were browser-specific or unfinished).
+- `todos/` — web-app-era problems, most now solved in `server/`: muting, stop words, voice approval, tool streaming, STT corrections. Worth reading for the dead ends they record, especially `correction_gemini_live.md` on the audio calibration loop.
 - `README.md` — the npm-published web product (`npx duck-talk`), which is `src/` only.
 
 ## Local dev
@@ -67,7 +72,7 @@ cd app    && ./dt mcp                   # ios-sim MCP, :8766, hot reload
 
 **Start the MCP before Claude Code**, or its tools are simply absent — `.mcp.json` points at a URL and launches nothing. Started it late? `/mcp` reconnects. `ConnectionRefused` there means the server is down, not that the config is wrong.
 
-Relay: no build step, Node ≥ 22.6 runs the `.ts`. Needs `GEMINI_API_KEY` and `ANTHROPIC_API_KEY` (or a logged-in `claude` on PATH) from the root `.env` or the shell. Mac-half check, no simulator and no audio devices: `node server/probe.ts "what is the latest commit"` — a few seconds now that Claude answers, not one.
+Relay: no build step, Node ≥ 22.6 runs the `.ts`. Needs `GEMINI_API_KEY` and `claude` on PATH; Claude bills the logged-in subscription unless a non-empty `ANTHROPIC_API_KEY` is exported, and the relay says which on its first lines. Mac-half check, no simulator and no audio devices: `node server/probe.ts "what is the latest commit"` — seconds, now that Claude answers.
 
 App: `run()` builds, installs, launches and returns the screen; `play_audio(text=)` drives one voice turn and reports it, connecting the app itself. Humans use `app/dt`. Simulator default URL `ws://localhost:8765` works as-is; a physical iPhone needs the Mac's LAN address in the URL field.
 
@@ -82,8 +87,6 @@ Original web app: `npm install && npm run dev` at the root (:8000 + Vite). Untou
 ## Instructions
 
 Both `GOOGLE_API_KEY` and `GEMINI_API_KEY` may be set in the shell; `@google/genai` prefers `GOOGLE_API_KEY` and says so in the relay's first log line. If Gemini behaves as if on a different project, that's why.
-
-Model drift is the first suspect after a pause: the relay's `gemini connected (Nms)` log proves the model string and setup shape; a wrong one dies there, in Node, never in Swift. Run `probe.ts` before touching the app.
 
 Before starting either server, check whether it is already up and kill it if so — a previous session's process still owns the port and the new one dies on bind: `lsof -ti tcp:8765 -sTCP:LISTEN | xargs -r kill` (relay), same with `8766` (MCP).
 
