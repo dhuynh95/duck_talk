@@ -1,7 +1,8 @@
 # The voice session dies, and nothing notices
 
-Status: diagnosed, not fixed
+Status: fixed — the voice is no longer a session
 Created: 2026-08-29
+Closed: 2026-08-29
 
 ## What was seen
 
@@ -82,3 +83,38 @@ the interrupt are short and whether `onDone` fires early.
    Gemini, and a silent permanent mute is the worst failure in the app.
 3. A turn that ends because the voice died should still be recorded, so this is
    visible in `.turns.jsonl` next time instead of leaving a hole.
+
+## How it was actually fixed
+
+Not by fencing the turns or reopening the session. Both requirements above
+assumed the reader had to be a Live session; it does not. `voice.ts` now makes
+one text-to-speech request per sentence (`gemini-3.1-flash-tts-preview`), so all
+three requirements are answered by there being nothing left to fail:
+
+1. Fencing is unnecessary — a request's audio arrives on the request, so there
+   are no acknowledgements to count and none to misattribute. `pendingSends`,
+   `stale` and `muted` are gone; one `AbortController` replaces them.
+2. Reopening is unnecessary — there is no session to lose. A failed sentence
+   costs that sentence, is logged, and the next one still reads.
+3. The turn ends where the audio ran out, which this side can see for itself, so
+   a turn cannot silently fail to end.
+
+Measured after the change, on the same relay and the same `.turns.jsonl`:
+
+| reply | voice_ms | ms/char |
+|---|---|---|
+| 524 chars (Live, before) | 21081 | 40.2 |
+| 540 chars (TTS, after) | 35800 | 66.4 |
+
+The decay with length is gone: 67.7 ms/char streamed as fast as Claude writes,
+68.3 paced, 70.4 on the turn after an interrupt. Transcribing the produced audio
+back with `gemini-3.5-transcribe-live` and diffing it against what Claude said
+found no missing spans — only the STT's own mishearings of proper nouns.
+
+Barge-in and review-mode readback were checked end to end: the interrupt stops
+the audio with nothing leaking into the next turn, and exactly one `turn_end`
+fires per turn in both.
+
+Cost of the swap: about 200 ms more to first audio (910 ms vs 711 ms), and no
+`prompts/voice.md` — a text-to-speech model has no conversation to be talked out
+of, so the prompt and the `[READ]:` marker went with it.

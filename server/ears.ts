@@ -103,9 +103,9 @@ export async function openEars(
 }
 
 /** Words that mean a decision rather than an instruction. */
-export const ACCEPT_WORDS = ['accept', 'yes'];
-export const REJECT_WORDS = ['reject', 'no'];
-export const STOP_WORDS = ['stop', 'cancel'];
+const ACCEPT_WORDS = ['accept', 'yes'];
+const REJECT_WORDS = ['reject', 'no'];
+const STOP_WORDS = ['stop', 'cancel'];
 export type Keyword = 'accept' | 'reject' | 'stop';
 
 /** The first control word in a transcript, matched per word. */

@@ -11,8 +11,10 @@
  * exactly three: the instruction, the answer to a held question, or — because a
  * partial has already cancelled the turn — the instruction that replaces it.
  *
- * ears, voice and claude are long-lived sessions for the connection, so an interrupt
- * cancels a turn and leaves all three warm; the next one is fast.
+ * ears and claude are long-lived sessions for the connection, so an interrupt cancels
+ * a turn and leaves both warm; the next one is fast. The voice is not a session at
+ * all — one request per sentence — so there is nothing there for an interrupt to
+ * damage and nothing to reopen when one fails.
  */
 
 import { appendFile } from 'node:fs/promises';
@@ -65,12 +67,11 @@ export class Session {
   private state: 'user' | 'held' | 'claude' = 'user';
   private turns = 0;
   private turn = this.blank();
-  private claudeSessionId: string | null = null;
   private muted = false;
   private claude!: Claude;
   private closed = false;
   private watchdog: ReturnType<typeof setTimeout> | null = null;
-  // ears + voice take ~1s to connect; audio that arrives meanwhile is held, not dropped.
+  // ears takes ~1s to connect; audio that arrives meanwhile is held, not dropped.
   private ready = false;
   private backlog: Buffer[] = [];
 
@@ -108,12 +109,14 @@ export class Session {
     this.corrections = load();
     if (this.corrections.length) this.log(`${this.corrections.length} corrections learned`);
 
-    this.voice = await openVoice(this.ai, this.voiceModel, {
+    // The voice needs no connection, so there is nothing to await and nothing that
+    // can fail here.
+    this.voice = openVoice(this.ai, this.voiceModel, {
       log: this.log,
       isMuted: () => this.muted,
       onPcm: (pcm) => {
-        // Only the reply counts as the first byte out; the review readback also plays
-        // through this session, and stamping it would time the turn from the wrong sound.
+        // Only the reply counts as the first byte out; the review readback is read the
+        // same way, and stamping it would time the turn from the wrong sound.
         if (this.state !== 'held') this.turn.voice_out_at ??= Date.now();
         this.turn.voice_ms += pcm.length / 48;
         this.phone.pcm(pcm);
@@ -140,8 +143,7 @@ export class Session {
       // finished. Only the running name is worth showing, so the phone needs no
       // history and no magic word to compare against.
       onBlock: (block) => this.phone.event(block.type === 'tool_use' ? { type: 'tool', text: block.name } : { type: 'tool' }),
-      onResult: ({ sessionId, costUsd, error }) => {
-        this.claudeSessionId = sessionId;
+      onResult: ({ costUsd, error }) => {
         this.turn.cost_usd = costUsd;
         if (error) { this.phone.event({ type: 'error', text: error }); this.cancel(`claude error: ${error}`); return; }
         this.voice.finish(); // onDone → endTurn once the audio drains
@@ -223,7 +225,7 @@ export class Session {
     void this.propose(said).catch((e) => this.log(`propose failed: ${e}`));
   }
 
-  /** Remember what was really meant, and say so to the Live session that misheard it. */
+  /** Remember what was really meant, so the next transcription starts from it. */
   private learn(meant: string): void {
     const c: Correction = {
       at: Date.now(),
@@ -233,8 +235,6 @@ export class Session {
     };
     add(c);
     this.corrections.push(c);
-    // The Live session's prompt is fixed once open, so tell it the way it accepts
-    // mid-session: a model turn it treats as its own prior speech.
     this.log(`learned: ${c.proposed} → ${meant}`);
   }
 

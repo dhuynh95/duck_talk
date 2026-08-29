@@ -5,8 +5,8 @@
  *   node probe.ts --file turn.wav            send an existing recording
  *
  * Prints {heard, said, first_audio_ms, reply_pcm} — `heard` is what Gemini made of
- * the audio, `said` is Claude's answer as it was read aloud. `first_audio_ms` now
- * spans Gemini routing + Claude (cold on the first turn) + TTS, so it is seconds.
+ * the audio, `said` is Claude's answer as it was read aloud. `first_audio_ms` spans
+ * transcription + Claude (cold on the first turn) + speech, so it is seconds.
  *
  * This tests the Mac half only. It replaces the phone, so it cannot catch a bug in
  * AudioPipe — use the `play_audio()` tool for that.
@@ -121,7 +121,7 @@ async function turn(pcm: Buffer, timeoutMs = 90_000): Promise<Turn> {
   }
   sentAt = performance.now();
   // Mark the moment the question's audio stopped, on the relay's own clock, so the
-  // turn record can isolate Gemini's STT+routing latency (speech_end → converse).
+  // turn record can isolate the transcription latency (speech_end → heard).
   ws.send(JSON.stringify({ type: 'mark', name: 'speech_end', at: Date.now() }));
 
   // Keep streaming silence, exactly as the phone's open mic does. Gemini's voice

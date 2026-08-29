@@ -7,6 +7,7 @@
  *             {"type":"mute","on":bool}               output mute
  *   ↓ binary  raw PCM Int16 LE, 24 kHz, mono          (Claude's voice)
  *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"interrupted"|"turn_end"|"error","text"?}
+ *             a `user` event also carries `partial`: true replaces the line, false ends it
  *
  * A session is in one `?mode=`: `direct` (default) runs each instruction at once,
  * `review` holds it for a yes/no/edit first, `echo` sends binary frames straight
@@ -30,10 +31,11 @@ import { billingMode } from './claude.ts';
 import { load, remove, save } from './corrections.ts';
 
 const PORT = Number(process.env['PORT'] ?? 8765);
-// Two Gemini sessions, two jobs, two models: one transcribes what you say, the
-// other reads Claude's answer back.
+// Two jobs, two models: one Live session transcribes what you say, and a
+// text-to-speech model reads Claude's answer back a sentence at a time. Only the
+// first is a session — see voice.ts for why the reader is better off without one.
 const STT_MODEL = process.env['STT_MODEL'] ?? 'gemini-3.5-transcribe-live';
-const VOICE_MODEL = process.env['VOICE_MODEL'] ?? 'gemini-3.1-flash-live-preview';
+const VOICE_MODEL = process.env['VOICE_MODEL'] ?? 'gemini-3.1-flash-tts-preview';
 const API_KEY = process.env['GEMINI_API_KEY'];
 if (!API_KEY) {
   console.error('GEMINI_API_KEY missing (set it in ../.env)');

@@ -1,12 +1,12 @@
 # server/ — voice relay: phone ⇄ Gemini ⇄ Claude Code
 
-The phone streams mic audio here; this server puts it through Gemini Live (as ears
-and voice) and Claude Code (as the agent), and streams Claude's spoken answer back.
-Four primitives, each runnable alone:
+The phone streams mic audio here; this server puts it through Gemini (Live to hear,
+text-to-speech to speak) and Claude Code (as the agent), and streams Claude's spoken
+answer back. Four primitives, each runnable alone:
 
 - `ears.ts`   — Gemini Live hearing: audio in → the utterance as it is spoken, then finished. Transcribes only; the finished transcript is the instruction.
 - `claude.ts` — Claude Code via the Agent SDK: one instruction → streamed text + tool calls + a session id to resume.
-- `voice.ts`  — a second Gemini Live session as a streaming TTS: Claude's text in → 24 kHz PCM out.
+- `voice.ts`  — Gemini text-to-speech, one request per sentence: Claude's text in → 24 kHz PCM out.
 - `session.ts`— the turn state machine wiring the three together, per phone connection.
 
 ```bash
@@ -34,15 +34,16 @@ No build step — Node ≥ 22.6 runs the `.ts`.
 | server → phone | text | `{"type":"user"\|"model"\|"tool"\|"approval"\|"interrupted"\|"turn_end"\|"error","text"?}` |
 
 `user` is the utterance as currently heard — it carries the whole thing each time and
-replaces what came before, because the guess is revised while you speak. `model` is
-Claude's answer as it is spoken and does join up, `tool` names
-a tool Claude used, `approval` (review mode) offers a held instruction for a yes/no,
-`turn_end` says the reply is finished — the only such signal.
+replaces what came before, because the guess is revised while you speak; its `partial`
+is false on the last one. `model` is Claude's answer as it is spoken and does join up,
+`tool` names a tool Claude used, `approval` (review mode) offers a held instruction
+for a yes/no, `turn_end` says the reply is finished — the only such signal.
 
 Connect to `ws://<mac>:8765`. One `?mode=`: `direct` (default) runs each instruction
 at once, `review` holds it for a spoken "yes"/"no" or an approve/reject frame first,
 `echo` sends your audio straight back without touching Gemini — the phone-side smoke
-test. `?correct=1` and `?readback=1` are orthogonal to all three.
+test. `?correct=1` and `?readback=1` are orthogonal to all three. `?data=1` opens a
+connection that only reads and edits the corrections, with no voice session at all.
 
 ## What a turn leaves behind
 
@@ -75,4 +76,4 @@ node probe.ts  "what is the latest commit"           # the whole path, no phone
 
 `probe.ts` is the Mac half end to end: it connects like a phone, speaks, and prints
 what Gemini heard and Claude said. The relay log proves the model strings and setup:
-a wrong one dies in Node at `ears connected` / `voice connected`, never in Swift.
+a wrong one dies in Node, never in Swift.
