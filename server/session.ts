@@ -127,6 +127,13 @@ export class Session {
     this.ears = await openEars(this.ai, this.earsModel, {
       log: this.log,
       onHeard: (text) => {
+        // Talking over the reply is how a person interrupts, and the transcript is
+        // the signal: on the native-audio ears it arrives word by word while they
+        // speak. Gemini's own `interrupted` cannot help — it cancels the generation
+        // of the session that fires it, and the session speaking is not this one.
+        // Only while audio is playing: the tail of the utterance that started the
+        // turn is still arriving during `working`, and that is not an interruption.
+        if (this.state === 'speaking') this.cancel('spoke over the reply');
         this.turn.heard += text;
         this.phone.event({ type: 'user', text });
       },
