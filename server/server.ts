@@ -12,7 +12,8 @@
  * `review` holds it for a yes/no/edit first, `echo` sends binary frames straight
  * back and never opens Gemini — the phone half by itself. Orthogonal to all three,
  * `?correct=1` has a fast text model fix the instruction first, from the pairs a
- * review-mode edit taught (`.corrections.jsonl`).
+ * review-mode edit taught (`.corrections.jsonl`). `?readback=1` also reads a held
+ * instruction aloud, for deciding without looking at the screen.
  *
  * Every finished turn is appended to `.turns.jsonl`. The phone, this relay and the
  * test harness all run on one Mac, so those timestamps share one clock and any
@@ -42,8 +43,9 @@ wss.on('connection', (ws, req) => {
   const asked = url.searchParams.get('mode');
   const mode: Mode = asked === 'review' || asked === 'echo' ? asked : 'direct';
   const autocorrect = url.searchParams.get('correct') === '1';
+  const readback = url.searchParams.get('readback') === '1';
   const log = (msg: string) => console.log(`[${id}] ${msg}`);
-  log(`open (${mode}${autocorrect ? ', autocorrect' : ''})`);
+  log(`open (${mode}${autocorrect ? ', autocorrect' : ''}${readback ? ', readback' : ''})`);
 
   if (mode === 'echo') {
     ws.on('message', (data) => ws.send(data));
@@ -55,7 +57,7 @@ wss.on('connection', (ws, req) => {
     pcm: (buf) => { if (ws.readyState === ws.OPEN) ws.send(buf); },
     event: (msg) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); },
   };
-  const session = new Session(phone, ai, MODEL, mode, autocorrect, log);
+  const session = new Session(phone, ai, MODEL, mode, { autocorrect, readback }, log);
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) session.send(data as Buffer);

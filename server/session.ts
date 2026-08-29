@@ -80,14 +80,23 @@ export class Session {
   private readonly model: string;
   private readonly mode: Mode;
   private readonly autocorrect: boolean;
+  private readonly readback: boolean;
   private readonly log: (m: string) => void;
 
-  constructor(phone: Phone, ai: GoogleGenAI, model: string, mode: Mode, autocorrect: boolean, log: (m: string) => void) {
+  constructor(
+    phone: Phone,
+    ai: GoogleGenAI,
+    model: string,
+    mode: Mode,
+    opts: { autocorrect: boolean; readback: boolean },
+    log: (m: string) => void,
+  ) {
     this.phone = phone;
     this.ai = ai;
     this.model = model;
     this.mode = mode;
-    this.autocorrect = autocorrect;
+    this.autocorrect = opts.autocorrect;
+    this.readback = opts.readback;
     this.log = log;
   }
 
@@ -239,8 +248,13 @@ export class Session {
     turn.instruction = instruction;
 
     if (this.mode === 'review') {
-      this.voice.say(instruction);
-      this.voice.finish();
+      // The phone shows the instruction, so speaking it too is repetition the user
+      // waits through. Off unless asked for — `?readback=1` is for deciding by ear,
+      // without looking at the screen.
+      if (this.readback) {
+        this.voice.say(instruction);
+        this.voice.finish();
+      }
       this.phone.event({ type: 'approval', text: instruction });
       return;
     }
