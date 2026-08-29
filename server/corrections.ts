@@ -6,12 +6,15 @@
  * `ears.ts` puts them in Gemini's system prompt, `correct.ts` uses them as few-shot
  * for a text model — so this file is the one store and the one wording.
  *
- * `heard` is the raw transcript, `proposed` is Gemini's tool-call wording, `meant`
- * is what the user typed. Keeping all three lets each consumer pick its own side:
- * the Live session learns heard → meant, a rewriter learns proposed → meant.
+ * `heard` is what the ears produced, `meant` is what the user actually said, and
+ * `proposed` is the wording that was on screen when they corrected it — the same as
+ * `heard` for one added by hand. `at` is when it was learned, and doubles as its id.
+ *
+ * The file is the only copy. The phone edits it over a socket rather than keeping a
+ * list of its own, so there is nothing to drift.
  */
 
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 
 export interface Correction {
   at: number;
@@ -46,6 +49,37 @@ export function load(): Correction[] {
 
 export function add(c: Correction): void {
   appendFileSync(FILE, `${JSON.stringify(c)}\n`);
+}
+
+/** Add one, or replace the one with the same `at`. */
+export function save(c: Correction): void {
+  const kept = all().filter((x) => x.at !== c.at);
+  kept.push(c);
+  rewrite(kept);
+}
+
+export function remove(at: number): void {
+  rewrite(all().filter((c) => c.at !== at));
+}
+
+/** Every line as written, in order — what `load()` reads before it dedupes. */
+function all(): Correction[] {
+  let text: string;
+  try {
+    text = readFileSync(FILE, 'utf8');
+  } catch {
+    return [];
+  }
+  const out: Correction[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try { out.push(JSON.parse(line) as Correction); } catch { /* skip a torn line */ }
+  }
+  return out;
+}
+
+function rewrite(corrections: Correction[]): void {
+  writeFileSync(FILE, corrections.map((c) => `${JSON.stringify(c)}\n`).join(''));
 }
 
 /** The block both consumers paste into a prompt. Empty string when nothing is known. */

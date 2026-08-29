@@ -15,6 +15,9 @@
  * review-mode edit taught (`.corrections.jsonl`). `?readback=1` also reads a held
  * instruction aloud, for deciding without looking at the screen.
  *
+ * `?data=1` is a connection that only reads and edits `.corrections.jsonl`, so the
+ * phone can show that screen without a voice session running.
+ *
  * Every finished turn is appended to `.turns.jsonl`. The phone, this relay and the
  * test harness all run on one Mac, so those timestamps share one clock and any
  * latency is a subtraction, never a measurement.
@@ -24,6 +27,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { GoogleGenAI } from '@google/genai';
 import { Session, type Mode, type Phone } from './session.ts';
 import { billingMode } from './claude.ts';
+import { load, remove, save } from './corrections.ts';
 
 const PORT = Number(process.env['PORT'] ?? 8765);
 // Two Gemini sessions, two jobs, two models: one transcribes what you say, the
@@ -52,6 +56,29 @@ wss.on('connection', (ws, req) => {
 
   if (mode === 'echo') {
     ws.on('message', (data) => ws.send(data));
+    ws.on('close', () => log('close'));
+    return;
+  }
+
+  // `?data=1` reads and edits the corrections and nothing else — no Gemini, no
+  // Claude — so the phone can open that screen whether or not a session is live.
+  // Every message is answered with the whole list, so the phone never has to guess
+  // what the file now says.
+  if (url.searchParams.get('data') === '1') {
+    ws.on('message', (raw, isBinary) => {
+      if (isBinary) return;
+      const f = parse(String(raw));
+      if (f?.['type'] === 'correction_save') {
+        const at = typeof f['at'] === 'number' ? f['at'] : Date.now();
+        const heard = String(f['heard'] ?? '').trim();
+        const meant = String(f['meant'] ?? '').trim();
+        if (heard && meant) { save({ at, heard, proposed: String(f['proposed'] ?? heard), meant }); log(`correction saved: ${heard} → ${meant}`); }
+      } else if (f?.['type'] === 'correction_delete' && typeof f['at'] === 'number') {
+        remove(f['at']);
+        log(`correction deleted`);
+      }
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'corrections', items: load() }));
+    });
     ws.on('close', () => log('close'));
     return;
   }

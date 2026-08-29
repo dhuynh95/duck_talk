@@ -7,6 +7,7 @@ struct ContentView: View {
     @AppStorage("autocorrect") private var autocorrect = false
     @State private var session = VoiceSession()
     @State private var draft = ""
+    @State private var showCorrections = false
 
     private var live: Bool { session.status != .idle }
 
@@ -19,13 +20,22 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            TextField("ws://host:8765", text: $serverURL)
-                .textFieldStyle(.roundedBorder)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .disabled(live)
-                .accessibilityLabel("Server URL")
+            HStack(spacing: 10) {
+                TextField("ws://host:8765", text: $serverURL)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .disabled(live)
+                    .accessibilityLabel("Server URL")
+
+                // Beside the field rather than in a navigation bar: this screen has no
+                // bar, and adding one would push everything below it down.
+                Button { showCorrections = true } label: {
+                    Image(systemName: "gearshape").font(.title3)
+                }
+                .accessibilityLabel("Corrections")
+            }
 
             Picker("Mode", selection: $mode) {
                 Text("Direct").tag("direct")
@@ -93,6 +103,7 @@ struct ContentView: View {
             .accessibilityLabel(live ? "Stop" : "Connect")
         }
         .padding()
+        .sheet(isPresented: $showCorrections) { CorrectionsView(serverURL: serverURL) }
     }
 
     /// What the server heard, before it runs. Edit the text and Accept — that edit is
