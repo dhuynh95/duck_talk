@@ -21,6 +21,7 @@ import { openClaude, type Claude } from './claude.ts';
 import { correct, CORRECT_MODEL } from './correct.ts';
 import { add, load, type Correction } from './corrections.ts';
 import { openEars, keyword, type Ears, type Keyword, type ConverseOutcome } from './ears.ts';
+import { openListen, type Listener } from './listen.ts';
 import { openVoice, type Voice } from './voice.ts';
 
 export type Mode = 'direct' | 'review' | 'echo';
@@ -48,7 +49,8 @@ interface Turn {
 /** The phone side of the socket — the only thing this file knows about the network. */
 export interface Phone {
   pcm(buf: Buffer): void;
-  event(msg: { type: string; text?: string }): void;
+  /** `partial` marks text that replaces the current line instead of extending it. */
+  event(msg: { type: string; text?: string; partial?: boolean }): void;
 }
 
 const TURNS = new URL('./.turns.jsonl', import.meta.url).pathname;
@@ -56,10 +58,13 @@ const TURNS = new URL('./.turns.jsonl', import.meta.url).pathname;
 // A turn that never returns to `listening` — Claude died, the voice stalled, or a
 // task ran away — would hang the session forever. One ceiling on the whole turn
 // catches every cause, since they all look the same: stuck off `listening`. 0 disables.
+const LISTEN_MODEL = process.env['LISTEN_MODEL'] ?? 'gemini-3.5-transcribe-live';
+
 const TURN_TIMEOUT_MS = Number(process.env['TURN_TIMEOUT_MS'] ?? 180_000);
 
 export class Session {
-  private ears!: Ears;
+  private ears?: Ears;        // routing ears
+  private listener?: Listener; // direct transcription — exactly one of the two is open
   private voice!: Voice;
   private state: 'listening' | 'holding' | 'working' | 'speaking' = 'listening';
   private turns = 0;
@@ -82,13 +87,14 @@ export class Session {
   private readonly mode: Mode;
   private readonly autocorrect: boolean;
   private readonly readback: boolean;
+  private readonly direct: boolean;
   private readonly log: (m: string) => void;
 
   constructor(
     phone: Phone,
     ai: GoogleGenAI,
     mode: Mode,
-    opts: { earsModel: string; voiceModel: string; autocorrect: boolean; readback: boolean },
+    opts: { earsModel: string; voiceModel: string; autocorrect: boolean; readback: boolean; direct: boolean },
     log: (m: string) => void,
   ) {
     this.phone = phone;
@@ -98,6 +104,7 @@ export class Session {
     this.voiceModel = opts.voiceModel;
     this.autocorrect = opts.autocorrect;
     this.readback = opts.readback;
+    this.direct = opts.direct;
     this.log = log;
   }
 
@@ -118,13 +125,14 @@ export class Session {
         this.turn.voice_ms += pcm.length / 48;
         this.phone.pcm(pcm);
       },
-      onFlush: (text) => this.ears.context(text),
+      onFlush: (text) => this.ears?.context(text),
       // Fires when the voice drains. In review mode the readback drains too — that is
       // not the turn ending, so only end when Claude's reply is what just played.
       onDone: () => { if (this.state === 'working' || this.state === 'speaking') this.endTurn(); },
     });
 
-    this.ears = await openEars(this.ai, this.earsModel, {
+    if (this.direct) await this.openDirect();
+    else this.ears = await openEars(this.ai, this.earsModel, {
       log: this.log,
       onHeard: (text) => {
         // Talking over the reply is how a person interrupts, and the transcript is
@@ -166,14 +174,42 @@ export class Session {
     });
 
     this.ready = true;
-    if (!this.closed) this.backlog.splice(0).forEach((pcm) => this.ears.send(pcm));
+    if (!this.closed) this.backlog.splice(0).forEach((pcm) => (this.listener ?? this.ears)?.send(pcm));
+  }
+
+  /**
+   * Direct transcription: no routing model, so the finalized transcript is the
+   * instruction and there is no function call to wait for. The two signals also
+   * settle who holds the floor — a partial arriving while Claude is talking is the
+   * user talking over it, and `onConverse` then treats the final as the next
+   * instruction exactly as it treats a routed one.
+   */
+  private async openDirect(): Promise<void> {
+    this.listener = await openListen(this.ai, LISTEN_MODEL, {
+      log: this.log,
+      onPartial: (text) => {
+        // Unambiguous here in a way the routing ears never were: a partial can only
+        // follow the previous final, so any partial while Claude speaks is a new
+        // utterance, never the tail of the one that started the turn.
+        if (this.state === 'working' || this.state === 'speaking') this.cancel('spoke over the reply');
+        this.turn.heard = text;
+        this.phone.event({ type: 'user', text, partial: true });
+      },
+      onFinal: (text) => {
+        this.turn.heard = text;
+        // Still the whole utterance, so still a replacement — `false` only says no
+        // further revision is coming.
+        this.phone.event({ type: 'user', text, partial: false });
+        this.onConverse(text); // the transcript is the instruction
+      },
+    }, this.corrections);
   }
 
   // --- Phone → session -------------------------------------------------------
 
   send(pcm: Buffer): void {
-    if (this.ready) this.ears.send(pcm);
-    else this.backlog.push(pcm);
+    if (!this.ready) { this.backlog.push(pcm); return; }
+    (this.listener ?? this.ears)?.send(pcm);
   }
 
   /** A text frame from the phone: approve/reject a held turn, mute, or mark a moment. */
@@ -191,6 +227,7 @@ export class Session {
     this.disarm();
     this.claude?.close();
     this.ears?.close();
+    this.listener?.close();
     this.voice?.close();
   }
 
@@ -238,7 +275,7 @@ export class Session {
     this.corrections.push(c);
     // The Live session's prompt is fixed once open, so tell it the way it accepts
     // mid-session: a model turn it treats as its own prior speech.
-    this.ears.context(`Understood — when I hear "${c.heard || c.proposed}", you mean "${meant}".`);
+    this.ears?.context(`Understood — when I hear "${c.heard || c.proposed}", you mean "${meant}".`);
     this.log(`learned: ${c.proposed} → ${meant}`);
   }
 

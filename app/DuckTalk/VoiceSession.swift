@@ -183,6 +183,9 @@ final class VoiceSession {
     private struct Event: Decodable {
         let type: String
         let text: String?
+        /// Live transcription revises its guess as you speak, so each update carries the
+        /// whole utterance and replaces the last one instead of extending it.
+        let partial: Bool?
     }
 
     private func handle(_ json: String) {
@@ -194,7 +197,10 @@ final class VoiceSession {
             // is the same and the turn is still open.
             let kind: Line.Kind = event.type == "user" ? .user : .model
             if !turnEnded, let last = lines.last, last.kind == kind {
-                lines[lines.count - 1].text += event.text ?? ""
+                // A `partial` field at all means the text is cumulative — replace.
+                // Without one it is a fragment from the routing ears — extend.
+                if event.partial != nil { lines[lines.count - 1].text = event.text ?? "" }
+                else { lines[lines.count - 1].text += event.text ?? "" }
             } else {
                 turnEnded = false
                 lines.append(Line(kind: kind, text: event.text ?? ""))

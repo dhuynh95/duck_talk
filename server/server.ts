@@ -49,8 +49,10 @@ wss.on('connection', (ws, req) => {
   const mode: Mode = asked === 'review' || asked === 'echo' ? asked : 'direct';
   const autocorrect = url.searchParams.get('correct') === '1';
   const readback = url.searchParams.get('readback') === '1';
+  // `?stt=direct` swaps the routing ears for plain transcription, to A/B the two.
+  const direct = url.searchParams.get('stt') === 'direct';
   const log = (msg: string) => console.log(`[${id}] ${msg}`);
-  log(`open (${mode}${autocorrect ? ', autocorrect' : ''}${readback ? ', readback' : ''})`);
+  log(`open (${mode}${direct ? ', direct-stt' : ''}${autocorrect ? ', autocorrect' : ''}${readback ? ', readback' : ''})`);
 
   if (mode === 'echo') {
     ws.on('message', (data) => ws.send(data));
@@ -62,7 +64,7 @@ wss.on('connection', (ws, req) => {
     pcm: (buf) => { if (ws.readyState === ws.OPEN) ws.send(buf); },
     event: (msg) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); },
   };
-  const session = new Session(phone, ai, mode, { earsModel: EARS_MODEL, voiceModel: VOICE_MODEL, autocorrect, readback }, log);
+  const session = new Session(phone, ai, mode, { earsModel: EARS_MODEL, voiceModel: VOICE_MODEL, autocorrect, readback, direct }, log);
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) session.send(data as Buffer);
