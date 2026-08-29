@@ -240,41 +240,55 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// The conversation, anchored at its end.
+    /// The conversation, drawn from its end.
     ///
-    /// `defaultScrollAnchor(.bottom)` opens the view at the last message and follows a
-    /// reply as it is spoken. Scrolling there by hand instead means aiming at a message
-    /// metres tall that a lazy stack has not built yet, and landing short of it.
+    /// The newest message sits at scroll offset zero, because the stack is upside down
+    /// and every row is turned back the right way. That is the invariant the rest of
+    /// this used to fight: the end of a transcript is where you always start, and at
+    /// offset zero there is nothing above to measure.
+    ///
+    /// Asking instead to scroll to the last row means measuring every row above it, and
+    /// a lazy stack does not know their heights until it builds them — so it guesses,
+    /// corrects, and moves the target it was aiming at. At 180 messages that lands
+    /// short; at 235 it thrashes and the view stops responding. Nothing here scrolls
+    /// anywhere, so there is nothing to land short of, and a reply arriving grows the
+    /// stack at offset zero, which is already where you are looking.
     private var transcript: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
-                ForEach(session.lines) { line in
-                    switch line.kind {
-                    case .tools:
-                        Text(line.toolLabel)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .id(line.id)
-                    case .user:
-                        Text(line.text)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                            .foregroundStyle(.secondary)
-                            .id(line.id)
-                    case .model:
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(line.text)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            actions(line)
-                        }
-                        .id(line.id)
-                    }
+                ForEach(session.lines.reversed()) { line in
+                    row(line).scaleEffect(x: 1, y: -1)
                 }
             }
             .padding(.vertical, 4)
         }
+        .scaleEffect(x: 1, y: -1)
+        // It would run backwards, being drawn in a flipped view.
+        .scrollIndicators(.hidden)
         .frame(maxHeight: .infinity)
-        .defaultScrollAnchor(.bottom)
+    }
+
+    /// One line of the transcript: what you said, what Claude said, or the tools it
+    /// used in between.
+    @ViewBuilder
+    private func row(_ line: VoiceSession.Line) -> some View {
+        switch line.kind {
+        case .tools:
+            Text(line.toolLabel)
+                .font(.caption.monospaced())
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .user:
+            Text(line.text)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .foregroundStyle(.secondary)
+        case .model:
+            VStack(alignment: .leading, spacing: 6) {
+                Text(line.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                actions(line)
+            }
+        }
     }
 
     /// The two things you can do to an answer, under every one of them. Small and
@@ -300,13 +314,6 @@ struct ContentView: View {
         .font(.footnote)
         .foregroundStyle(.tertiary)
         .buttonStyle(.plain)
-    }
-
-    /// What the bottom of the transcript looks like right now — speech grows a line's
-    /// text, a tool run grows its list, so both have to move the scroll.
-    private var tail: String {
-        guard let last = session.lines.last else { return "" }
-        return "\(last.id) \(last.text.count) \(last.tools.count) \(last.running)"
     }
 }
 
