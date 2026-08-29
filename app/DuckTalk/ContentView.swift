@@ -49,16 +49,6 @@ struct ContentView: View {
 
             transcript
 
-            // Claude works for tens of seconds before it says anything. This is the
-            // only sign it is doing something, and which thing.
-            if let activity = session.activity {
-                Text("\(activity)…")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityLabel("Running \(activity)")
-            }
-
             if session.pending != nil { approval }
 
             if let error = session.error {
@@ -148,19 +138,35 @@ struct ContentView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(session.lines) { line in
-                        Text(line.text)
-                            .frame(maxWidth: .infinity, alignment: line.role == "user" ? .trailing : .leading)
-                            .foregroundStyle(line.role == "user" ? .secondary : .primary)
-                            .id(line.id)
+                        switch line.kind {
+                        case .tools:
+                            Text(line.toolLabel)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.tertiary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .id(line.id)
+                        case .user, .model:
+                            Text(line.text)
+                                .frame(maxWidth: .infinity, alignment: line.kind == .user ? .trailing : .leading)
+                                .foregroundStyle(line.kind == .user ? .secondary : .primary)
+                                .id(line.id)
+                        }
                     }
                 }
                 .padding(.vertical, 4)
             }
             .frame(maxHeight: .infinity)
-            .onChange(of: session.lines.last?.text) {
+            .onChange(of: tail) {
                 if let id = session.lines.last?.id { proxy.scrollTo(id, anchor: .bottom) }
             }
         }
+    }
+
+    /// What the bottom of the transcript looks like right now — speech grows a line's
+    /// text, a tool run grows its list, so both have to move the scroll.
+    private var tail: String {
+        guard let last = session.lines.last else { return "" }
+        return "\(last.id) \(last.text.count) \(last.tools.count) \(last.running)"
     }
 
     // Seconds of audio, not kilobytes: this is the number that can be held against

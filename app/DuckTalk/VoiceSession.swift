@@ -11,10 +11,29 @@ import Observation
 final class VoiceSession {
     enum Status: String { case idle, connecting, live, reconnecting }
 
+    /// One entry in the transcript, appended in the order it happened: what you said,
+    /// what Claude said, and the run of tools it used in between.
     struct Line: Identifiable {
+        enum Kind { case user, model, tools }
+
         let id = UUID()
-        let role: String
-        var text: String
+        let kind: Kind
+        var text = ""
+        var tools: [String] = []  // kind == .tools
+        var running = false
+
+        /// The tool now running, or — once the run is over — what it did, collapsed.
+        /// Names are all the relay sends, so this summary is the whole story and
+        /// there is nothing to expand into.
+        var toolLabel: String {
+            if running, let current = tools.last { return "\(current)…" }
+            var counted: [(name: String, n: Int)] = []
+            for tool in tools {
+                if let i = counted.firstIndex(where: { $0.name == tool }) { counted[i].n += 1 }
+                else { counted.append((tool, 1)) }
+            }
+            return counted.map { $0.n > 1 ? "\($0.name) ×\($0.n)" : $0.name }.joined(separator: ", ")
+        }
     }
 
     private(set) var status: Status = .idle
@@ -25,9 +44,6 @@ final class VoiceSession {
     private(set) var level: Float = 0  // 0…1 live loudness, for the waveform
     /// The instruction the server is holding for a yes/no/edit, in review mode.
     private(set) var pending: String?
-    /// The tool Claude is running right now. Nothing else moves during the long
-    /// stretch between a question and its answer.
-    private(set) var activity: String?
 
     private var task: URLSessionWebSocketTask?
     private var pipe: AudioPipe?
@@ -109,7 +125,6 @@ final class VoiceSession {
         pipe = nil
         level = 0
         pending = nil
-        activity = nil
         status = .idle
     }
 
@@ -160,6 +175,11 @@ final class VoiceSession {
         task.send(.string(#"{"type":"mark","name":"reply_in","at":\#(at)}"#)) { _ in }
     }
 
+    /// The tools stop running when speech resumes or the turn ends.
+    private func endToolRun() {
+        if let i = lines.indices.last, lines[i].kind == .tools { lines[i].running = false }
+    }
+
     private struct Event: Decodable {
         let type: String
         let text: String?
@@ -172,26 +192,39 @@ final class VoiceSession {
         case "user", "model":
             // Transcripts arrive as fragments; extend the current line while the speaker
             // is the same and the turn is still open.
-            if !turnEnded, let last = lines.last, last.role == event.type {
+            let kind: Line.Kind = event.type == "user" ? .user : .model
+            if !turnEnded, let last = lines.last, last.kind == kind {
                 lines[lines.count - 1].text += event.text ?? ""
             } else {
                 turnEnded = false
-                lines.append(Line(role: event.type, text: event.text ?? ""))
+                lines.append(Line(kind: kind, text: event.text ?? ""))
             }
         case "approval":
             pending = event.text
         case "tool":
-            activity = event.text  // a name starts a tool, no name ends it
+            // A name starts a tool, no name ends it. Consecutive tools join one line,
+            // so a burst of them reads as a single step and speech breaks the group.
+            if let name = event.text {
+                turnEnded = false
+                if let i = lines.indices.last, lines[i].kind == .tools {
+                    lines[i].tools.append(name)
+                    lines[i].running = true
+                } else {
+                    lines.append(Line(kind: .tools, tools: [name], running: true))
+                }
+            } else {
+                endToolRun()
+            }
         case "turn_end":
             turnEnded = true
             replied = false
             pending = nil
-            activity = nil
+            endToolRun()
         case "interrupted":
             // Sent whenever a held instruction is decided — by voice or by the buttons —
             // so the card goes away however the decision was made.
             pending = nil
-            activity = nil
+            endToolRun()
             pipe?.flush()
         case "error":
             error = event.text
