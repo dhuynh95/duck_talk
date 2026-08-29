@@ -8,9 +8,11 @@
  *   ↓ binary  raw PCM Int16 LE, 24 kHz, mono          (Claude's voice)
  *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"interrupted"|"turn_end"|"error","text"?}
  *
- * `?echo=1` sends binary frames straight back and never opens a session — the phone
- * half by itself. `?mode=review` holds each instruction for a spoken yes/no before
- * Claude runs; the default is direct.
+ * A session is in one `?mode=`: `direct` (default) runs each instruction at once,
+ * `review` holds it for a yes/no/edit first, `echo` sends binary frames straight
+ * back and never opens Gemini — the phone half by itself. Orthogonal to all three,
+ * `?correct=1` has a fast text model fix the instruction first, from the pairs a
+ * review-mode edit taught (`.corrections.jsonl`).
  *
  * Every finished turn is appended to `.turns.jsonl`. The phone, this relay and the
  * test harness all run on one Mac, so those timestamps share one clock and any
@@ -37,12 +39,13 @@ let nextId = 1;
 wss.on('connection', (ws, req) => {
   const id = nextId++;
   const url = new URL(req.url ?? '/', 'ws://x');
-  const echo = url.searchParams.get('echo') === '1';
-  const mode: Mode = url.searchParams.get('mode') === 'review' ? 'review' : 'direct';
+  const asked = url.searchParams.get('mode');
+  const mode: Mode = asked === 'review' || asked === 'echo' ? asked : 'direct';
+  const autocorrect = url.searchParams.get('correct') === '1';
   const log = (msg: string) => console.log(`[${id}] ${msg}`);
-  log(`open${echo ? ' (echo)' : ` (${mode})`}`);
+  log(`open (${mode}${autocorrect ? ', autocorrect' : ''})`);
 
-  if (echo) {
+  if (mode === 'echo') {
     ws.on('message', (data) => ws.send(data));
     ws.on('close', () => log('close'));
     return;
@@ -52,7 +55,7 @@ wss.on('connection', (ws, req) => {
     pcm: (buf) => { if (ws.readyState === ws.OPEN) ws.send(buf); },
     event: (msg) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); },
   };
-  const session = new Session(phone, ai, MODEL, mode, log);
+  const session = new Session(phone, ai, MODEL, mode, autocorrect, log);
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) session.send(data as Buffer);

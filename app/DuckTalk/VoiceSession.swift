@@ -23,6 +23,8 @@ final class VoiceSession {
     private(set) var bytesUp = 0
     private(set) var bytesDown = 0
     private(set) var level: Float = 0  // 0…1 live loudness, for the waveform
+    /// The instruction the server is holding for a yes/no/edit, in review mode.
+    private(set) var pending: String?
 
     private var task: URLSessionWebSocketTask?
     private var pipe: AudioPipe?
@@ -69,7 +71,28 @@ final class VoiceSession {
         pipe?.stop()
         pipe = nil
         level = 0
+        pending = nil
         status = .idle
+    }
+
+    /// Run the held instruction, as edited on screen. An edit teaches the server
+    /// what was really said, so the same mishearing stops repeating.
+    func approve(_ text: String) {
+        guard pending != nil else { return }
+        pending = nil
+        send(["type": "approve", "text": text])
+    }
+
+    func reject() {
+        guard pending != nil else { return }
+        pending = nil
+        send(["type": "reject"])
+    }
+
+    private func send(_ msg: [String: String]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: msg),
+              let json = String(data: data, encoding: .utf8) else { return }
+        task?.send(.string(json)) { _ in }
     }
 
     // MARK: - Receive
@@ -117,10 +140,16 @@ final class VoiceSession {
                 turnEnded = false
                 lines.append(Line(role: event.type, text: event.text ?? ""))
             }
+        case "approval":
+            pending = event.text
         case "turn_end":
             turnEnded = true
             replied = false
+            pending = nil
         case "interrupted":
+            // Sent whenever a held instruction is decided — by voice or by the buttons —
+            // so the card goes away however the decision was made.
+            pending = nil
             pipe?.flush()
         case "error":
             error = event.text

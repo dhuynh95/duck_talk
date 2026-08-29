@@ -40,6 +40,10 @@ export async function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbac
   let finishing = false;
   let muted = false; // set by interrupt(): audio still in flight for the old turn is dropped
   let pendingSends = 0;
+  // Gemini still finishes what it was reading after an interrupt, so its turnComplete
+  // arrives late. Left to count, it would close whatever turn came next — in review
+  // mode the reply, whose readback was just cancelled. Swallow one per cancelled send.
+  let stale = 0;
 
   const sendText = (text: string) => {
     if (!session || closed) return;
@@ -64,6 +68,7 @@ export async function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbac
           if (p.inlineData?.data && !closed && !muted && !cb.isMuted?.()) cb.onPcm(Buffer.from(p.inlineData.data, 'base64'));
         }
         if (sc.turnComplete) {
+          if (stale > 0) { stale--; return; }
           pendingSends = Math.max(0, pendingSends - 1);
           if (finishing && pendingSends === 0) {
             finishing = false;
@@ -92,6 +97,7 @@ export async function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbac
       if (closed) return;
       muted = true;
       finishing = false;
+      stale += pendingSends; // their turnCompletes are still coming; they belong to nothing
       pendingSends = 0;
       buf.clear();
     },

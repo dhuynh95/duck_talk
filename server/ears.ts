@@ -1,9 +1,14 @@
 /**
  * A Gemini Live session used as ears: phone audio in, decisions out. It hears
- * (`onHeard`), routes (`onConverse` / `onStop` tool calls), and spots the yes / no
- * / stop words a user says while something is held or playing (`onKeyword`).
+ * (`onHeard`), routes an instruction to Claude (`onConverse`), and spots the yes /
+ * no / stop words a user says while something is held or playing (`onKeyword`).
  * It never speaks — its own audio is discarded here, and if it tries anyway the
  * transcript of what it would have said goes to `onSilentSpeech` as a warning.
+ *
+ * Cancelling is `onKeyword('stop')` and nothing else. Gemini's own `interrupted`
+ * signal means "my speech was cut off", and this session is muzzled, so it never
+ * fires when it matters; a `stop` tool needed a model round-trip and always lost
+ * to the transcript. Both were tried, measured, and removed.
  *
  * Lifted from src/client/routes/live/gemini.ts (routing) and voice-approval.ts
  * (keywords, which the browser matched with its own speech recognizer; here
@@ -15,6 +20,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, Modality, Type, type LiveServerMessage, type Session, type Tool } from '@google/genai';
+import { render, type Correction } from './corrections.ts';
 
 const PROMPT = readFileSync(new URL('./prompts/ears.md', import.meta.url), 'utf8');
 
@@ -28,11 +34,6 @@ const TOOLS: Tool[] = [{
         properties: { instruction: { type: Type.STRING, description: 'The instruction to send to Claude Code' } },
         required: ['instruction'],
       },
-    },
-    {
-      name: 'stop',
-      description: 'Stop the current Claude Code operation. Use when the user says stop, cancel, nevermind, or wants to abort current work.',
-      parameters: { type: Type.OBJECT, properties: {} },
     },
   ],
 }];
@@ -55,14 +56,17 @@ export interface Ears {
 export interface EarsCallbacks {
   onHeard(text: string): void;
   onConverse(instruction: string): ConverseOutcome;
-  onStop(): void;
   onKeyword(word: Keyword): void;
-  onInterrupted(): void;
   onSilentSpeech(text: string): void;
   log?(m: string): void;
 }
 
-export async function openEars(ai: GoogleGenAI, model: string, cb: EarsCallbacks): Promise<Ears> {
+export async function openEars(
+  ai: GoogleGenAI,
+  model: string,
+  cb: EarsCallbacks,
+  corrections: Correction[] = [],
+): Promise<Ears> {
   const log = cb.log ?? (() => {});
   let session: Session | null = null;
   let closed = false;
@@ -77,7 +81,10 @@ export async function openEars(ai: GoogleGenAI, model: string, cb: EarsCallbacks
     config: {
       responseModalities: [Modality.AUDIO],
       tools: TOOLS,
-      systemInstruction: PROMPT,
+      // What this user is usually misheard saying, so routing gets it right the
+      // first time. A Live session's prompt is fixed once open — an edit made
+      // during the session reaches it through `context()` instead.
+      systemInstruction: PROMPT + render(corrections),
       inputAudioTranscription: {},
       outputAudioTranscription: {},
     },
@@ -92,9 +99,6 @@ export async function openEars(ai: GoogleGenAI, model: string, cb: EarsCallbacks
             const instruction = String((fc.args as { instruction?: unknown } | undefined)?.instruction ?? '');
             const outcome = cb.onConverse(instruction);
             response = outcome === 'rejected' ? { status: 'rejected' } : { result: outcome };
-          } else if (fc.name === 'stop') {
-            cb.onStop();
-            response = { result: 'stopped' };
           } else {
             response = { error: `Unknown tool: ${fc.name}` };
           }
@@ -105,7 +109,6 @@ export async function openEars(ai: GoogleGenAI, model: string, cb: EarsCallbacks
 
         const sc = msg.serverContent;
         if (!sc) return;
-        if (sc.interrupted) cb.onInterrupted();
         if (sc.inputTranscription?.text) {
           const text = sc.inputTranscription.text;
           cb.onHeard(text);
@@ -164,9 +167,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     log: console.log,
     onHeard: (t) => console.log(`heard: ${t}`),
     onConverse: (i) => { console.log(`converse: ${i}`); return 'done'; },
-    onStop: () => console.log('stop'),
     onKeyword: (w) => console.log(`keyword: ${w}`),
-    onInterrupted: () => console.log('interrupted'),
     onSilentSpeech: (t) => console.log(`silent speech: ${t}`),
   });
   const FRAME = 640; // 20 ms
