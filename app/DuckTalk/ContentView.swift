@@ -103,9 +103,16 @@ struct ContentView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            // Big enough to read at a glance and to wrap, and never "corrected" —
+            // iOS autocorrect rewrites the very words you are here to fix.
             TextField("instruction", text: $draft, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...4)
+                .textFieldStyle(.plain)
+                .font(.title3)
+                .lineLimit(2...8)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .padding(10)
+                .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 8))
                 .accessibilityLabel("Instruction")
 
             HStack {

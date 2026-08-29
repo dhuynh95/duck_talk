@@ -26,7 +26,12 @@ import { Session, type Mode, type Phone } from './session.ts';
 import { billingMode } from './claude.ts';
 
 const PORT = Number(process.env['PORT'] ?? 8765);
-const MODEL = process.env['GEMINI_MODEL'] ?? 'gemini-3.1-flash-live-preview';
+// Two Gemini sessions, two jobs, two models. The ears model is pinned to a
+// native-audio one because only those stream the transcript word by word as you
+// speak; the newer flash-live models send it in one piece at the end, so the screen
+// stays blank until the turn is routed. The voice model only has to read text back.
+const EARS_MODEL = process.env['EARS_MODEL'] ?? 'gemini-2.5-flash-native-audio-preview-12-2025';
+const VOICE_MODEL = process.env['VOICE_MODEL'] ?? 'gemini-3.1-flash-live-preview';
 const API_KEY = process.env['GEMINI_API_KEY'];
 if (!API_KEY) {
   console.error('GEMINI_API_KEY missing (set it in ../.env)');
@@ -57,7 +62,7 @@ wss.on('connection', (ws, req) => {
     pcm: (buf) => { if (ws.readyState === ws.OPEN) ws.send(buf); },
     event: (msg) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); },
   };
-  const session = new Session(phone, ai, MODEL, mode, { autocorrect, readback }, log);
+  const session = new Session(phone, ai, mode, { earsModel: EARS_MODEL, voiceModel: VOICE_MODEL, autocorrect, readback }, log);
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) session.send(data as Buffer);
@@ -72,7 +77,7 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-console.log(`voice relay on ws://localhost:${PORT}  model=${MODEL}`);
+console.log(`voice relay on ws://localhost:${PORT}\n  ears=${EARS_MODEL}\n  voice=${VOICE_MODEL}`);
 console.log(`claude: ${billingMode()}`);
 
 function parse(text: string): Record<string, unknown> | null {

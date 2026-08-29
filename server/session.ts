@@ -77,7 +77,8 @@ export class Session {
 
   private readonly phone: Phone;
   private readonly ai: GoogleGenAI;
-  private readonly model: string;
+  private readonly earsModel: string;
+  private readonly voiceModel: string;
   private readonly mode: Mode;
   private readonly autocorrect: boolean;
   private readonly readback: boolean;
@@ -86,15 +87,15 @@ export class Session {
   constructor(
     phone: Phone,
     ai: GoogleGenAI,
-    model: string,
     mode: Mode,
-    opts: { autocorrect: boolean; readback: boolean },
+    opts: { earsModel: string; voiceModel: string; autocorrect: boolean; readback: boolean },
     log: (m: string) => void,
   ) {
     this.phone = phone;
     this.ai = ai;
-    this.model = model;
     this.mode = mode;
+    this.earsModel = opts.earsModel;
+    this.voiceModel = opts.voiceModel;
     this.autocorrect = opts.autocorrect;
     this.readback = opts.readback;
     this.log = log;
@@ -106,7 +107,7 @@ export class Session {
     this.corrections = load();
     if (this.corrections.length) this.log(`${this.corrections.length} corrections learned`);
 
-    this.voice = await openVoice(this.ai, this.model, {
+    this.voice = await openVoice(this.ai, this.voiceModel, {
       log: this.log,
       isMuted: () => this.muted,
       onPcm: (pcm) => {
@@ -123,7 +124,7 @@ export class Session {
       onDone: () => { if (this.state === 'working' || this.state === 'speaking') this.endTurn(); },
     });
 
-    this.ears = await openEars(this.ai, this.model, {
+    this.ears = await openEars(this.ai, this.earsModel, {
       log: this.log,
       onHeard: (text) => {
         this.turn.heard += text;
