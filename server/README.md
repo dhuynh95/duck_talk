@@ -17,7 +17,7 @@ npm start          # node --env-file-if-exists=../.env --watch server.ts  (port 
 
 Needs `GEMINI_API_KEY` and `ANTHROPIC_API_KEY` (or a logged-in `claude`) in the root
 `.env` or the shell, and `claude` on PATH. `PROJECT_CWD` is the repo Claude works in
-(default: the repo root). `STT_MODEL`, `VOICE_MODEL`, `VOICE_NAME`, `CLAUDE_MODEL`, `CLAUDE_PERMISSION_MODE`
+(default: the repo root). `STT_MODEL`, `VOICE_MODEL`, `CLAUDE_MODEL`, `CLAUDE_PERMISSION_MODE`
 (default `plan`) override the rest. `TURN_TIMEOUT_MS` (default 180000, `0` disables)
 caps one turn — a turn that never finishes is interrupted and the session recovers.
 No build step — Node ≥ 22.6 runs the `.ts`.
@@ -29,7 +29,6 @@ No build step — Node ≥ 22.6 runs the `.ts`.
 | phone → server | binary | raw PCM Int16 LE, 16 kHz, mono |
 | phone → server | text | `{"type":"mark","name","at"}` — a moment only the phone can see |
 | phone → server | text | `{"type":"approve","text"?}` / `{"type":"reject"}` — decide a held instruction |
-| phone → server | text | `{"type":"mute","on":bool}` — drop reply audio without stopping the turn |
 | server → phone | binary | raw PCM Int16 LE, 24 kHz, mono (Claude's voice) |
 | server → phone | text | `{"type":"user"\|"model"\|"tool"\|"approval"\|"interrupted"\|"turn_end"\|"error","text"?}` |
 
@@ -40,10 +39,25 @@ is false on the last one. `model` is Claude's answer as it is spoken and does jo
 for a yes/no, `turn_end` says the reply is finished — the only such signal.
 
 Connect to `ws://<mac>:8765`. One `?mode=`: `direct` (default) runs each instruction
-at once, `review` holds it for a spoken "yes"/"no" or an approve/reject frame first,
-`echo` sends your audio straight back without touching Gemini — the phone-side smoke
-test. `?correct=1` and `?readback=1` are orthogonal to all three. `?data=1` opens a
-connection that only reads and edits the corrections, with no voice session at all.
+at once, `review` holds it for a spoken "yes"/"no" or an approve/reject frame first.
+`?correct=1` and `?readback=1` are orthogonal to both.
+
+`?data=1` opens a connection that edits what the relay owns and nothing else — no
+voice session, no Gemini, no Claude:
+
+| phone → server | answer |
+|---|---|
+| `{"type":"corrections"}` (or anything) | the current state |
+| `{"type":"correction_save","at","heard","meant"}` | … |
+| `{"type":"correction_delete","at"}` | … |
+| `{"type":"voice_save","style"}` | … |
+
+Every message is answered with **both** `{"type":"corrections","items":[…]}` and
+`{"type":"voice","style":"…"}`, so the phone reads the files rather than tracking
+them. `style` is put in front of every sentence the voice reads: the text-to-speech
+API has no rate parameter, so the wording is the speed control — "Read this at a
+brisk, quick pace" is about 1.5x faster than leaving it empty. It is stored in
+`.voice.txt` and read per sentence, so a change is audible on the next one.
 
 ## What a turn leaves behind
 

@@ -4,20 +4,20 @@
  *   ↑ binary  raw PCM Int16 LE, 16 kHz, mono          (mic)
  *   ↑ text    {"type":"mark","name","at"}             a moment only the phone can see
  *             {"type":"approve","text"?} / {"type":"reject"}   decide a held instruction
- *             {"type":"mute","on":bool}               output mute
  *   ↓ binary  raw PCM Int16 LE, 24 kHz, mono          (Claude's voice)
  *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"interrupted"|"turn_end"|"error","text"?}
  *             a `user` event also carries `partial`: true replaces the line, false ends it
  *
  * A session is in one `?mode=`: `direct` (default) runs each instruction at once,
- * `review` holds it for a yes/no/edit first, `echo` sends binary frames straight
- * back and never opens Gemini — the phone half by itself. Orthogonal to all three,
- * `?correct=1` has a fast text model fix the instruction first, from the pairs a
- * review-mode edit taught (`.corrections.jsonl`). `?readback=1` also reads a held
- * instruction aloud, for deciding without looking at the screen.
+ * `review` holds it for a yes/no/edit first. Orthogonal to both, `?correct=1` has a
+ * fast text model fix the instruction first, from the pairs a review-mode edit
+ * taught (`.corrections.jsonl`). `?readback=1` also reads a held instruction aloud,
+ * for deciding without looking at the screen.
  *
- * `?data=1` is a connection that only reads and edits `.corrections.jsonl`, so the
- * phone can show that screen without a voice session running.
+ * `?data=1` is a connection that edits what the relay owns and nothing else — the
+ * corrections and how the voice should read — so the phone can show those screens
+ * with no voice session running. Every message is answered with all of it, so the
+ * phone never has to ask twice or guess what the files now say.
  *
  * Every finished turn is appended to `.turns.jsonl`. The phone, this relay and the
  * test harness all run on one Mac, so those timestamps share one clock and any
@@ -29,6 +29,7 @@ import { GoogleGenAI } from '@google/genai';
 import { Session, type Mode, type Phone } from './session.ts';
 import { billingMode } from './claude.ts';
 import { load, remove, save } from './corrections.ts';
+import { readStyle, writeStyle } from './voice.ts';
 
 const PORT = Number(process.env['PORT'] ?? 8765);
 // Two jobs, two models: one Live session transcribes what you say, and a
@@ -50,22 +51,15 @@ wss.on('connection', (ws, req) => {
   const id = nextId++;
   const url = new URL(req.url ?? '/', 'ws://x');
   const asked = url.searchParams.get('mode');
-  const mode: Mode = asked === 'review' || asked === 'echo' ? asked : 'direct';
+  const mode: Mode = asked === 'review' ? 'review' : 'direct';
   const autocorrect = url.searchParams.get('correct') === '1';
   const readback = url.searchParams.get('readback') === '1';
   const log = (msg: string) => console.log(`[${id}] ${msg}`);
   log(`open (${mode}${autocorrect ? ', autocorrect' : ''}${readback ? ', readback' : ''})`);
 
-  if (mode === 'echo') {
-    ws.on('message', (data) => ws.send(data));
-    ws.on('close', () => log('close'));
-    return;
-  }
-
-  // `?data=1` reads and edits the corrections and nothing else — no Gemini, no
-  // Claude — so the phone can open that screen whether or not a session is live.
-  // Every message is answered with the whole list, so the phone never has to guess
-  // what the file now says.
+  // `?data=1` edits what the relay owns and nothing else — no Gemini, no Claude — so
+  // the phone can open those screens whether or not a session is live. Every message
+  // is answered with all of it, so the phone never has to guess what the files say.
   if (url.searchParams.get('data') === '1') {
     ws.on('message', (raw, isBinary) => {
       if (isBinary) return;
@@ -78,8 +72,13 @@ wss.on('connection', (ws, req) => {
       } else if (f?.['type'] === 'correction_delete' && typeof f['at'] === 'number') {
         remove(f['at']);
         log(`correction deleted`);
+      } else if (f?.['type'] === 'voice_save') {
+        writeStyle(String(f['style'] ?? ''));
+        log(`voice style: ${readStyle() || '(none)'}`);
       }
-      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'corrections', items: load() }));
+      if (ws.readyState !== ws.OPEN) return;
+      ws.send(JSON.stringify({ type: 'corrections', items: load() }));
+      ws.send(JSON.stringify({ type: 'voice', style: readStyle() }));
     });
     ws.on('close', () => log('close'));
     return;

@@ -104,10 +104,10 @@ def _walk(nodes: list[AXNode]) -> Iterator[AXNode]:
 
 
 async def _status() -> str:
-    """What the app's status line says: idle, connecting or live. The screen is the
-    only place the session state is published, so read it there."""
+    """Whether the session is idle, connecting or live. The listen button publishes
+    it as its accessibility value — the screen is the only place it is stated."""
     for node in _walk(await _ax_tree()):
-        if node.get("AXLabel") == "Status":
+        if node.get("AXUniqueId") == "listen":
             return (node.get("AXValue") or "").split(",")[0].strip()
     return "unknown"
 
@@ -347,7 +347,7 @@ async def _find(identifier: str) -> str | None:
 async def _try_connect() -> bool:
     if await _status() == "live":
         return True
-    _ = await _axe("tap", "--label", "Connect", "--wait-timeout", "3")
+    _ = await _axe("tap", "--id", "listen", "--wait-timeout", "3")
     for _attempt in range(10):
         await asyncio.sleep(0.5)
         if await _status() == "live":

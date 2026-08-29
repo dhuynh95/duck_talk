@@ -1,65 +1,40 @@
 import SwiftUI
 
-/// One screen: where's the server, echo or Gemini, connect, watch the transcript.
+/// The home screen, which is two regions and one control:
+///
+///   messages   what already happened, frozen
+///   input      what is being said now, and will be sent — automatically, or once
+///              you accept it in review
+///   controls   the listen button, centred, with the mode beside it when idle and a
+///              way out of the session when live
+///
+/// Everything that configures the thing rather than being the conversation lives
+/// behind the gear.
 struct ContentView: View {
     @AppStorage("serverURL") private var serverURL = "ws://localhost:8765"
-    @AppStorage("mode") private var mode = "direct"
+    @AppStorage("mode") private var mode = Mode.direct
     @AppStorage("autocorrect") private var autocorrect = false
     @State private var session = VoiceSession()
     @State private var draft = ""
-    @State private var showCorrections = false
+    @State private var sheet: Sheet?
 
     private var live: Bool { session.status != .idle }
 
     /// One exclusive mode, plus auto-correct as an independent axis.
     private var url: URL? {
-        var query = "?mode=\(mode)"
-        if autocorrect && mode != "echo" { query += "&correct=1" }
-        return URL(string: serverURL + query)
+        URL(string: serverURL + "?mode=\(mode.rawValue)" + (autocorrect ? "&correct=1" : ""))
     }
 
     var body: some View {
-        VStack(spacing: 16) {
-            HStack(spacing: 10) {
-                TextField("ws://host:8765", text: $serverURL)
-                    .textFieldStyle(.roundedBorder)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .disabled(live)
-                    .accessibilityLabel("Server URL")
-
-                // Beside the field rather than in a navigation bar: this screen has no
-                // bar, and adding one would push everything below it down.
-                Button { showCorrections = true } label: {
-                    Image(systemName: "gearshape").font(.title3)
-                }
-                .accessibilityLabel("Corrections")
-            }
-
-            Picker("Mode", selection: $mode) {
-                Text("Direct").tag("direct")
-                Text("Review").tag("review")
-                Text("Echo").tag("echo")
-            }
-            .pickerStyle(.segmented)
-            .disabled(live)
-            .accessibilityLabel("Mode")
-
-            if mode == "echo" {
-                Text("Skips Gemini — you hear yourself.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Toggle("Auto-correct what I said", isOn: $autocorrect)
-                    .font(.callout)
-                    .disabled(live)
-                    .accessibilityLabel("Auto-correct")
+        VStack(spacing: 12) {
+            HStack {
+                Spacer()
+                settings
             }
 
             transcript
 
-            if session.pending != nil { approval }
+            if session.pending != nil || session.utterance != nil { input }
 
             if let error = session.error {
                 Text(error)
@@ -69,80 +44,121 @@ struct ContentView: View {
                     .accessibilityIdentifier("error")
             }
 
-            // Proof the mic is live: it ripples on its own and swells as you speak.
-            if live {
-                Waveform(level: CGFloat(session.level))
-                    .padding(.vertical, 8)
-            }
-
-            Text("\(session.status.rawValue)   ↑ \(sent)   ↓ \(received)")
-                .font(.footnote.monospaced())
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Status")
-                .accessibilityValue("\(session.status.rawValue), sent \(sent), received \(received)")
-
-            // The audio route, on screen: a wrong one is why the model can hear
-            // itself, or hear nothing. Cheaper to read than to diagnose.
-            Text(AudioPipe.route)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.tertiary)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .accessibilityIdentifier("route")
-
-            Button(live ? "Stop" : "Connect") {
-                if live {
-                    session.stop()
-                } else if let url {
-                    session.connect(url: url)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .tint(live ? .red : .accentColor)
-            .accessibilityLabel(live ? "Stop" : "Connect")
+            controls
         }
         .padding()
-        .sheet(isPresented: $showCorrections) { CorrectionsView(serverURL: serverURL) }
+        .sheet(item: $sheet) { which in
+            switch which {
+            case .voice: VoiceView(serverURL: serverURL)
+            case .corrections: CorrectionsView(serverURL: serverURL)
+            case .server: ServerView(serverURL: $serverURL)
+            case .mode: ModeSheet(mode: $mode)
+            }
+        }
     }
 
-    /// What the server heard, before it runs. Edit the text and Accept — that edit is
-    /// how the relay learns what you actually said.
-    private var approval: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Run this?")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+    private enum Sheet: String, Identifiable { case voice, corrections, server, mode; var id: String { rawValue } }
 
-            // Big enough to read at a glance and to wrap, and never "corrected" —
-            // iOS autocorrect rewrites the very words you are here to fix.
-            TextField("instruction", text: $draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.title3)
-                .lineLimit(2...8)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .padding(10)
-                .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 8))
-                .accessibilityLabel("Instruction")
+    // MARK: - Controls
 
+    /// The listen button is centred on the screen, not in the row: the mode and the
+    /// cancel sit beside it without moving it, so it never shifts under your thumb.
+    private var controls: some View {
+        ZStack {
+            ListenButton(live: live, level: CGFloat(session.level), status: session.status.rawValue) {
+                if let url { session.connect(url: url) }
+            }
             HStack {
-                Button("Reject") { session.reject() }
-                    .buttonStyle(.bordered)
-                    .accessibilityLabel("Reject")
                 Spacer()
-                Button("Accept") { session.approve(draft) }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityLabel("Accept")
+                if live {
+                    Button { session.stop() } label: {
+                        Image(systemName: "xmark").font(.title3.weight(.medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Stop")
+                } else {
+                    // Bound at connect time on the relay, so it is settled before a
+                    // session starts and cannot change under one. It opens a sheet
+                    // rather than toggling silently: which mode you are in decides
+                    // whether what you say runs immediately, so it is worth naming.
+                    Button { sheet = .mode } label: {
+                        VStack(spacing: 3) {
+                            Image(systemName: mode.icon).font(.title3)
+                            Text(mode.title).font(.caption2)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("mode")
+                    .accessibilityLabel("Mode")
+                    .accessibilityValue(mode.title)
+                }
+            }
+        }
+        .padding(.bottom, 4)
+    }
+
+    private var settings: some View {
+        Menu {
+            Button { sheet = .voice } label: { Label("Voice", systemImage: "speaker.wave.2") }
+            Button { sheet = .corrections } label: { Label("Corrections", systemImage: "text.badge.checkmark") }
+            Toggle(isOn: $autocorrect) { Label("Auto-correct", systemImage: "wand.and.stars") }
+                .disabled(live)
+            Divider()
+            Button { sheet = .server } label: { Label("Server", systemImage: "network") }
+        } label: {
+            Image(systemName: "gearshape").font(.title3)
+        }
+        .accessibilityIdentifier("settings")
+        .accessibilityLabel("Settings")
+    }
+
+    // MARK: - Input
+
+    /// One box in two states. Listening, it shows what is being transcribed and is
+    /// not yours to touch. Held for review, the same text becomes editable and grows
+    /// two buttons — and that edit is how the relay learns what you actually said.
+    private var input: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if session.pending != nil {
+                // Never "corrected" — iOS autocorrect rewrites the very words you are
+                // here to fix.
+                TextField("instruction", text: $draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.title3)
+                    .lineLimit(1...6)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .accessibilityIdentifier("instruction")
+                    .accessibilityLabel("Instruction")
+
+                HStack {
+                    Button("Reject") { session.reject() }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Reject")
+                    Spacer()
+                    Button("Accept") { session.approve(draft) }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityLabel("Accept")
+                }
+            } else {
+                Text(session.utterance ?? "")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("utterance")
+                    .accessibilityLabel("Hearing")
             }
         }
         .padding(12)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
         .onChange(of: session.pending) {
             if let text = session.pending { draft = text }
         }
-        .onAppear { draft = session.pending ?? "" }
     }
+
+    // MARK: - Messages
 
     private var transcript: some View {
         ScrollViewReader { proxy in
@@ -179,15 +195,136 @@ struct ContentView: View {
         guard let last = session.lines.last else { return "" }
         return "\(last.id) \(last.text.count) \(last.tools.count) \(last.running)"
     }
+}
 
-    // Seconds of audio, not kilobytes: this is the number that can be held against
-    // what the relay logged and what a microphone heard. Mic is 16 kHz Int16
-    // (32 bytes/ms), the reply 24 kHz Int16 (48 bytes/ms).
-    private var sent: String { secs(session.bytesUp, perSecond: 32_000) }
-    private var received: String { secs(session.bytesDown, perSecond: 48_000) }
+/// What happens to what you say. Two answers, and the difference matters enough to
+/// spell out — one of them runs your words the moment you stop talking.
+enum Mode: String, CaseIterable, Identifiable {
+    case direct, review
 
-    private func secs(_ bytes: Int, perSecond: Int) -> String {
-        String(format: "%.1fs", Double(bytes) / Double(perSecond))
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .direct: return "Direct"
+        case .review: return "Review"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .direct: return "Runs as soon as you stop talking"
+        case .review: return "Shows you the text first, so you can fix it"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .direct: return "bolt.circle"
+        case .review: return "checkmark.circle"
+        }
+    }
+}
+
+/// Picked from a sheet rather than flipped by a button, so the mode you are about to
+/// speak into is named on screen before you commit to it.
+struct ModeSheet: View {
+    @Binding var mode: Mode
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                Text("Select mode").font(.headline)
+                HStack {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 34, height: 34)
+                            .background(Color(.secondarySystemBackground), in: Circle())
+                    }
+                    .accessibilityLabel("Close")
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 20)
+
+            VStack(spacing: 0) {
+                ForEach(Array(Mode.allCases.enumerated()), id: \.element.id) { index, option in
+                    Button {
+                        mode = option
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: option.icon)
+                                .font(.title3)
+                                .foregroundStyle(.tint)
+                                .frame(width: 26)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(option.title).font(.body).foregroundStyle(.primary)
+                                Text(option.detail).font(.subheadline).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if mode == option {
+                                Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(.tint)
+                            }
+                        }
+                        .padding(.vertical, 14)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("mode-\(option.rawValue)")
+                    .accessibilityLabel(option.title)
+                    .accessibilityAddTraits(mode == option ? [.isSelected] : [])
+
+                    if index < Mode.allCases.count - 1 { Divider().padding(.leading, 40) }
+                }
+            }
+            .padding(.horizontal, 16)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+            .padding(.horizontal, 16)
+
+            Spacer(minLength: 0)
+        }
+        .presentationDetents([.height(260)])
+        .presentationDragIndicator(.hidden)
+    }
+}
+
+/// Where the relay is, and what the audio route turned out to be — the two facts
+/// that explain a session which will not start or cannot hear. Off the home screen
+/// because you set them once.
+struct ServerView: View {
+    @Binding var serverURL: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("ws://host:8765", text: $serverURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .accessibilityLabel("Server URL")
+                } footer: {
+                    Text("The simulator reaches the Mac on localhost; a physical iPhone needs its address on the network.")
+                }
+                Section("Audio route") {
+                    Text(AudioPipe.route)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("route")
+                }
+            }
+            .navigationTitle("Server")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
     }
 }
 

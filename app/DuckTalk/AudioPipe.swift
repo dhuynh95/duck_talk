@@ -1,4 +1,5 @@
 import AVFoundation
+import Accelerate
 
 /// Mic in, speaker out. Knows nothing about the network.
 ///
@@ -59,10 +60,7 @@ final class AudioPipe {
 
             guard out.frameLength > 0, let samples = out.int16ChannelData else { return }
             let n = Int(out.frameLength)
-            var sum: Float = 0
-            for i in 0..<n { let s = Float(samples[0][i]) / 32768; sum += s * s }
-            // RMS → 0…1, gained so ordinary speech fills most of the bar, not a sliver.
-            self?.onLevel?(min(1, sqrtf(sum / Float(n)) * 8))
+            self?.onLevel?(self?.meter(samples[0], n) ?? 0)
             self?.onChunk?(Data(bytes: samples[0], count: n * 2))
         }
 
@@ -89,6 +87,41 @@ final class AudioPipe {
         player.stop()
         player.play()
     }
+
+    /// How loud this buffer was, 0…1 — the same thing the input level meter in macOS
+    /// System Settings shows.
+    ///
+    /// Peak sample, in decibels below full scale. Full scale itself is not the top of
+    /// the meter: a phone held at talking distance peaks around -30 dB, so the range
+    /// stops at -10 and leaves the last of the headroom to shouting.
+    /// It has to be decibels because loudness is logarithmic: on a raw amplitude
+    /// scale nearly everything audible sits in the top of the range and the meter
+    /// pins at full for anything above a whisper.
+    ///
+    /// Then the level jumps up at once and falls back slowly, the way every level
+    /// meter has since analogue ones. Without that it flickers out in the gaps
+    /// between syllables, which reads as broken rather than quiet.
+    private func meter(_ samples: UnsafeMutablePointer<Int16>, _ n: Int) -> Float {
+        let count = min(n, scratch.count)
+        // The C entry points take the length explicitly; the Swift `vDSP.convertElements`
+        // overlay instead requires the destination to be exactly as long as the source,
+        // and traps on the audio thread when it is not.
+        vDSP_vflt16(samples, 1, &scratch, 1, vDSP_Length(count))
+        var peak: Float = 0
+        vDSP_maxmgv(scratch, 1, &peak, vDSP_Length(count))
+        let db = 20 * log10f(max(peak / 32768, 1e-7))
+        let target = min(1, max(0, (db - Self.floorDb) / (Self.ceilingDb - Self.floorDb)))
+        level += (target - level) * (target > level ? Self.attack : Self.release)
+        return level
+    }
+
+    private static let floorDb: Float = -60   // below this the meter is empty
+    private static let ceilingDb: Float = -16 // at this it is full
+    private static let attack: Float = 0.6    // a new peak shows up now
+    private static let release: Float = 0.12  // ~350 ms to fall, so syllables join up
+
+    private var level: Float = 0
+    private var scratch = [Float](repeating: 0, count: 8192)
 
     /// What the system actually gave us: route in → out, and the rate we capture at.
     /// iOS chooses the route; an app can only ask (`setPreferredInput`) among the

@@ -9,16 +9,19 @@ struct Correction: Identifiable, Codable, Hashable {
     var id: Double { at }
 }
 
-/// The corrections screen's own connection to the relay.
+/// The settings screens' connection to the relay.
 ///
-/// The relay owns the file; this holds no list of its own between visits, and every
-/// message it sends is answered with the whole list, so what is on screen is what is
-/// on disk. `?data=1` opens Gemini and Claude, so this costs nothing to open while a
-/// voice session is or is not running.
+/// The relay owns the files; this holds nothing of its own between visits, and every
+/// message it sends is answered with all of the state, so what is on screen is what
+/// is on disk. `?data=1` opens neither Gemini nor Claude, so this costs nothing to
+/// open whether or not a voice session is running.
 @Observable
 @MainActor
-final class CorrectionsStore {
+final class RelayStore {
     private(set) var items: [Correction] = []
+    /// How the voice should read the reply. The relay puts it in front of every
+    /// sentence; the wording is the only speed control the API has.
+    private(set) var style = ""
     private(set) var error: String?
 
     private var task: URLSessionWebSocketTask?
@@ -30,7 +33,7 @@ final class CorrectionsStore {
         task.resume()
         Task {
             do {
-                send(["type": "corrections"])
+                send(["type": "read"])  // anything is answered with all of it
                 while self.task != nil {
                     if case .string(let json) = try await task.receive() { receive(json) }
                 }
@@ -53,12 +56,21 @@ final class CorrectionsStore {
         send(["type": "correction_delete", "at": correction.at])
     }
 
-    private struct List: Decodable { let items: [Correction] }
+    func saveStyle(_ style: String) {
+        send(["type": "voice_save", "style": style])
+    }
+
+    private struct State: Decodable {
+        let type: String
+        let items: [Correction]?
+        let style: String?
+    }
 
     private func receive(_ json: String) {
         guard let data = json.data(using: .utf8),
-              let list = try? JSONDecoder().decode(List.self, from: data) else { return }
-        items = list.items.reversed()  // newest first: the one you just fixed is on top
+              let state = try? JSONDecoder().decode(State.self, from: data) else { return }
+        if let items = state.items { self.items = items.reversed() }  // newest first
+        if let style = state.style { self.style = style }
         error = nil
     }
 
@@ -73,7 +85,7 @@ final class CorrectionsStore {
 /// edit, `+` to add one by hand.
 struct CorrectionsView: View {
     let serverURL: String
-    @State private var store = CorrectionsStore()
+    @State private var store = RelayStore()
     @State private var path: [Correction] = []
     @Environment(\.dismiss) private var dismiss
 
@@ -199,6 +211,53 @@ private struct CorrectionDetail: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") { onSave(correction) }.disabled(!complete)
             }
+        }
+    }
+}
+
+/// How the voice should read Claude's answer. One free-text line, because that is
+/// genuinely the whole control: the text-to-speech API has no rate parameter, and
+/// the relay simply says this before each sentence.
+struct VoiceView: View {
+    let serverURL: String
+    @State private var store = RelayStore()
+    @State private var draft = ""
+    @State private var loaded = false
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Read this at a brisk, quick pace, no pauses:", text: $draft, axis: .vertical)
+                        .lineLimit(2...6)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("style")
+                        .accessibilityLabel("Speaking style")
+                } header: {
+                    Text("Said before every sentence")
+                } footer: {
+                    Text("There is no speed setting — the wording is it. Asking for a brisk pace is about 1.5× faster than leaving this empty; asking for a slow one is about 1.5× slower. Takes effect on the next sentence.")
+                }
+                if let error = store.error {
+                    Text(error).font(.footnote).foregroundStyle(.red)
+                }
+            }
+            .navigationTitle("Voice")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { store.saveStyle(draft); dismiss() }
+                }
+            }
+        }
+        .onAppear { store.connect(to: serverURL) }
+        .onDisappear { store.disconnect() }
+        // The relay answers with what is on disk; take it once, so typing is not
+        // overwritten by the echo of your own save.
+        .onChange(of: store.style) {
+            if !loaded { draft = store.style; loaded = true }
         }
     }
 }

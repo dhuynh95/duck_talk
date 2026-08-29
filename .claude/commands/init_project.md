@@ -50,7 +50,7 @@ The request path end to end (phone → relay → Gemini + Claude), the prompts t
 ## Reference files (read on demand)
 
 - `server/README.md` — run instructions and the wire protocol table; same content as `server.ts`'s header.
-- `src/client/routes/live/gemini.ts` — the web-app original of `ears.ts` + `session.ts`: same `converse` routing, approval hold, stop words. Kept for the one piece not ported, audio calibration.
+- `src/client/routes/live/gemini.ts` — the web-app ancestor of `ears.ts` + `session.ts`, back when a Live model routed through a `converse` tool instead of transcribing. Kept for the one piece not ported, audio calibration.
 - `src/client/routes/live/{tts-session,buffer,tools,voice-approval}.ts` — the web-app originals of `voice.ts` and of the keyword matching now inside `ears.ts`.
 - `src/server/{routes,claude-client,cli}.ts` — the Express :8000 backend; `claude-client.ts` is the original of `server/claude.ts`, before it became one warm session.
 - `src/shared/types.ts` — content-block and session-entry types both old client and backend import.
@@ -72,7 +72,7 @@ cd app    && ./dt mcp                   # ios-sim MCP, :8766, hot reload
 
 Relay: no build step, Node ≥ 22.6 runs the `.ts`. Needs `GEMINI_API_KEY` and `claude` on PATH; Claude bills the logged-in subscription unless a non-empty `ANTHROPIC_API_KEY` is exported, and the relay says which on its first lines. Mac-half check, no simulator and no audio devices: `node server/probe.ts "what is the latest commit"` — seconds, now that Claude answers.
 
-App: `run()` builds, installs, launches and returns the screen; `play_audio(text=)` drives one voice turn and reports it, connecting the app itself. Humans use `app/dt`. Simulator default URL `ws://localhost:8765` works as-is; a physical iPhone needs the Mac's LAN address in the URL field.
+App: `run()` builds, installs, launches and returns the screen; `play_audio(text=)` drives one voice turn and reports it, connecting the app itself. Humans use `app/dt`. Simulator default URL `ws://localhost:8765` works as-is; a physical iPhone needs the Mac's LAN address, under the gear → Server.
 
 Fresh clone also needs `brew install xcodegen cameroncooke/axe/axe`, `brew install --cask blackhole-2ch`, and the venv `.mcp.json` and `dt mcp` both point at:
 

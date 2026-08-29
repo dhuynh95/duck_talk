@@ -22,17 +22,44 @@
  * at sentence boundaries on the way in, so audio starts long before Claude has
  * finished a paragraph.
  *
+ * How the reply is read — brisk, slow, whatever — is a line of text the phone saves
+ * and this file puts in front of each sentence. The API has no rate parameter; the
+ * wording is the whole knob, and it is worth about 1.5x in either direction.
+ *
  * Lifted from src/client/routes/live/tts-session.ts + buffer.ts.
  *
  *   node voice.ts "Hello there. How are you?"     write reply.pcm, print timings
  */
 
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, type GenerateContentResponse } from '@google/genai';
 
 /** Which voice Claude speaks in. Any of the prebuilt names. */
-const VOICE_NAME = process.env['VOICE_NAME'] ?? 'Sulafat';
+const VOICE_NAME = 'Sulafat';
+
+// How the reply should be read, said to the model ahead of the text itself. This is
+// the only speed control there is — the API has no rate parameter, and the wording
+// does the work: measured over the same paragraph, plain reads at 66 ms/character,
+// "Read this at a brisk, quick pace" at 44, "Read this slowly" at 95.
+//
+// The file is the truth and is read per sentence rather than cached, so editing it
+// from the phone changes how the *next* sentence sounds, mid-conversation, with
+// nothing to invalidate and no reconnect.
+const STYLE_FILE = new URL('./.voice.txt', import.meta.url).pathname;
+
+/** How to read the reply, as last saved. Empty when nothing has been set. */
+export function readStyle(): string {
+  try {
+    return readFileSync(STYLE_FILE, 'utf8').trim();
+  } catch {
+    return ''; // no style yet is the normal first-run state
+  }
+}
+
+export function writeStyle(style: string): void {
+  writeFileSync(STYLE_FILE, style.trim());
+}
 
 // The endpoint returns 400 and 500 on requests that succeed unchanged moments
 // later, so a sentence gets more than one chance. A dropped one is a hole in the
@@ -53,7 +80,6 @@ export interface Voice {
 export interface VoiceCallbacks {
   onPcm(pcm: Buffer): void;
   onDone?(): void;
-  isMuted?(): boolean;
   log?(m: string): void;
 }
 
@@ -85,13 +111,15 @@ export function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbacks): V
     while (queue.length && !closed) {
       const { signal } = aborter; // captured with the sentence, so a later interrupt aborts this one
       const text = queue.shift()!;
+      const style = readStyle();
+      const contents = style ? `${style}\n\n${text}` : text;
       let spoke = false; // audio for this sentence has reached the phone
       let failure: unknown = null;
       for (let attempt = 1; attempt <= ATTEMPTS && !signal.aborted && !closed; attempt++) {
         try {
           const stream = await ai.models.generateContentStream({
             model,
-            contents: text,
+            contents,
             config: {
               responseModalities: ['AUDIO'],
               speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: VOICE_NAME } } },
@@ -101,7 +129,7 @@ export function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbacks): V
           for await (const chunk of stream) {
             if (signal.aborted || closed) break;
             const pcm = audio(chunk);
-            if (pcm && !cb.isMuted?.()) {
+            if (pcm) {
               spoke = true;
               firstAt ||= Date.now();
               playedMs += pcm.length / 48;

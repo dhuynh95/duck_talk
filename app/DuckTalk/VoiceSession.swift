@@ -6,6 +6,12 @@ import Observation
 ///   mic → pipe.onChunk → socket (binary)
 ///   socket (binary) → pipe.play
 ///   socket (text JSON) → transcript lines / flush on "interrupted" / error
+///
+/// What you are saying and what has been said are kept apart, because the screen
+/// keeps them apart: `utterance` is the sentence being transcribed right now, and
+/// `lines` is everything already sent. An utterance joins `lines` at the moment the
+/// relay shows it was actually sent — Claude answering it, or you accepting it in
+/// review — so nothing appears in the history that never ran.
 @Observable
 @MainActor
 final class VoiceSession {
@@ -39,16 +45,15 @@ final class VoiceSession {
     private(set) var status: Status = .idle
     private(set) var lines: [Line] = []
     private(set) var error: String?
-    private(set) var bytesUp = 0
-    private(set) var bytesDown = 0
     private(set) var level: Float = 0  // 0…1 live loudness, for the waveform
+    /// What is being said right now, revised as it is spoken. Not yet history.
+    private(set) var utterance: String?
     /// The instruction the server is holding for a yes/no/edit, in review mode.
     private(set) var pending: String?
 
     private var task: URLSessionWebSocketTask?
     private var pipe: AudioPipe?
     private var turnEnded = false
-    private var utteranceOpen = false  // the current user line is still being revised
     private var replied = false  // a reply byte has been marked for this turn
     private var wantLive = false // the user's intent, which outlives any one socket
     private var url: URL?
@@ -59,8 +64,7 @@ final class VoiceSession {
         wantLive = true
         error = nil
         lines = []
-        bytesUp = 0
-        bytesDown = 0
+        utterance = nil
         Task { await run() }
     }
 
@@ -88,10 +92,7 @@ final class VoiceSession {
             let task = URLSession.shared.webSocketTask(with: url)
             self.task = task
             // The mic feeds whichever socket is current, so a reconnect rebinds it.
-            pipe.onChunk = { [weak self] data in
-                task.send(.data(data)) { _ in }
-                Task { @MainActor in self?.bytesUp += data.count }
-            }
+            pipe.onChunk = { data in task.send(.data(data)) { _ in } }
             task.resume()
             status = .live
             error = nil
@@ -106,6 +107,7 @@ final class VoiceSession {
             task.cancel(with: .normalClosure, reason: nil)
             self.task = nil
             pending = nil
+            utterance = nil
             replied = false
             guard wantLive else { break }
 
@@ -126,6 +128,7 @@ final class VoiceSession {
         pipe = nil
         level = 0
         pending = nil
+        utterance = nil
         status = .idle
     }
 
@@ -134,13 +137,23 @@ final class VoiceSession {
     func approve(_ text: String) {
         guard pending != nil else { return }
         pending = nil
+        commit(text) // accepting is what sends it, so that is when it becomes history
         send(["type": "approve", "text": text])
     }
 
     func reject() {
         guard pending != nil else { return }
         pending = nil
+        utterance = nil
         send(["type": "reject"])
+    }
+
+    /// Move what was said into the history, now that it has actually been sent.
+    private func commit(_ text: String? = nil) {
+        let said = (text ?? utterance)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        utterance = nil
+        guard let said, !said.isEmpty else { return }
+        lines.append(Line(kind: .user, text: said))
     }
 
     private func send(_ msg: [String: String]) {
@@ -155,7 +168,6 @@ final class VoiceSession {
         while wantLive {
             switch try await task.receive() {
             case .data(let pcm):
-                bytesDown += pcm.count
                 markFirstReply(task)
                 pipe?.play(pcm)
             case .string(let json):
@@ -193,31 +205,30 @@ final class VoiceSession {
         guard let data = json.data(using: .utf8),
               let event = try? JSONDecoder().decode(Event.self, from: data) else { return }
         switch event.type {
-        case "user", "model":
-            let kind: Line.Kind = event.type == "user" ? .user : .model
-            if kind == .user {
-                // Speech arrives as the whole utterance so far, revised as it is spoken,
-                // so it replaces. A finished one closes the line and the next utterance
-                // starts its own.
-                if utteranceOpen, let last = lines.last, last.kind == .user {
-                    lines[lines.count - 1].text = event.text ?? ""
-                } else {
-                    lines.append(Line(kind: .user, text: event.text ?? ""))
-                }
-                utteranceOpen = event.partial == true
-                turnEnded = false
-            } else if !turnEnded, let last = lines.last, last.kind == .model {
+        case "user":
+            // Speech arrives as the whole utterance so far, revised as it is spoken, so
+            // it replaces rather than extends. It stays out of the history until it is
+            // sent — barging in over a reply replaces it, and a rejected one is dropped.
+            utterance = event.text
+            turnEnded = false
+        case "model":
+            commit() // Claude answering is proof the instruction went
+            if !turnEnded, let last = lines.last, last.kind == .model {
                 lines[lines.count - 1].text += event.text ?? ""   // Claude's reply joins up
             } else {
                 turnEnded = false
                 lines.append(Line(kind: .model, text: event.text ?? ""))
             }
         case "approval":
+            // Held for a decision: the box stops being a transcript and becomes a
+            // question, so only one of the two is ever on screen.
+            utterance = nil
             pending = event.text
         case "tool":
             // A name starts a tool, no name ends it. Consecutive tools join one line,
             // so a burst of them reads as a single step and speech breaks the group.
             if let name = event.text {
+                commit() // a tool running is proof too, and it can come before any text
                 turnEnded = false
                 if let i = lines.indices.last, lines[i].kind == .tools {
                     lines[i].tools.append(name)
@@ -229,13 +240,17 @@ final class VoiceSession {
                 endToolRun()
             }
         case "turn_end":
+            // A turn that answered nothing still ran, so whatever is still uncommitted
+            // belongs in the history now.
+            commit()
             turnEnded = true
             replied = false
             pending = nil
             endToolRun()
         case "interrupted":
             // Sent whenever a held instruction is decided — by voice or by the buttons —
-            // so the card goes away however the decision was made.
+            // so the card goes away however the decision was made. What is being said
+            // now is the barge-in, and it stays in the box.
             pending = nil
             endToolRun()
             pipe?.flush()

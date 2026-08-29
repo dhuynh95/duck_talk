@@ -21,8 +21,8 @@ screen, so look at it.
 
 Coordinates are **points** (402×874 on an iPhone 17 Pro), and screenshots are scaled
 to exactly that, so a coordinate read off an image goes straight back into `tap`. No
-conversion anywhere. `tap(label="Connect")` matches accessibility labels and needs no
-coordinates at all — prefer it. There is no `ui` tool: the screenshot shows what's on
+conversion anywhere. `tap(label="Accept")` matches accessibility labels and needs no
+coordinates at all — prefer it; the listen button is `tap(id="listen")`. There is no `ui` tool: the screenshot shows what's on
 screen, and `exec_code` has `ax_tree()` if you ever need the raw tree.
 
 ## Voice turns

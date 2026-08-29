@@ -25,7 +25,7 @@ import { add, load, type Correction } from './corrections.ts';
 import { openEars, keyword, type Ears, type Keyword } from './ears.ts';
 import { openVoice, type Voice } from './voice.ts';
 
-export type Mode = 'direct' | 'review' | 'echo';
+export type Mode = 'direct' | 'review';
 
 /** What one turn did and when, on this Mac's clock. Appended to .turns.jsonl. */
 interface Turn {
@@ -67,7 +67,6 @@ export class Session {
   private state: 'user' | 'held' | 'claude' = 'user';
   private turns = 0;
   private turn = this.blank();
-  private muted = false;
   private claude!: Claude;
   private closed = false;
   private watchdog: ReturnType<typeof setTimeout> | null = null;
@@ -113,7 +112,6 @@ export class Session {
     // can fail here.
     this.voice = openVoice(this.ai, this.voiceModel, {
       log: this.log,
-      isMuted: () => this.muted,
       onPcm: (pcm) => {
         // Only the reply counts as the first byte out; the review readback is read the
         // same way, and stamping it would time the turn from the wrong sound.
@@ -187,11 +185,10 @@ export class Session {
     else this.backlog.push(pcm);
   }
 
-  /** A text frame from the phone: approve/reject a held turn, mute, or mark a moment. */
-  frame(msg: { type?: string; name?: string; at?: number; text?: string; on?: boolean }): void {
+  /** A text frame from the phone: approve or reject a held turn, or mark a moment. */
+  frame(msg: { type?: string; name?: string; at?: number; text?: string }): void {
     if (msg.type === 'mark' && msg.name === 'reply_in' && typeof msg.at === 'number') this.turn.reply_in_at = msg.at;
     else if (msg.type === 'mark' && msg.name === 'speech_end' && typeof msg.at === 'number') this.turn.speech_end_at = msg.at;
-    else if (msg.type === 'mute') this.muted = !!msg.on;
     else if (msg.type === 'approve') this.decide(true, msg.text);
     else if (msg.type === 'reject') this.decide(false);
   }
