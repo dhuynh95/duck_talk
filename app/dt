@@ -7,10 +7,15 @@
 #   ./dt shot [file]      screenshot the booted sim (default: .build/shot.png)
 #   ./dt logs [seconds]   app's stdout/stderr + os_log for N seconds (default 10)
 #   ./dt udid             UDID of the target simulator, booting it if needed
+#   ./dt phone            build for the iPhone on the cable, install, launch
 #   ./dt mcp              serve the ios-sim MCP over HTTP, reloading on every edit
 #   ./dt clean            drop derived data
 #
 # Override the simulator with SIM=... (name or UDID).
+#
+# A device build must be signed, and signing needs an Apple team: put its ID in
+# app/.team (gitignored) or DEVELOPMENT_TEAM. Xcode ▸ Settings ▸ Accounts shows it
+# once an Apple ID is signed in; a free personal team is enough for a cabled phone.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -20,6 +25,7 @@ PROJECT=DuckTalk.xcodeproj
 BUNDLE_ID=dev.conception.ducktalk
 SIM="${SIM:-iPhone 17 Pro}"
 DERIVED=.build
+RELAY_PORT=8765
 
 require_xcode() {
   if ! xcodebuild -version >/dev/null 2>&1; then
@@ -90,6 +96,88 @@ run() {
   xcrun simctl launch "$udid" "$BUNDLE_ID"
 }
 
+# --- Physical iPhone, over the cable ----------------------------------------
+# The simulator path above signs nothing and installs with simctl; a device needs
+# a signed build and devicectl. Same derived data, a different Products folder.
+
+team() {
+  local team="${DEVELOPMENT_TEAM:-}"
+  [ -n "$team" ] || [ ! -f .team ] || team=$(tr -d '[:space:]' < .team)
+  if [ -z "$team" ]; then
+    echo "error: no signing team. Sign in to an Apple ID in Xcode ▸ Settings ▸ Accounts," >&2
+    echo "  then write the team ID (10 characters, shown there) to app/.team." >&2
+    exit 1
+  fi
+  echo "$team"
+}
+
+# The one iPhone that is paired and reachable, as its two names: devicectl works
+# by coredevice identifier, xcodebuild by hardware UDID. Anything else on the list
+# — unpaired, or a phone that was here yesterday — is reported, not picked.
+phone_id() {
+  local json="$DERIVED/devices.json"
+  mkdir -p "$DERIVED"
+  xcrun devicectl list devices --json-output "$json" >/dev/null 2>&1
+  python3 -c "
+import json,sys
+devs=json.load(open(sys.argv[1]))['result']['devices']
+ok=[d for d in devs if d['connectionProperties'].get('pairingState')=='paired'
+    and d['connectionProperties'].get('tunnelState')!='unavailable']
+if len(ok)==1: print(ok[0]['identifier'], ok[0]['hardwareProperties']['udid']); sys.exit(0)
+for d in devs:
+    c=d['connectionProperties']
+    print('  %s: %s, tunnel %s' % (d['deviceProperties'].get('name'), c.get('pairingState'), c.get('tunnelState')), file=sys.stderr)
+sys.exit('no single paired iPhone on the cable (unlock it and tap Trust; turn on Settings > Privacy & Security > Developer Mode)')
+" "$json"
+}
+
+# Where the phone should look for the relay, and the one command that makes that
+# address exist. A phone refuses cleartext ws://, and it should not have to accept
+# it: the Mac is already on a tailnet, and Tailscale will put a real, publicly
+# trusted certificate in front of any local port. So the relay stays a plain
+# WebSocket server that knows nothing about TLS, the app stays a URL in a text
+# field, and the encryption is a front door neither of them can see. The mapping
+# lives in the tailnet rather than in a process here, so this is idempotent and
+# survives a reboot — running it every deploy costs a round trip and removes a step.
+relay_url() {
+  local host
+  host=$(tailscale status --json 2>/dev/null | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))
+except Exception: pass" 2>/dev/null)
+  if [ -n "$host" ] && tailscale serve --bg "$RELAY_PORT" >/dev/null 2>&1; then
+    echo "in the app: gear ▸ Server ▸ wss://$host"
+    return
+  fi
+  echo "the phone has no encrypted way to reach the relay yet." >&2
+  echo "  Enable Serve and HTTPS for this tailnet, then run \`./dt phone\` again:" >&2
+  tailscale serve --bg "$RELAY_PORT" 2>&1 | sed 's/^/  /' >&2
+  echo "  https://login.tailscale.com/admin/dns  (Enable HTTPS)" >&2
+}
+
+phone() {
+  require_xcode
+  gen
+  local team udid hw
+  team=$(team)
+  read -r udid hw < <(phone_id)
+  set -o pipefail
+  # -allowProvisioningUpdates lets xcodebuild register the phone and mint the
+  # profile itself, which is otherwise a trip through Xcode's signing pane. It can
+  # only enrol a device it was aimed at, so this builds for *this* phone by UDID —
+  # "generic/platform=iOS" signs for a team that may have no devices at all.
+  xcodebuild -project "$PROJECT" -scheme "$SCHEME" \
+    -destination "id=$hw" \
+    -derivedDataPath "$DERIVED" \
+    -allowProvisioningUpdates \
+    DEVELOPMENT_TEAM="$team" \
+    -quiet build 2>&1 | filter
+  xcrun devicectl device install app --device "$udid" \
+    "$DERIVED/Build/Products/Debug-iphoneos/$SCHEME.app"
+  xcrun devicectl device process launch --terminate-existing --device "$udid" "$BUNDLE_ID"
+  relay_url
+}
+
 shot() {
   local out="${1:-$DERIVED/shot.png}"
   mkdir -p "$(dirname "$out")"
@@ -113,6 +201,7 @@ case "${1:-run}" in
   shot)  shot "${2:-}" ;;
   logs)  logs "${2:-10}" ;;
   udid)  boot ;;
+  phone) phone ;;
   mcp)   mcp ;;
   clean) rm -rf "$DERIVED" && echo "cleaned $DERIVED" ;;
   *)     sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2 ; exit 1 ;;

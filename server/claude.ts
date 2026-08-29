@@ -33,6 +33,13 @@ export interface Claude {
 }
 
 export interface ClaudeCallbacks {
+  /**
+   * A past session to carry on instead of starting a new one. Claude Code keeps the
+   * transcript, so this is the whole of resuming: the same warm-session machinery
+   * runs, it just starts already knowing what was said. All sessions share one `cwd`,
+   * so any id this relay recorded can be resumed.
+   */
+  resume?: string;
   onText(text: string): void;
   onBlock(block: Block): void;
   onResult(r: { sessionId: string; costUsd: number | null; error: string | null }): void;
@@ -93,6 +100,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
     stderr: (line: string) => { if (process.env['DEBUG']) console.debug('sdk:', line.trimEnd()); },
   };
   if (MODEL) options.model = MODEL;
+  if (cb.resume) { options.resume = cb.resume; log(`resuming ${cb.resume}`); }
 
   const q: Query = query({ prompt: input(), options });
 

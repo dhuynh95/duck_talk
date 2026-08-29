@@ -22,6 +22,16 @@ final class RelayStore {
     /// How the voice should read the reply. The relay puts it in front of every
     /// sentence; the wording is the only speed control the API has.
     private(set) var style = ""
+    /// Every conversation Claude Code has in this project, newest first.
+    private(set) var chats: [Chat] = []
+    /// The one chat asked for by `openChat`, and which one it was — the messages are
+    /// the only thing here big enough to be worth asking for rather than always sent.
+    private(set) var messages: [ChatMessage] = []
+    private(set) var loaded: String?
+    /// True when `loaded` is a chat that was just branched off another, rather than
+    /// one that was opened. The home screen switches to it either way; this is only
+    /// how it knows a fork succeeded.
+    private(set) var wasForked = false
     private(set) var error: String?
 
     private var task: URLSessionWebSocketTask?
@@ -60,10 +70,23 @@ final class RelayStore {
         send(["type": "voice_save", "style": style])
     }
 
+    func openChat(_ id: String) {
+        send(["type": "chat_open", "id": id])
+    }
+
+    /// Branch `id` at one of its messages. The answer is the new chat, already loaded.
+    func fork(_ id: String, at uuid: String) {
+        send(["type": "fork", "id": id, "at": uuid])
+    }
+
     private struct State: Decodable {
         let type: String
         let items: [Correction]?
         let style: String?
+        let chats: [Chat]?
+        let id: String?
+        let messages: [ChatMessage]?
+        let forked: Bool?
     }
 
     private func receive(_ json: String) {
@@ -71,6 +94,12 @@ final class RelayStore {
               let state = try? JSONDecoder().decode(State.self, from: data) else { return }
         if let items = state.items { self.items = items.reversed() }  // newest first
         if let style = state.style { self.style = style }
+        if let chats = state.chats { self.chats = chats }  // already newest first
+        if let messages = state.messages {
+            self.messages = messages
+            wasForked = state.forked ?? false
+            loaded = state.id
+        }
         error = nil
     }
 

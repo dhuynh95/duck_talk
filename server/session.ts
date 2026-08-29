@@ -28,9 +28,12 @@ import { openVoice, type Voice } from './voice.ts';
 export type Mode = 'direct' | 'review';
 
 /** What one turn did and when, on this Mac's clock. Appended to .turns.jsonl. */
-interface Turn {
+export interface Turn {
   turn: number;
   mode: Mode;
+  /** The Claude session this turn belongs to — what groups turns into a chat, and
+   *  what `?resume=` takes to carry one on. Null before Claude's first result. */
+  session_id: string | null;
   heard: string;
   proposed: string; // what Gemini's tool call asked for, before any correction
   corrected: string | null; // what auto-correct made of it, when on
@@ -61,6 +64,11 @@ const TURNS = new URL('./.turns.jsonl', import.meta.url).pathname;
 // catches every cause, since they all look the same: stuck off `listening`. 0 disables.
 const TURN_TIMEOUT_MS = Number(process.env['TURN_TIMEOUT_MS'] ?? 180_000);
 
+// The phone holds the mic open and sends every buffer, silence included, so a pause
+// this long is not a quiet user — it is a phone that stopped sending. Well past the
+// tens of milliseconds a capture buffer takes, well short of anything worth missing.
+const AUDIO_GAP_MS = 2_000;
+
 export class Session {
   private ears!: Ears;
   private voice!: Voice;
@@ -68,11 +76,16 @@ export class Session {
   private turns = 0;
   private turn = this.blank();
   private claude!: Claude;
+  private sessionId: string | null = null;
   private closed = false;
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   // ears takes ~1s to connect; audio that arrives meanwhile is held, not dropped.
   private ready = false;
   private backlog: Buffer[] = [];
+  // Whether the phone is still sending microphone audio at all — see `hearing`.
+  private audioAt = 0;
+  private deaf = false;
+  private gap: ReturnType<typeof setTimeout> | null = null;
 
   private corrections: Correction[] = [];
 
@@ -83,15 +96,18 @@ export class Session {
   private readonly mode: Mode;
   private readonly autocorrect: boolean;
   private readonly readback: boolean;
+  /** A past chat to carry on, rather than starting one. */
+  private readonly resume: string | undefined;
   private readonly log: (m: string) => void;
 
   constructor(
     phone: Phone,
     ai: GoogleGenAI,
     mode: Mode,
-    opts: { sttModel: string; voiceModel: string; autocorrect: boolean; readback: boolean },
+    opts: { sttModel: string; voiceModel: string; autocorrect: boolean; readback: boolean; resume?: string },
     log: (m: string) => void,
   ) {
+    this.resume = opts.resume;
     this.phone = phone;
     this.ai = ai;
     this.mode = mode;
@@ -130,6 +146,7 @@ export class Session {
     // belong to the turn now running — claude.ts fences an interrupted turn's
     // stragglers — so no correlation guard is needed here.
     this.claude = openClaude({
+      resume: this.resume,
       log: this.log,
       onText: (text) => {
         this.turn.claude_first_at ??= Date.now();
@@ -141,7 +158,10 @@ export class Session {
       // finished. Only the running name is worth showing, so the phone needs no
       // history and no magic word to compare against.
       onBlock: (block) => this.phone.event(block.type === 'tool_use' ? { type: 'tool', text: block.name } : { type: 'tool' }),
-      onResult: ({ costUsd, error }) => {
+      onResult: ({ sessionId, costUsd, error }) => {
+        // Stable for the life of the session, resumed or fresh — so once the first
+        // result lands, every turn on this connection knows which chat it is in.
+        this.sessionId = sessionId;
         this.turn.cost_usd = costUsd;
         if (error) { this.phone.event({ type: 'error', text: error }); this.cancel(`claude error: ${error}`); return; }
         this.voice.finish(); // onDone → endTurn once the audio drains
@@ -181,8 +201,32 @@ export class Session {
   // --- Phone → session -------------------------------------------------------
 
   send(pcm: Buffer): void {
+    this.hearing();
     if (this.ready) this.ears.send(pcm);
     else this.backlog.push(pcm);
+  }
+
+  /**
+   * Say when the microphone goes away and when it comes back.
+   *
+   * From here a silent user and a phone that has stopped sending look identical —
+   * except that they don't, because the phone streams silence too. So a gap in the
+   * bytes is the phone itself going quiet: locked and suspended, interrupted by a
+   * call, or killed. This is the only place that can see it; the phone's own screen
+   * is off at exactly the moment worth watching.
+   */
+  private hearing(): void {
+    const now = Date.now();
+    if (this.deaf) {
+      this.log(`audio back after ${((now - this.audioAt) / 1000).toFixed(1)}s`);
+      this.deaf = false;
+    }
+    this.audioAt = now;
+    if (this.gap) clearTimeout(this.gap);
+    this.gap = setTimeout(() => {
+      this.deaf = true;
+      this.log('audio stopped — the phone is not sending');
+    }, AUDIO_GAP_MS);
   }
 
   /** A text frame from the phone: approve or reject a held turn, or mark a moment. */
@@ -197,6 +241,7 @@ export class Session {
     if (this.closed) return;
     this.closed = true;
     this.disarm();
+    if (this.gap) { clearTimeout(this.gap); this.gap = null; }
     this.claude?.close();
     this.ears?.close();
     this.voice?.close();
@@ -332,7 +377,7 @@ export class Session {
 
   private blank(): Turn {
     return {
-      turn: ++this.turns, mode: this.mode, heard: '', proposed: '', corrected: null, instruction: '',
+      turn: ++this.turns, mode: this.mode, session_id: null, heard: '', proposed: '', corrected: null, instruction: '',
       approval: null, said: '', speech_end_at: null, heard_at: null, corrected_at: null,
       claude_first_at: null, voice_out_at: null, reply_in_at: null, voice_ms: 0, cost_usd: null,
     };
@@ -340,6 +385,9 @@ export class Session {
 
   private async record(t: Turn): Promise<void> {
     if (!t.instruction && !t.heard) return; // an empty turn from a bare interrupt
+    // Stamped here rather than when the turn began: a turn interrupted before Claude
+    // answered still belongs to the chat, and by now the id is known.
+    t.session_id = this.sessionId;
     const d = (a: number | null, b: number | null) => (a && b ? `${b - a}ms` : '—');
     // The stages a user waits through, split apart: Gemini STT+routing, the optional
     // correction, Claude to first token, then Gemini TTS to first byte. speech_end

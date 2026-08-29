@@ -1,3 +1,4 @@
+import ActivityKit
 import Foundation
 import Observation
 
@@ -15,6 +16,11 @@ import Observation
 @Observable
 @MainActor
 final class VoiceSession {
+    /// There is one session, and this is it. The screen shows it and the lock
+    /// screen's Stop button ends it — two views of one running thing, which only
+    /// works while there is no second one for them to disagree about.
+    static let shared = VoiceSession()
+
     enum Status: String { case idle, connecting, live, reconnecting }
 
     /// One entry in the transcript, appended in the order it happened: what you said,
@@ -27,6 +33,19 @@ final class VoiceSession {
         var text = ""
         var tools: [String] = []  // kind == .tools
         var running = false
+        /// Where this line sits in the stored conversation, and so where a fork can
+        /// cut. Only lines loaded from a past chat have one — a line just spoken is
+        /// not in the transcript on disk yet, so there is nothing to branch from.
+        var uuid: String?
+
+        init(kind: Kind, text: String = "", tools: [String] = [], running: Bool = false, uuid: String? = nil) {
+            self.kind = kind; self.text = text; self.tools = tools; self.running = running; self.uuid = uuid
+        }
+
+        /// One message of a stored chat, as a line of the transcript.
+        init(_ message: ChatMessage) {
+            self.init(kind: message.role == "user" ? .user : .model, text: message.text, uuid: message.uuid)
+        }
 
         /// The tool now running, or — once the run is over — what it did, collapsed.
         /// Names are all the relay sends, so this summary is the whole story and
@@ -57,15 +76,30 @@ final class VoiceSession {
     private var replied = false  // a reply byte has been marked for this turn
     private var wantLive = false // the user's intent, which outlives any one socket
     private var url: URL?
+    private var activity: Activity<LiveSession>?
 
     func connect(url: URL) {
         guard status == .idle else { return }
         self.url = url
         wantLive = true
         error = nil
-        lines = []
         utterance = nil
+        startActivity() // while the app is in the foreground, which is the only time allowed
         Task { await run() }
+    }
+
+    /// Put a conversation on screen without starting one — opening a past chat, or
+    /// clearing for a new one.
+    ///
+    /// The transcript is what is on screen, live session or not, which is why
+    /// `connect` no longer empties it: a resumed chat has to survive being connected
+    /// to, and emptying it is something only "New chat" ever means.
+    func show(_ past: [ChatMessage]) {
+        guard status == .idle else { return }
+        lines = past.map(Line.init)
+        utterance = nil
+        pending = nil
+        error = nil
     }
 
     /// Hold a socket to the relay for as long as the user wants one. A relay restart,
@@ -96,6 +130,7 @@ final class VoiceSession {
             task.resume()
             status = .live
             error = nil
+            publish()
 
             let openedAt = ContinuousClock.now
             do {
@@ -114,6 +149,7 @@ final class VoiceSession {
             // A connection that lasted is not a failing one; only a fast drop backs off.
             if openedAt.duration(to: .now) > .seconds(5) { backoff = .milliseconds(250) }
             status = .reconnecting
+            publish() // a session that lost the relay must not still read "Listening"
             try? await Task.sleep(for: backoff)
             backoff = min(backoff * 2, .seconds(5))
         }
@@ -130,6 +166,43 @@ final class VoiceSession {
         pending = nil
         utterance = nil
         status = .idle
+        endActivity()
+    }
+
+    // MARK: - Lock screen
+    //
+    // The same session, shown where you can see it once the screen is off. It is a
+    // second view of the state above, never a second copy: `publish` reads what is
+    // already published and sends that. Called at turn boundaries only — the system
+    // budgets how often a Live Activity may change, and there is nothing legible to
+    // show between one word and the next anyway.
+
+    private func startActivity() {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled, activity == nil else { return }
+        activity = try? Activity.request(
+            attributes: LiveSession(startedAt: .now),
+            content: ActivityContent(state: snapshot(), staleDate: nil),
+        )
+    }
+
+    private func publish() {
+        guard let activity else { return }
+        let state = snapshot()
+        Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
+    }
+
+    private func endActivity() {
+        guard let activity else { return }
+        self.activity = nil
+        Task { await activity.end(nil, dismissalPolicy: .immediate) }
+    }
+
+    private func snapshot() -> LiveSession.ContentState {
+        LiveSession.ContentState(
+            status: status.rawValue,
+            heard: pending ?? utterance ?? "",
+            said: lines.last(where: { $0.kind == .model })?.text ?? "",
+        )
     }
 
     /// Run the held instruction, as edited on screen. An edit teaches the server
@@ -211,6 +284,7 @@ final class VoiceSession {
             // sent — barging in over a reply replaces it, and a rejected one is dropped.
             utterance = event.text
             turnEnded = false
+            if event.partial != true { publish() } // the finished utterance, not every revision
         case "model":
             commit() // Claude answering is proof the instruction went
             if !turnEnded, let last = lines.last, last.kind == .model {
@@ -224,6 +298,7 @@ final class VoiceSession {
             // question, so only one of the two is ever on screen.
             utterance = nil
             pending = event.text
+            publish()
         case "tool":
             // A name starts a tool, no name ends it. Consecutive tools join one line,
             // so a burst of them reads as a single step and speech breaks the group.
@@ -247,6 +322,7 @@ final class VoiceSession {
             replied = false
             pending = nil
             endToolRun()
+            publish() // the reply is complete; this is the readable moment
         case "interrupted":
             // Sent whenever a held instruction is decided — by voice or by the buttons —
             // so the card goes away however the decision was made. What is being said

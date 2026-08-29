@@ -12,12 +12,17 @@
  * `review` holds it for a yes/no/edit first. Orthogonal to both, `?correct=1` has a
  * fast text model fix the instruction first, from the pairs a review-mode edit
  * taught (`.corrections.jsonl`). `?readback=1` also reads a held instruction aloud,
- * for deciding without looking at the screen.
+ * for deciding without looking at the screen. `?resume=<id>` carries on a past chat
+ * instead of starting one — any session Claude Code has in this project, including
+ * the ones you started in a terminal.
  *
- * `?data=1` is a connection that edits what the relay owns and nothing else — the
- * corrections and how the voice should read — so the phone can show those screens
- * with no voice session running. Every message is answered with all of it, so the
- * phone never has to ask twice or guess what the files now say.
+ * `?data=1` is a connection that reads and edits what the relay can see and nothing
+ * else — the corrections, how the voice should read, and the chats — so the phone
+ * can show those screens with no voice session running. Every message is answered
+ * with all of it, so the phone never has to ask twice or guess what the files now
+ * say. The exception is one chat's messages, which are only sent when asked for by
+ * `chat_open`, because they are the one part that is not small. `fork` branches a
+ * chat at one message and answers with the new one, which is `chat_open` on it.
  *
  * Every finished turn is appended to `.turns.jsonl`. The phone, this relay and the
  * test harness all run on one Mac, so those timestamps share one clock and any
@@ -28,6 +33,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { GoogleGenAI } from '@google/genai';
 import { Session, type Mode, type Phone } from './session.ts';
 import { billingMode } from './claude.ts';
+import { chat, chats, fork } from './chats.ts';
 import { load, remove, save } from './corrections.ts';
 import { readStyle, writeStyle } from './voice.ts';
 
@@ -54,14 +60,17 @@ wss.on('connection', (ws, req) => {
   const mode: Mode = asked === 'review' ? 'review' : 'direct';
   const autocorrect = url.searchParams.get('correct') === '1';
   const readback = url.searchParams.get('readback') === '1';
+  // A chat to carry on rather than start. The id came from this relay's own turn
+  // records, so it is one Claude Code can resume in this `cwd`.
+  const resume = url.searchParams.get('resume') ?? undefined;
   const log = (msg: string) => console.log(`[${id}] ${msg}`);
-  log(`open (${mode}${autocorrect ? ', autocorrect' : ''}${readback ? ', readback' : ''})`);
+  log(`open (${mode}${autocorrect ? ', autocorrect' : ''}${readback ? ', readback' : ''}${resume ? `, resuming ${resume}` : ''})`);
 
   // `?data=1` edits what the relay owns and nothing else — no Gemini, no Claude — so
   // the phone can open those screens whether or not a session is live. Every message
   // is answered with all of it, so the phone never has to guess what the files say.
   if (url.searchParams.get('data') === '1') {
-    ws.on('message', (raw, isBinary) => {
+    ws.on('message', async (raw, isBinary) => {
       if (isBinary) return;
       const f = parse(String(raw));
       if (f?.['type'] === 'correction_save') {
@@ -79,6 +88,25 @@ wss.on('connection', (ws, req) => {
       if (ws.readyState !== ws.OPEN) return;
       ws.send(JSON.stringify({ type: 'corrections', items: load() }));
       ws.send(JSON.stringify({ type: 'voice', style: readStyle() }));
+      // Branching a chat has to happen before the list is sent, or the new one is
+      // missing from the answer that reports it.
+      let forked: string | null = null;
+      if (f?.['type'] === 'fork' && typeof f['id'] === 'string' && typeof f['at'] === 'string') {
+        try {
+          forked = await fork(f['id'], f['at']);
+          log(`forked ${f['id']} at ${f['at']} -> ${forked}`);
+        } catch (e) {
+          log(`fork failed: ${e}`);
+        }
+      }
+      if (ws.readyState !== ws.OPEN) return;
+      ws.send(JSON.stringify({ type: 'chats', chats: await chats() }));
+      // The list is small and always sent; a chat's messages are not, so they come
+      // only when one is opened — or when a fork has just made one worth opening.
+      const open = forked ?? (f?.['type'] === 'chat_open' && typeof f['id'] === 'string' ? f['id'] : null);
+      if (open) {
+        ws.send(JSON.stringify({ type: 'chat', id: open, messages: await chat(open), forked: forked !== null }));
+      }
     });
     ws.on('close', () => log('close'));
     return;
@@ -88,7 +116,7 @@ wss.on('connection', (ws, req) => {
     pcm: (buf) => { if (ws.readyState === ws.OPEN) ws.send(buf); },
     event: (msg) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); },
   };
-  const session = new Session(phone, ai, mode, { sttModel: STT_MODEL, voiceModel: VOICE_MODEL, autocorrect, readback }, log);
+  const session = new Session(phone, ai, mode, { sttModel: STT_MODEL, voiceModel: VOICE_MODEL, autocorrect, readback, resume }, log);
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) session.send(data as Buffer);

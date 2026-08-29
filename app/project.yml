@@ -19,6 +19,9 @@ targets:
     platform: iOS
     sources:
       - path: DuckTalk
+      - path: Shared
+    dependencies:
+      - target: DuckTalkWidget
     # XcodeGen writes Resources/Info.plist from these on every `./dt gen`,
     # filling in CFBundleIdentifier and friends. Don't hand-edit that file.
     info:
@@ -29,7 +32,20 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSMicrophoneUsageDescription: Duck Talk streams your voice to your Mac so you can talk to it.
-        # ws:// to a LAN address is blocked by App Transport Security otherwise.
+        # A conversation does not stop because the screen did. Without this the
+        # system suspends the app the moment the phone locks, which kills the mic and
+        # the socket together; with it, an app already recording keeps recording.
+        # iOS will not let a suspended app *start* recording, so a session still has
+        # to be started in the foreground — the listen button — and only then locked.
+        UIBackgroundModes:
+          - audio
+        # Lets the app put the running session on the lock screen. The card itself
+        # lives in the DuckTalkWidget target; this key is what permits asking for one.
+        NSSupportsLiveActivities: true
+        # The simulator reaches the relay at ws://localhost:8765, which is cleartext
+        # and never leaves the Mac; App Transport Security allows that much only if
+        # asked. A real phone gets no such exemption and uses wss:// — see `dt phone`,
+        # which puts a Tailscale-issued certificate in front of the same port.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
     settings:
@@ -37,3 +53,24 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.conception.ducktalk
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_PREVIEWS: YES
+
+  # The lock-screen card, which has to be its own process: a Live Activity is drawn
+  # by WidgetKit, not by the app. It shares exactly one file with the app, Shared/,
+  # which is the shape of what gets drawn.
+  DuckTalkWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: DuckTalkWidget
+      - path: Shared
+    info:
+      path: DuckTalkWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Duck Talk
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.conception.ducktalk.widget
+        TARGETED_DEVICE_FAMILY: "1"
+        SKIP_INSTALL: YES

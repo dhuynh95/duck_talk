@@ -14,25 +14,32 @@ struct ContentView: View {
     @AppStorage("serverURL") private var serverURL = "ws://localhost:8765"
     @AppStorage("mode") private var mode = Mode.direct
     @AppStorage("autocorrect") private var autocorrect = false
-    @State private var session = VoiceSession()
+    private let session = VoiceSession.shared
     @State private var draft = ""
     @State private var sheet: Sheet?
+    @State private var drawer = false
+    /// The home screen's own connection to the relay, for forking a chat. Not the
+    /// drawer's: the drawer is gone from the screen by the time you fork.
+    @State private var relay = RelayStore()
+    /// The chat on screen, or nil for a new one. Everything about resuming is derived
+    /// from this — the title in the header, and whether the session carries `resume`.
+    @State private var chat: Chat?
 
     private var live: Bool { session.status != .idle }
 
-    /// One exclusive mode, plus auto-correct as an independent axis.
+    /// One exclusive mode, plus auto-correct as an independent axis, plus the chat
+    /// being carried on if one was opened.
     private var url: URL? {
-        URL(string: serverURL + "?mode=\(mode.rawValue)" + (autocorrect ? "&correct=1" : ""))
+        URL(string: serverURL + "?mode=\(mode.rawValue)"
+            + (autocorrect ? "&correct=1" : "")
+            + (chat.map { "&resume=\($0.id)" } ?? ""))
     }
 
     var body: some View {
         VStack(spacing: 12) {
-            HStack {
-                Spacer()
-                settings
-            }
+            header
 
-            transcript
+            if session.lines.isEmpty { blank } else { transcript }
 
             if session.pending != nil || session.utterance != nil { input }
 
@@ -47,6 +54,30 @@ struct ContentView: View {
             controls
         }
         .padding()
+        .overlay {
+            ChatsDrawer(
+                serverURL: serverURL,
+                open: $drawer,
+                current: chat,
+                onOpen: { opened, messages in
+                    // Loading a chat is not starting one: the transcript appears, and
+                    // the listen button is now the resume button.
+                    chat = opened
+                    session.show(messages)
+                },
+                onNew: {
+                    chat = nil
+                    session.show([])
+                },
+            )
+        }
+        // The fork comes back as a chat, already loaded — the same arrival the drawer
+        // waits on, so switching to it is the same code.
+        .onChange(of: relay.loaded) {
+            guard relay.wasForked, let id = relay.loaded else { return }
+            chat = relay.chats.first { $0.id == id }
+            session.show(relay.messages)
+        }
         .sheet(item: $sheet) { which in
             switch which {
             case .voice: VoiceView(serverURL: serverURL)
@@ -58,6 +89,45 @@ struct ContentView: View {
     }
 
     private enum Sheet: String, Identifiable { case voice, corrections, server, mode; var id: String { rawValue } }
+
+    /// Branch the conversation at this answer and land on the result.
+    ///
+    /// A session is stopped first, never left running beside the new chat: there is
+    /// one session, and it belongs to whatever is on screen. What is left is the fork,
+    /// idle — so the listen button starts it, exactly as opening a chat does.
+    private func forkFrom(_ line: VoiceSession.Line) {
+        guard let source = chat, let at = line.uuid else { return }
+        if live { session.stop() }
+        relay.connect(to: serverURL)
+        relay.fork(source.id, at: at)
+    }
+
+    // MARK: - Header
+
+    /// The chats on the left, what configures the app on the right, and between them
+    /// the name of the conversation you are in — blank when it is a new one, because
+    /// a chat has no name until it has been had.
+    private var header: some View {
+        ZStack {
+            if let chat {
+                Text(chat.title)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                    .padding(.horizontal, 44)
+                    .accessibilityIdentifier("chat-title")
+            }
+            HStack {
+                Button { drawer = true } label: {
+                    Image(systemName: "line.3.horizontal").font(.title3)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("chats")
+                .accessibilityLabel("Chats")
+                Spacer()
+                settings
+            }
+        }
+    }
 
     // MARK: - Controls
 
@@ -160,33 +230,76 @@ struct ContentView: View {
 
     // MARK: - Messages
 
+    /// Nothing said yet. The screen is the conversation, so an empty one should say
+    /// what to do rather than be blank.
+    private var blank: some View {
+        VStack(spacing: 6) {
+            Text("Duck Talk").font(.title2.weight(.semibold))
+            Text("Tap to start talking").font(.callout).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The conversation, anchored at its end.
+    ///
+    /// `defaultScrollAnchor(.bottom)` opens the view at the last message and follows a
+    /// reply as it is spoken. Scrolling there by hand instead means aiming at a message
+    /// metres tall that a lazy stack has not built yet, and landing short of it.
     private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(session.lines) { line in
-                        switch line.kind {
-                        case .tools:
-                            Text(line.toolLabel)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.tertiary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .id(line.id)
-                        case .user, .model:
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 8) {
+                ForEach(session.lines) { line in
+                    switch line.kind {
+                    case .tools:
+                        Text(line.toolLabel)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.tertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .id(line.id)
+                    case .user:
+                        Text(line.text)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .foregroundStyle(.secondary)
+                            .id(line.id)
+                    case .model:
+                        VStack(alignment: .leading, spacing: 6) {
                             Text(line.text)
-                                .frame(maxWidth: .infinity, alignment: line.kind == .user ? .trailing : .leading)
-                                .foregroundStyle(line.kind == .user ? .secondary : .primary)
-                                .id(line.id)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            actions(line)
                         }
+                        .id(line.id)
                     }
                 }
-                .padding(.vertical, 4)
             }
-            .frame(maxHeight: .infinity)
-            .onChange(of: tail) {
-                if let id = session.lines.last?.id { proxy.scrollTo(id, anchor: .bottom) }
-            }
+            .padding(.vertical, 4)
         }
+        .frame(maxHeight: .infinity)
+        .defaultScrollAnchor(.bottom)
+    }
+
+    /// The two things you can do to an answer, under every one of them. Small and
+    /// tertiary: they are always there, so they must never compete with the words.
+    ///
+    /// Fork only appears on a line that exists in the stored conversation — a reply
+    /// just spoken is not on disk yet, so there is nothing to branch from. Copy always
+    /// works, which is why they are not the same condition.
+    private func actions(_ line: VoiceSession.Line) -> some View {
+        HStack(spacing: 18) {
+            if line.uuid != nil {
+                Button { forkFrom(line) } label: {
+                    Image(systemName: "arrow.branch")
+                }
+                .accessibilityIdentifier("fork")
+                .accessibilityLabel("Fork from here")
+            }
+            Button { UIPasteboard.general.string = line.text } label: {
+                Image(systemName: "doc.on.doc")
+            }
+            .accessibilityLabel("Copy")
+        }
+        .font(.footnote)
+        .foregroundStyle(.tertiary)
+        .buttonStyle(.plain)
     }
 
     /// What the bottom of the transcript looks like right now — speech grows a line's
