@@ -49,6 +49,16 @@ struct ContentView: View {
 
             transcript
 
+            // Claude works for tens of seconds before it says anything. This is the
+            // only sign it is doing something, and which thing.
+            if let activity = session.activity {
+                Text("\(activity)…")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("Running \(activity)")
+            }
+
             if session.pending != nil { approval }
 
             if let error = session.error {

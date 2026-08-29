@@ -25,6 +25,9 @@ final class VoiceSession {
     private(set) var level: Float = 0  // 0…1 live loudness, for the waveform
     /// The instruction the server is holding for a yes/no/edit, in review mode.
     private(set) var pending: String?
+    /// The tool Claude is running right now. Nothing else moves during the long
+    /// stretch between a question and its answer.
+    private(set) var activity: String?
 
     private var task: URLSessionWebSocketTask?
     private var pipe: AudioPipe?
@@ -106,6 +109,7 @@ final class VoiceSession {
         pipe = nil
         level = 0
         pending = nil
+        activity = nil
         status = .idle
     }
 
@@ -176,14 +180,18 @@ final class VoiceSession {
             }
         case "approval":
             pending = event.text
+        case "tool":
+            activity = event.text  // a name starts a tool, no name ends it
         case "turn_end":
             turnEnded = true
             replied = false
             pending = nil
+            activity = nil
         case "interrupted":
             // Sent whenever a held instruction is decided — by voice or by the buttons —
             // so the card goes away however the decision was made.
             pending = nil
+            activity = nil
             pipe?.flush()
         case "error":
             error = event.text

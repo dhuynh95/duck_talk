@@ -153,7 +153,10 @@ export class Session {
         this.phone.event({ type: 'model', text });
         this.voice.say(text);
       },
-      onBlock: (block) => this.phone.event({ type: 'tool', text: block.type === 'tool_use' ? block.name : 'result' }),
+      // A `tool` event with a name means Claude started that tool; without one, it
+      // finished. Only the running name is worth showing, so the phone needs no
+      // history and no magic word to compare against.
+      onBlock: (block) => this.phone.event(block.type === 'tool_use' ? { type: 'tool', text: block.name } : { type: 'tool' }),
       onResult: ({ sessionId, costUsd, error }) => {
         this.claudeSessionId = sessionId;
         this.turn.cost_usd = costUsd;
