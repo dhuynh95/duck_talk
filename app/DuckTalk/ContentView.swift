@@ -5,7 +5,6 @@ struct ContentView: View {
     @AppStorage("serverURL") private var serverURL = "ws://localhost:8765"
     @AppStorage("mode") private var mode = "direct"
     @AppStorage("autocorrect") private var autocorrect = false
-    @AppStorage("directSTT") private var directSTT = false
     @State private var session = VoiceSession()
     @State private var draft = ""
 
@@ -15,7 +14,6 @@ struct ContentView: View {
     private var url: URL? {
         var query = "?mode=\(mode)"
         if autocorrect && mode != "echo" { query += "&correct=1" }
-        if directSTT && mode != "echo" { query += "&stt=direct" }
         return URL(string: serverURL + query)
     }
 
@@ -47,11 +45,6 @@ struct ContentView: View {
                     .font(.callout)
                     .disabled(live)
                     .accessibilityLabel("Auto-correct")
-
-                Toggle("Direct transcription", isOn: $directSTT)
-                    .font(.callout)
-                    .disabled(live)
-                    .accessibilityLabel("Direct transcription")
             }
 
             transcript

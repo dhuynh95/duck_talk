@@ -444,7 +444,7 @@ async def play_audio(
             + f"said={turn.get('said')!r} approval={turn.get('approval')!r}",
             await _shot(),
         ]
-    route_at, claude_at = turn.get("converse_at"), turn.get("claude_first_at")
+    route_at, claude_at = turn.get("heard_at"), turn.get("claude_first_at")
     metrics = {
         "latency_ms": round(out_at - asked_at),
         "claude_ms": round(claude_at - route_at)

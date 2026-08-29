@@ -95,10 +95,10 @@ async function turn(pcm: Buffer, timeoutMs = 90_000): Promise<Turn> {
         reply.push(chunk);
         return;
       }
-      const msg = JSON.parse(ev.data) as { type: string; text?: string; partial?: boolean };
-      // Direct transcription revises one growing utterance; the routing ears send
-      // fragments to join. A `partial` field at all means the former.
-      if (msg.type === 'user') result.heard = msg.partial === undefined ? result.heard + (msg.text ?? '') : (msg.text ?? '');
+      const msg = JSON.parse(ev.data) as { type: string; text?: string };
+      // Each `user` event carries the whole utterance as currently heard, revised as
+      // it is spoken, so the last one is the transcript.
+      if (msg.type === 'user') result.heard = msg.text ?? '';
       else if (msg.type === 'model') result.said += msg.text ?? '';
       else if (msg.type === 'interrupted') result.interrupted = true;
       else if (msg.type === 'error') { clearTimeout(timer); finish(msg.text); }

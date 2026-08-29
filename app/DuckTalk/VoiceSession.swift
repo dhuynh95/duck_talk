@@ -48,6 +48,7 @@ final class VoiceSession {
     private var task: URLSessionWebSocketTask?
     private var pipe: AudioPipe?
     private var turnEnded = false
+    private var utteranceOpen = false  // the current user line is still being revised
     private var replied = false  // a reply byte has been marked for this turn
     private var wantLive = false // the user's intent, which outlives any one socket
     private var url: URL?
@@ -193,17 +194,23 @@ final class VoiceSession {
               let event = try? JSONDecoder().decode(Event.self, from: data) else { return }
         switch event.type {
         case "user", "model":
-            // Transcripts arrive as fragments; extend the current line while the speaker
-            // is the same and the turn is still open.
             let kind: Line.Kind = event.type == "user" ? .user : .model
-            if !turnEnded, let last = lines.last, last.kind == kind {
-                // A `partial` field at all means the text is cumulative — replace.
-                // Without one it is a fragment from the routing ears — extend.
-                if event.partial != nil { lines[lines.count - 1].text = event.text ?? "" }
-                else { lines[lines.count - 1].text += event.text ?? "" }
+            if kind == .user {
+                // Speech arrives as the whole utterance so far, revised as it is spoken,
+                // so it replaces. A finished one closes the line and the next utterance
+                // starts its own.
+                if utteranceOpen, let last = lines.last, last.kind == .user {
+                    lines[lines.count - 1].text = event.text ?? ""
+                } else {
+                    lines.append(Line(kind: .user, text: event.text ?? ""))
+                }
+                utteranceOpen = event.partial == true
+                turnEnded = false
+            } else if !turnEnded, let last = lines.last, last.kind == .model {
+                lines[lines.count - 1].text += event.text ?? ""   // Claude's reply joins up
             } else {
                 turnEnded = false
-                lines.append(Line(kind: kind, text: event.text ?? ""))
+                lines.append(Line(kind: .model, text: event.text ?? ""))
             }
         case "approval":
             pending = event.text

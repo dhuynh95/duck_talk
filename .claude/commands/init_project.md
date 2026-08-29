@@ -17,12 +17,12 @@ Adding a bullet here is a code smell — ask first whether a code change would o
 
 ```
 iPhone (app/)                 Mac (server/)                              Anthropic + Google
-mic ─▶ AudioPipe ─▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts ─▶ ears ──▶ Gemini Live (hears, routes)
+mic ─▶ AudioPipe ─▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts ─▶ ears ──▶ Gemini Live (transcribes)
 🔊 ◀─ AudioPipe ◀─ VoiceSession ◀─ws─  server.ts ◀─ session.ts ◀─ voice ◀── Gemini Live (reads aloud)
                                                           └────────── claude ◀▶ Claude Code (the agent)
 ```
 
-Architecture B: the phone is a mic and a speaker, the Mac holds the sessions. Chosen over "phone talks to Gemini directly" because the orchestrator between Gemini and Claude Code belongs on the server, not in two clients. `session.ts` is that orchestrator: `ears` (Gemini hearing, routing through one `converse` tool) hands to `claude` (Claude Code, one warm streaming session), and `voice` (a second Gemini session) reads the answer back. Gemini's own voice is dropped in code, so only Claude is heard. Measured cost of the phone hop: **~1 ms**; the wait a user feels is Claude (a few seconds), recorded per turn in `server/.turns.jsonl`. The app, the relay and the test harness all run on this Mac, so those timestamps share one clock and latency is a subtraction, never a measurement.
+Architecture B: the phone is a mic and a speaker, the Mac holds the sessions. Chosen over "phone talks to Gemini directly" because the orchestrator between Gemini and Claude Code belongs on the server, not in two clients. `session.ts` is that orchestrator, and its state is who holds the floor — user, held (review), or claude. `ears` transcribes only, so a finished transcript IS the instruction and a partial arriving while Claude talks is an interruption; `claude` (Claude Code, one warm streaming session) answers, and `voice` (a second Gemini session) reads the answer back. Measured cost of the phone hop: **~1 ms**; the wait a user feels is Claude (a few seconds), recorded per turn in `server/.turns.jsonl`. The app, the relay and the test harness all run on this Mac, so those timestamps share one clock and latency is a subtraction, never a measurement.
 
 ## Core files (@ loaded)
 

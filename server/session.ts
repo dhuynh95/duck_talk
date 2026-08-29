@@ -1,18 +1,18 @@
 /**
- * One phone connection, wired end to end: ears hear and route, Claude answers,
- * voice reads the answer back, and every reply byte goes to the phone. This is the
- * turn state machine the web app spread across a Svelte store; here it is one object.
+ * One phone connection, wired end to end: ears hear, Claude answers, voice reads the
+ * answer back, and every reply byte goes to the phone.
  *
- *   listening ─converse─▶ [holding] ─accept─▶ working ─first voice byte─▶ speaking ─drained─▶ listening
+ * The state is who holds the floor, and there are only three answers:
  *
- * Direct mode skips `holding`. In review mode a converse is held: the instruction is
- * read back and offered to the phone, and Gemini — answered at once, never frozen —
- * keeps transcribing, so an "accept" / "reject" / "stop" word is heard live.
+ *   user ──final transcript──▶ claude ──voice drained──▶ user
+ *     └──(review)──▶ held ──yes/edit──▶ claude      claude ──partial──▶ user (barge-in)
  *
- * ears, voice and claude are all long-lived sessions for the connection. Speaking
- * over Claude ends the turn: a different instruction supersedes it, the word "stop"
- * cancels it. Both interrupt Claude and silence the voice while leaving all three
- * sessions warm, so the next turn is fast.
+ * A finished transcript means something different in each, which is why there are
+ * exactly three: the instruction, the answer to a held question, or — because a
+ * partial has already cancelled the turn — the instruction that replaces it.
+ *
+ * ears, voice and claude are long-lived sessions for the connection, so an interrupt
+ * cancels a turn and leaves all three warm; the next one is fast.
  */
 
 import { appendFile } from 'node:fs/promises';
@@ -20,8 +20,7 @@ import { GoogleGenAI } from '@google/genai';
 import { openClaude, type Claude } from './claude.ts';
 import { correct, CORRECT_MODEL } from './correct.ts';
 import { add, load, type Correction } from './corrections.ts';
-import { openEars, keyword, type Ears, type Keyword, type ConverseOutcome } from './ears.ts';
-import { openListen, type Listener } from './listen.ts';
+import { openEars, keyword, type Ears, type Keyword } from './ears.ts';
 import { openVoice, type Voice } from './voice.ts';
 
 export type Mode = 'direct' | 'review' | 'echo';
@@ -37,7 +36,7 @@ interface Turn {
   approval: 'accepted' | 'rejected' | null;
   said: string;
   speech_end_at: number | null; // caller marked the moment its audio stopped (probe/app)
-  converse_at: number | null; // ears routed the instruction
+  heard_at: number | null; // the utterance was finished — the instruction exists
   corrected_at: number | null; // auto-correct came back
   claude_first_at: number | null; // Claude's first token
   voice_out_at: number | null; // first reply byte written to the phone
@@ -58,15 +57,12 @@ const TURNS = new URL('./.turns.jsonl', import.meta.url).pathname;
 // A turn that never returns to `listening` — Claude died, the voice stalled, or a
 // task ran away — would hang the session forever. One ceiling on the whole turn
 // catches every cause, since they all look the same: stuck off `listening`. 0 disables.
-const LISTEN_MODEL = process.env['LISTEN_MODEL'] ?? 'gemini-3.5-transcribe-live';
-
 const TURN_TIMEOUT_MS = Number(process.env['TURN_TIMEOUT_MS'] ?? 180_000);
 
 export class Session {
-  private ears?: Ears;        // routing ears
-  private listener?: Listener; // direct transcription — exactly one of the two is open
+  private ears!: Ears;
   private voice!: Voice;
-  private state: 'listening' | 'holding' | 'working' | 'speaking' = 'listening';
+  private state: 'user' | 'held' | 'claude' = 'user';
   private turns = 0;
   private turn = this.blank();
   private claudeSessionId: string | null = null;
@@ -82,29 +78,27 @@ export class Session {
 
   private readonly phone: Phone;
   private readonly ai: GoogleGenAI;
-  private readonly earsModel: string;
+  private readonly sttModel: string;
   private readonly voiceModel: string;
   private readonly mode: Mode;
   private readonly autocorrect: boolean;
   private readonly readback: boolean;
-  private readonly direct: boolean;
   private readonly log: (m: string) => void;
 
   constructor(
     phone: Phone,
     ai: GoogleGenAI,
     mode: Mode,
-    opts: { earsModel: string; voiceModel: string; autocorrect: boolean; readback: boolean; direct: boolean },
+    opts: { sttModel: string; voiceModel: string; autocorrect: boolean; readback: boolean },
     log: (m: string) => void,
   ) {
     this.phone = phone;
     this.ai = ai;
     this.mode = mode;
-    this.earsModel = opts.earsModel;
+    this.sttModel = opts.sttModel;
     this.voiceModel = opts.voiceModel;
     this.autocorrect = opts.autocorrect;
     this.readback = opts.readback;
-    this.direct = opts.direct;
     this.log = log;
   }
 
@@ -120,35 +114,16 @@ export class Session {
       onPcm: (pcm) => {
         // Only the reply counts as the first byte out; the review readback also plays
         // through this session, and stamping it would time the turn from the wrong sound.
-        if (this.state !== 'holding') this.turn.voice_out_at ??= Date.now();
-        if (this.state === 'working') this.state = 'speaking';
+        if (this.state !== 'held') this.turn.voice_out_at ??= Date.now();
         this.turn.voice_ms += pcm.length / 48;
         this.phone.pcm(pcm);
       },
-      onFlush: (text) => this.ears?.context(text),
       // Fires when the voice drains. In review mode the readback drains too — that is
       // not the turn ending, so only end when Claude's reply is what just played.
-      onDone: () => { if (this.state === 'working' || this.state === 'speaking') this.endTurn(); },
+      onDone: () => { if (this.state === 'claude') this.endTurn(); },
     });
 
-    if (this.direct) await this.openDirect();
-    else this.ears = await openEars(this.ai, this.earsModel, {
-      log: this.log,
-      onHeard: (text) => {
-        // Talking over the reply is how a person interrupts, and the transcript is
-        // the signal: on the native-audio ears it arrives word by word while they
-        // speak. Gemini's own `interrupted` cannot help — it cancels the generation
-        // of the session that fires it, and the session speaking is not this one.
-        // Only while audio is playing: the tail of the utterance that started the
-        // turn is still arriving during `working`, and that is not an interruption.
-        if (this.state === 'speaking') this.cancel('spoke over the reply');
-        this.turn.heard += text;
-        this.phone.event({ type: 'user', text });
-      },
-      onConverse: (instruction) => this.onConverse(instruction),
-      onKeyword: (word) => this.onKeyword(word),
-      onSilentSpeech: (text) => this.log(`silent speech (Gemini tried to answer): ${text}`),
-    }, this.corrections);
+    await this.openEars();
 
     // Claude is a session too, warm for the whole connection. Its callbacks always
     // belong to the turn now running — claude.ts fences an interrupted turn's
@@ -174,24 +149,22 @@ export class Session {
     });
 
     this.ready = true;
-    if (!this.closed) this.backlog.splice(0).forEach((pcm) => (this.listener ?? this.ears)?.send(pcm));
+    if (!this.closed) this.backlog.splice(0).forEach((pcm) => this.ears.send(pcm));
   }
 
   /**
-   * Direct transcription: no routing model, so the finalized transcript is the
-   * instruction and there is no function call to wait for. The two signals also
-   * settle who holds the floor — a partial arriving while Claude is talking is the
-   * user talking over it, and `onConverse` then treats the final as the next
-   * instruction exactly as it treats a routed one.
+   * The two transcript signals settle who holds the floor: a partial while Claude is
+   * talking is the user talking over it, and the final that follows is the next
+   * instruction.
    */
-  private async openDirect(): Promise<void> {
-    this.listener = await openListen(this.ai, LISTEN_MODEL, {
+  private async openEars(): Promise<void> {
+    this.ears = await openEars(this.ai, this.sttModel, {
       log: this.log,
       onPartial: (text) => {
         // Unambiguous here in a way the routing ears never were: a partial can only
         // follow the previous final, so any partial while Claude speaks is a new
         // utterance, never the tail of the one that started the turn.
-        if (this.state === 'working' || this.state === 'speaking') this.cancel('spoke over the reply');
+        if (this.state === 'claude') this.cancel('spoke over the reply');
         this.turn.heard = text;
         this.phone.event({ type: 'user', text, partial: true });
       },
@@ -200,7 +173,7 @@ export class Session {
         // Still the whole utterance, so still a replacement — `false` only says no
         // further revision is coming.
         this.phone.event({ type: 'user', text, partial: false });
-        this.onConverse(text); // the transcript is the instruction
+        this.heard(text); // the transcript is the instruction
       },
     }, this.corrections);
   }
@@ -208,8 +181,8 @@ export class Session {
   // --- Phone → session -------------------------------------------------------
 
   send(pcm: Buffer): void {
-    if (!this.ready) { this.backlog.push(pcm); return; }
-    (this.listener ?? this.ears)?.send(pcm);
+    if (this.ready) this.ears.send(pcm);
+    else this.backlog.push(pcm);
   }
 
   /** A text frame from the phone: approve/reject a held turn, mute, or mark a moment. */
@@ -227,40 +200,27 @@ export class Session {
     this.disarm();
     this.claude?.close();
     this.ears?.close();
-    this.listener?.close();
     this.voice?.close();
   }
 
   // --- Routing ---------------------------------------------------------------
 
-  private onConverse(instruction: string): ConverseOutcome {
-    // "yes" / "no" / "stop" are control words, not instructions. Gemini stays live
-    // during a hold (so it can hear them), which means it also tries to route them
-    // as a converse. Catch that here and treat it as the keyword, so the answer to a
-    // hold never becomes a new turn. A bare word only — "yes, delete it" is a real
-    // instruction and falls through.
-    const control = bareKeyword(instruction);
-    if (control) {
-      this.onKeyword(control);
-      return control === 'reject' ? 'rejected' : 'done';
-    }
-    // A second real instruction mid-hold is noise; the keywords decide the held one.
-    if (this.state === 'holding') return 'rejected';
-    // Gemini re-emits converse with the same instruction to say "proceed" once the
-    // user approves. That is not a new request — it is the turn we are already on, so
-    // ignore it rather than tearing the running turn down as if superseded.
-    if (this.state !== 'listening') {
-      if (same(instruction, this.turn.instruction)) return 'done';
-      this.cancel('superseded'); // a genuinely different instruction is a barge-in
-    }
-    this.turn.proposed = instruction;
-    this.turn.instruction = instruction;
-    this.turn.converse_at = Date.now();
-    this.log(`converse: ${instruction}`);
-    // Answer Gemini now — it must never stay frozen — and let the rest of the turn,
-    // which may wait on auto-correct, run on its own.
-    void this.propose(instruction).catch((e) => this.log(`propose failed: ${e}`));
-    return this.mode === 'review' ? 'held' : 'done';
+  /** A finished utterance: a decision if it is only a control word, else an instruction. */
+  private heard(said: string): void {
+    // "yes" / "no" / "stop" answer a question rather than asking one. A bare word
+    // only — "yes, delete it" is a real instruction and falls through.
+    const control = bareKeyword(said);
+    if (control) return this.onKeyword(control);
+    // Mid-hold, the keywords decide; anything else said is noise.
+    if (this.state === 'held') return;
+    // Speaking over Claude already cancelled the turn on the first partial; this is
+    // the instruction that replaces it.
+    this.turn.proposed = said;
+    this.turn.instruction = said;
+    this.turn.heard_at = Date.now();
+    this.log(`heard: ${said}`);
+    // Runs on its own because auto-correct may need a moment first.
+    void this.propose(said).catch((e) => this.log(`propose failed: ${e}`));
   }
 
   /** Remember what was really meant, and say so to the Live session that misheard it. */
@@ -275,14 +235,13 @@ export class Session {
     this.corrections.push(c);
     // The Live session's prompt is fixed once open, so tell it the way it accepts
     // mid-session: a model turn it treats as its own prior speech.
-    this.ears?.context(`Understood — when I hear "${c.heard || c.proposed}", you mean "${meant}".`);
     this.log(`learned: ${c.proposed} → ${meant}`);
   }
 
   /** Decide the instruction that actually runs, then hold it or run it. */
   private async propose(proposal: string): Promise<void> {
     const turn = this.turn; // fence: a barge-in swaps in a new turn while we await
-    this.state = this.mode === 'review' ? 'holding' : 'working';
+    this.state = this.mode === 'review' ? 'held' : 'claude';
     this.arm(); // the watchdog covers the correction wait too
 
     let instruction = proposal;
@@ -310,13 +269,13 @@ export class Session {
   }
 
   private onKeyword(word: Keyword): void {
-    if (this.state === 'holding' && word === 'accept') this.decide(true);
-    else if (this.state === 'holding' && word === 'reject') this.decide(false);
-    else if ((this.state === 'working' || this.state === 'speaking') && word === 'stop') this.cancel('stop word');
+    if (this.state === 'held' && word === 'accept') this.decide(true);
+    else if (this.state === 'held' && word === 'reject') this.decide(false);
+    else if (this.state === 'claude' && word === 'stop') this.cancel('stop word');
   }
 
   private decide(accept: boolean, edited?: string): void {
-    if (this.state !== 'holding') return;
+    if (this.state !== 'held') return;
     this.voice.interrupt(); // stop reading back the instruction
     this.phone.event({ type: 'interrupted' }); // flush the readback already queued on the phone
     if (accept) {
@@ -337,7 +296,7 @@ export class Session {
   }
 
   private run(instruction: string): void {
-    this.state = 'working';
+    this.state = 'claude';
     this.arm();
     this.claude.send(instruction); // the callbacks wired in open() carry the reply
   }
@@ -357,7 +316,7 @@ export class Session {
 
   /** Interrupt Claude, silence the voice, tell the phone to flush, record the partial turn. */
   private cancel(why: string): void {
-    if (this.state === 'listening') return;
+    if (this.state === 'user') return;
     this.log(`cancel (${why})`);
     this.claude.interrupt(); // stops this turn; the session stays warm for the next
     this.voice.interrupt();
@@ -366,18 +325,18 @@ export class Session {
   }
 
   private endTurn(): void {
-    if (this.state === 'listening') return; // nothing in flight
+    if (this.state === 'user') return; // nothing in flight
     this.disarm();
     this.phone.event({ type: 'turn_end' });
     void this.record(this.turn).catch((e) => this.log(`record failed: ${e}`));
     this.turn = this.blank();
-    this.state = 'listening';
+    this.state = 'user';
   }
 
   private blank(): Turn {
     return {
       turn: ++this.turns, mode: this.mode, heard: '', proposed: '', corrected: null, instruction: '',
-      approval: null, said: '', speech_end_at: null, converse_at: null, corrected_at: null,
+      approval: null, said: '', speech_end_at: null, heard_at: null, corrected_at: null,
       claude_first_at: null, voice_out_at: null, reply_in_at: null, voice_ms: 0, cost_usd: null,
     };
   }
@@ -388,10 +347,10 @@ export class Session {
     // The stages a user waits through, split apart: Gemini STT+routing, the optional
     // correction, Claude to first token, then Gemini TTS to first byte. speech_end
     // only exists when the caller marks it (probe/app); without it the STT stage reads —.
-    const corrected = t.corrected_at ? `correct ${d(t.converse_at, t.corrected_at)}  ` : '';
+    const corrected = t.corrected_at ? `correct ${d(t.heard_at, t.corrected_at)}  ` : '';
     this.log(
-      `turn ${t.turn} end  stt ${d(t.speech_end_at, t.converse_at)}  ${corrected}` +
-      `claude ${d(t.corrected_at ?? t.converse_at, t.claude_first_at)}  tts ${d(t.claude_first_at, t.voice_out_at)}  ` +
+      `turn ${t.turn} end  stt ${d(t.speech_end_at, t.heard_at)}  ${corrected}` +
+      `claude ${d(t.corrected_at ?? t.heard_at, t.claude_first_at)}  tts ${d(t.claude_first_at, t.voice_out_at)}  ` +
       `→phone ${d(t.voice_out_at, t.reply_in_at)}  ${(t.voice_ms / 1000).toFixed(1)}s voice`,
     );
     await appendFile(TURNS, `${JSON.stringify(t)}\n`);

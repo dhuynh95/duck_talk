@@ -16,6 +16,9 @@ import { GoogleGenAI, Modality, type Session } from '@google/genai';
 
 const PROMPT = readFileSync(new URL('./prompts/voice.md', import.meta.url), 'utf8');
 
+/** Which voice Claude speaks in. Any of the Live API's prebuilt names. */
+const VOICE_NAME = process.env['VOICE_NAME'] ?? 'Sulafat';
+
 export interface Voice {
   say(text: string): void;
   /** No more text is coming for this turn; `onDone` fires once the audio has all been sent. */
@@ -58,7 +61,12 @@ export async function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbac
 
   session = await ai.live.connect({
     model,
-    config: { responseModalities: [Modality.AUDIO], systemInstruction: PROMPT, outputAudioTranscription: {} },
+    config: {
+      responseModalities: [Modality.AUDIO],
+      systemInstruction: PROMPT,
+      outputAudioTranscription: {},
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: VOICE_NAME } } },
+    },
     callbacks: {
       onopen: () => log('voice connected'),
       onmessage: (msg) => {
