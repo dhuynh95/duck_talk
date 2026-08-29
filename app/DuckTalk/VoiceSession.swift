@@ -9,7 +9,7 @@ import Observation
 @Observable
 @MainActor
 final class VoiceSession {
-    enum Status: String { case idle, connecting, live }
+    enum Status: String { case idle, connecting, live, reconnecting }
 
     struct Line: Identifiable {
         let id = UUID()
@@ -30,42 +30,76 @@ final class VoiceSession {
     private var pipe: AudioPipe?
     private var turnEnded = false
     private var replied = false  // a reply byte has been marked for this turn
+    private var wantLive = false // the user's intent, which outlives any one socket
+    private var url: URL?
 
     func connect(url: URL) {
         guard status == .idle else { return }
-        status = .connecting
+        self.url = url
+        wantLive = true
         error = nil
         lines = []
         bytesUp = 0
         bytesDown = 0
+        Task { await run() }
+    }
 
-        let task = URLSession.shared.webSocketTask(with: url)
-        self.task = task
-        task.resume()
-
+    /// Hold a socket to the relay for as long as the user wants one. A relay restart,
+    /// a dropped network or a sleeping laptop should cost a reconnect, not the
+    /// session — so only Stop ends this, and the mic keeps running throughout
+    /// (restarting the audio session is what actually breaks, and it is expensive).
+    private func run() async {
         let pipe = AudioPipe()
-        pipe.onChunk = { [weak self] data in
-            task.send(.data(data)) { _ in }
-            Task { @MainActor in self?.bytesUp += data.count }
-        }
         pipe.onLevel = { [weak self] l in
             Task { @MainActor in self?.level = l }
         }
+        status = .connecting
+        do {
+            try await pipe.start()
+        } catch {
+            self.error = error.localizedDescription
+            stop()
+            return
+        }
         self.pipe = pipe
 
-        Task {
+        var backoff: Duration = .milliseconds(250)
+        while wantLive, let url {
+            let task = URLSession.shared.webSocketTask(with: url)
+            self.task = task
+            // The mic feeds whichever socket is current, so a reconnect rebinds it.
+            pipe.onChunk = { [weak self] data in
+                task.send(.data(data)) { _ in }
+                Task { @MainActor in self?.bytesUp += data.count }
+            }
+            task.resume()
+            status = .live
+            error = nil
+
+            let openedAt = ContinuousClock.now
             do {
-                try await pipe.start()
-                status = .live
                 try await receiveLoop(task)
             } catch {
-                if status != .idle { self.error = error.localizedDescription }
+                if wantLive { self.error = error.localizedDescription }
             }
-            stop()
+
+            task.cancel(with: .normalClosure, reason: nil)
+            self.task = nil
+            pending = nil
+            replied = false
+            guard wantLive else { break }
+
+            // A connection that lasted is not a failing one; only a fast drop backs off.
+            if openedAt.duration(to: .now) > .seconds(5) { backoff = .milliseconds(250) }
+            status = .reconnecting
+            try? await Task.sleep(for: backoff)
+            backoff = min(backoff * 2, .seconds(5))
         }
+        stop()
     }
 
     func stop() {
+        wantLive = false
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         pipe?.stop()
@@ -98,7 +132,7 @@ final class VoiceSession {
     // MARK: - Receive
 
     private func receiveLoop(_ task: URLSessionWebSocketTask) async throws {
-        while status != .idle {
+        while wantLive {
             switch try await task.receive() {
             case .data(let pcm):
                 bytesDown += pcm.count

@@ -68,7 +68,7 @@ wss.on('connection', (ws, req) => {
     if (isBinary) session.send(data as Buffer);
     else { const f = parse(String(data)); if (f) session.frame(f); }
   });
-  ws.on('close', () => { log('close'); void session.close(); });
+  ws.on('close', () => { log('close'); void session.close().catch((e) => log(`close failed: ${e}`)); });
 
   session.open().catch((e) => {
     phone.event({ type: 'error', text: String(e) });
@@ -76,6 +76,12 @@ wss.on('connection', (ws, req) => {
     ws.close();
   });
 });
+
+// One session's bad moment must not disconnect every phone. Node exits on an
+// uncaught error by default; here the connection that caused it is already broken,
+// and the others are not, so log loudly and keep serving.
+process.on('uncaughtException', (e) => console.error('uncaught:', e));
+process.on('unhandledRejection', (e) => console.error('unhandled rejection:', e));
 
 console.log(`voice relay on ws://localhost:${PORT}\n  ears=${EARS_MODEL}\n  voice=${VOICE_MODEL}`);
 console.log(`claude: ${billingMode()}`);
