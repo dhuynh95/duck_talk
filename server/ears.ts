@@ -24,6 +24,16 @@ import { render, type Correction } from './corrections.ts';
 
 const PROMPT = readFileSync(new URL('./prompts/ears.md', import.meta.url), 'utf8');
 
+// How long Gemini waits through quiet before deciding you have stopped talking —
+// its default is ~800ms, and that wait is the largest slice of the gap between a
+// question ending and Claude starting. How much 500ms buys back depends on the ears
+// model: ~370ms on gemini-3.1-flash-live, but within the noise on the 2.5
+// native-audio model pinned above, where only 300ms measurably helps (~270ms). 300
+// is not the default because it fragments the utterance — the same phrase came back
+// as "Repow." instead of "In this repo." — and a clean running transcript is why the
+// 2.5 model is pinned in the first place. Routing survived either way.
+const VAD_SILENCE_MS = Number(process.env['VAD_SILENCE_MS'] ?? 500);
+
 const TOOLS: Tool[] = [{
   functionDeclarations: [
     {
@@ -87,6 +97,7 @@ export async function openEars(
       systemInstruction: PROMPT + render(corrections),
       inputAudioTranscription: {},
       outputAudioTranscription: {},
+      realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: VAD_SILENCE_MS } },
     },
     callbacks: {
       onopen: () => log(`ears connected (${Math.round(performance.now() - t0)}ms)`),

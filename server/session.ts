@@ -212,7 +212,7 @@ export class Session {
     this.log(`converse: ${instruction}`);
     // Answer Gemini now — it must never stay frozen — and let the rest of the turn,
     // which may wait on auto-correct, run on its own.
-    void this.propose(instruction);
+    void this.propose(instruction).catch((e) => this.log(`propose failed: ${e}`));
     return this.mode === 'review' ? 'held' : 'done';
   }
 
@@ -322,7 +322,7 @@ export class Session {
     if (this.state === 'listening') return; // nothing in flight
     this.disarm();
     this.phone.event({ type: 'turn_end' });
-    void this.record(this.turn);
+    void this.record(this.turn).catch((e) => this.log(`record failed: ${e}`));
     this.turn = this.blank();
     this.state = 'listening';
   }
