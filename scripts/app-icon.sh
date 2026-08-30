@@ -19,9 +19,11 @@ cd "$(dirname "$0")/.."
 
 LOGO=assets/duck_talk_logo.svg
 SET=app/DuckTalk/Assets.xcassets/AppIcon.appiconset
-# The same drawing, unwrapped, for the screens that show the mark — the home screen
-# and the drawer. Vector, so one file serves every size they ask for.
-MARK=app/DuckTalk/Assets.xcassets/Logo.imageset
+# The same drawing, unwrapped, for the screens that show the mark — the home screen,
+# the drawer, and the lock-screen card, which is a second process and so needs the
+# brand in Shared/ rather than in the app's own catalogue. Vector, so one file serves
+# every size any of them ask for.
+MARK=app/Shared/Brand.xcassets/Logo.imageset
 # Dark, and not a free choice: the duck's head is #f9fafb and its eye is a hole, so
 # the ground is what the eye is drawn in. On white the head vanishes; on the brand
 # orange the tail does, because the tail is that same orange. Slate leaves all three

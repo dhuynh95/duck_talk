@@ -15,43 +15,65 @@ struct DuckTalkLiveActivity: Widget {
         ActivityConfiguration(for: LiveSession.self) { context in
             card(context.state, since: context.attributes.startedAt)
                 .padding(16)
-                .activityBackgroundTint(Brand.background.opacity(0.85))
+                // Solid, not translucent: a card that lets the wallpaper through takes
+                // its colour from whatever photo is behind it, and grey-900 stops being
+                // grey-900. The system already floats this thing; it needs no help.
+                .activityBackgroundTint(Brand.background)
                 .activitySystemActionForegroundColor(Brand.text)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "waveform")
-                        elapsed(context.attributes.startedAt).font(.caption.monospacedDigit())
+                    HStack(spacing: 8) {
+                        mark(20)
+                        elapsed(context.attributes.startedAt)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(Brand.tertiaryText)
                     }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     stop
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(line(context.state)).font(.callout).lineLimit(2)
+                    Text(line(context.state))
+                        .font(.callout)
+                        .foregroundStyle(Brand.secondaryText)
+                        .lineLimit(2)
                 }
             } compactLeading: {
-                Image(systemName: "waveform")
+                mark(18)
             } compactTrailing: {
-                elapsed(context.attributes.startedAt).monospacedDigit()
+                // Orange for the same reason it is orange in the app: a session is
+                // running. This is the whole of the island when you are in another app.
+                elapsed(context.attributes.startedAt)
+                    .monospacedDigit()
+                    .foregroundStyle(Brand.accent)
             } minimal: {
-                Image(systemName: "waveform")
+                mark(18)
             }
         }
     }
 
-    /// Two lines: whether it is still listening, and the last thing said. Anything
-    /// more is unreadable at arm's length on a locked phone.
+    /// The duck, from Shared/Brand.xcassets — the app's own face rather than a system
+    /// glyph, which is what makes the island recognisably this app at a glance.
+    private func mark(_ size: CGFloat) -> some View {
+        Image("Logo")
+            .resizable()
+            .scaledToFit()
+            .frame(width: size)
+    }
+
+    /// Who is running, for how long, how to stop it — and the one line that changes.
+    ///
+    /// Four things, no more: at arm's length on a locked phone the only question is
+    /// what it is hearing, and everything else is there to say the session is alive and
+    /// to end it.
     private func card(_ state: LiveSession.ContentState, since startedAt: Date) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "waveform")
-                    .foregroundStyle(state.status == "live" ? Brand.accent : Brand.tertiaryText)
-                Text(state.status == "live" ? "Listening" : state.status.capitalized)
-                    .font(.headline)
+            HStack(spacing: 10) {
+                mark(26)
+                Text("Duck Talk").font(.headline)
                 Spacer()
-                elapsed(startedAt).font(.subheadline.monospacedDigit()).foregroundStyle(Brand.secondaryText)
+                elapsed(startedAt).font(.subheadline.monospacedDigit()).foregroundStyle(Brand.tertiaryText)
                 stop
             }
             Text(line(state))
@@ -64,24 +86,29 @@ struct DuckTalkLiveActivity: Widget {
 
     /// End the session without unlocking. The intent runs in the app, so this really
     /// does stop the microphone rather than only clearing the card away.
+    ///
+    /// The same plain circle the app's own stop wears. It was red, which was the only
+    /// red in the product and made ending a session look like deleting something.
     private var stop: some View {
         Button(intent: StopListening()) {
             Image(systemName: "xmark")
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(.white)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Brand.text)
                 .frame(width: 34, height: 34)
-                .background(.red, in: Circle())
+                .background(Brand.fill, in: Circle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Stop listening")
     }
 
-    /// What you are saying wins over what was said: the newer of the two is the one
-    /// worth a glance, and only one line fits.
+    /// The line being sent, which is what the card is for. What you are saying wins
+    /// over what was answered: the newer of the two is the one worth a glance, and only
+    /// one line fits. With neither, the state itself is the news — still listening, or
+    /// reconnecting — which is why there is no separate row for it.
     private func line(_ state: LiveSession.ContentState) -> String {
         if !state.heard.isEmpty { return state.heard }
         if !state.said.isEmpty { return state.said }
-        return "Say something."
+        return state.status == "live" ? "Listening" : state.status.capitalized
     }
 
     /// Counted by the system from the start date, so the card keeps ticking between

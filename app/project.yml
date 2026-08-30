@@ -61,7 +61,8 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_PREVIEWS: YES
         # DuckTalk/Assets.xcassets, generated from the logo by scripts/app-icon.sh —
-        # one drawing of the duck, and the icon derived from it.
+        # one drawing of the duck, and the icon derived from it. The mark itself lives
+        # in Shared/Brand.xcassets, because the lock-screen card draws it too.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # The brand orange, as the colour the *system* tints with: a text cursor, a
         # toolbar button, a list checkmark are drawn by iOS, not by us, and this is the
@@ -69,8 +70,8 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
 
   # The lock-screen card, which has to be its own process: a Live Activity is drawn
-  # by WidgetKit, not by the app. It shares exactly one file with the app, Shared/,
-  # which is the shape of what gets drawn.
+  # by WidgetKit, not by the app. What it shares with the app is Shared/ — the shape
+  # of what gets drawn, the palette, and the mark.
   DuckTalkWidget:
     type: app-extension
     platform: iOS
@@ -88,3 +89,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.conception.ducktalk.widget
         TARGETED_DEVICE_FAMILY: "1"
         SKIP_INSTALL: YES
+        # The same orange, for the same reason as the app: the system tints the card's
+        # own controls, and this is what it tints them with.
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
