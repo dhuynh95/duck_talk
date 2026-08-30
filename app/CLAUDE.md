@@ -109,11 +109,13 @@ cd app
 ```
 
 `./dt phone` needs a signing team in `app/.team` (gitignored) and a phone that is
-paired with Developer Mode on. It prints the URL to put under gear ▸ Server: Tailscale's
-`wss://…ts.net` when the tailnet is up, which reaches the Mac from anywhere including
-cellular and carries a certificate iOS accepts. A LAN `ws://` address only works on the
-same Wi-Fi, and only because `NSAllowsLocalNetworking` covers it — which is there for
-the simulator's `localhost`, not for the phone.
+paired with Developer Mode on. The address to paste under gear ▸ Server is on the
+relay's own startup lines — `same Wi-Fi` for a phone on your network, `anywhere` for
+Tailscale's `wss://…ts.net`, which reaches the Mac from cellular and carries a
+certificate iOS accepts. A LAN `ws://` address works because `NSAllowsLocalNetworking`
+covers private addresses — a public `ws://` is refused, so off Wi-Fi it is `wss://` or
+nothing. The Server sheet checks the address as you type. README › Your iPhone has the
+three Tailscale steps.
 
 Override the simulator with `SIM="iPhone 17" ./dt run` (`sim.py` follows it).
 

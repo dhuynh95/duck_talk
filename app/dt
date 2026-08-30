@@ -25,7 +25,6 @@ PROJECT=DuckTalk.xcodeproj
 BUNDLE_ID=dev.conception.ducktalk
 SIM="${SIM:-iPhone 17 Pro}"
 DERIVED=.build
-RELAY_PORT=8765
 
 require_xcode() {
   if ! xcodebuild -version >/dev/null 2>&1; then
@@ -131,30 +130,6 @@ sys.exit('no single paired iPhone on the cable (unlock it and tap Trust; turn on
 " "$json"
 }
 
-# Where the phone should look for the relay, and the one command that makes that
-# address exist. A phone refuses cleartext ws://, and it should not have to accept
-# it: the Mac is already on a tailnet, and Tailscale will put a real, publicly
-# trusted certificate in front of any local port. So the relay stays a plain
-# WebSocket server that knows nothing about TLS, the app stays a URL in a text
-# field, and the encryption is a front door neither of them can see. The mapping
-# lives in the tailnet rather than in a process here, so this is idempotent and
-# survives a reboot — running it every deploy costs a round trip and removes a step.
-relay_url() {
-  local host
-  host=$(tailscale status --json 2>/dev/null | python3 -c "
-import json,sys
-try: print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))
-except Exception: pass" 2>/dev/null)
-  if [ -n "$host" ] && tailscale serve --bg "$RELAY_PORT" >/dev/null 2>&1; then
-    echo "in the app: gear ▸ Server ▸ wss://$host"
-    return
-  fi
-  echo "the phone has no encrypted way to reach the relay yet." >&2
-  echo "  Enable Serve and HTTPS for this tailnet, then run \`./dt phone\` again:" >&2
-  tailscale serve --bg "$RELAY_PORT" 2>&1 | sed 's/^/  /' >&2
-  echo "  https://login.tailscale.com/admin/dns  (Enable HTTPS)" >&2
-}
-
 phone() {
   require_xcode
   gen
@@ -175,7 +150,8 @@ phone() {
   xcrun devicectl device install app --device "$udid" \
     "$DERIVED/Build/Products/Debug-iphoneos/$SCHEME.app"
   xcrun devicectl device process launch --terminate-existing --device "$udid" "$BUNDLE_ID"
-  relay_url
+  # The address to paste under gear ▸ Server is on the relay's own startup lines —
+  # it is the one process that knows every way it can be reached.
 }
 
 shot() {

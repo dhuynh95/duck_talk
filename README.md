@@ -49,19 +49,47 @@ The command the package installs is `duck-talk`, and `duck-talk --help` has the 
 `--cwd` serves a folder you are not standing in, `--port` defaults to 8765. Node 22 or
 newer.
 
-### The client
+### Your iPhone
 
 The relay is a plain WebSocket server, so the client is separable from it. The one in
 this repo is a SwiftUI iPhone app (`app/`) — talk on a walk, read the transcript,
-browse and fork past conversations. Build it with `cd app && ./dt run` for the
-simulator, or `./dt phone` for a cabled iPhone. See [`app/README.md`](app/README.md).
+browse and fork past conversations. `cd app && ./dt run` puts it on the simulator,
+`./dt phone` on a cabled iPhone. See [`app/README.md`](app/README.md).
 
-An iPhone refuses cleartext `ws://`, and it does not have to accept it:
-`tailscale serve --bg 8765` puts a publicly trusted certificate in front of the relay
-at your Mac's own `ts.net` name, so the phone reaches
-`wss://<your-machine>.ts.net` from anywhere on the tailnet, cellular included — while
-the relay stays a plain WebSocket server that knows nothing about TLS. `./dt phone`
-runs that command for you and prints the address to paste under gear ▸ Server.
+The phone has to find the Mac, and the relay says how the moment it starts — one line
+for each place a phone can be:
+
+```
+  simulator    ws://localhost:8765
+  same Wi-Fi   ws://192.168.1.42:8765
+  anywhere     wss://your-mac.your-tailnet.ts.net
+```
+
+Copy the one that fits under gear ▸ Server in the app. The field checks the address
+as you type and says **Reachable** or what went wrong, so a wrong one fails right
+there, not a screen later.
+
+**Same Wi-Fi** needs nothing. The Mac's own Wi-Fi address, plain `ws://` — iOS
+allows cleartext to a private address, and to nothing else.
+
+**Anywhere** — cellular, another network, a café — needs a tunnel, because your Mac is
+behind your router with no public address of its own. Two things are not enough on
+their own: forwarding port 8765 on the router gives you a public address, but iOS
+refuses `ws://` to it; only `wss://` works off-LAN, and `wss://` needs a real
+certificate, which needs a hostname. Tailscale gives you all three at once with no
+third party to trust:
+
+1. Install [Tailscale](https://tailscale.com) on the Mac and on the iPhone, same account.
+2. In the admin console, turn on **MagicDNS** and **HTTPS Certificates**
+   (`login.tailscale.com/admin/dns`). Once per tailnet.
+3. On the Mac, once: `tailscale serve --bg 8765`. It survives reboots.
+
+The relay's *anywhere* line then shows `wss://<your-mac>.<tailnet>.ts.net` — no port
+in it, because Tailscale answers on 443 with a Let's Encrypt certificate and forwards to
+8765 itself. The relay stays a plain WebSocket server that knows nothing about TLS.
+When any step is missing, that line says which one instead.
+
+Without Tailscale, the *anywhere* line says so, and the other two still work.
 
 To check the Mac half with no phone at all:
 

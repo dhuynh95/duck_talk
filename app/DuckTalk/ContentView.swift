@@ -93,17 +93,60 @@ struct ContentView: View {
             chat = relay.chats.first { $0.id == id }
             session.show(relay.messages, id: id)
         }
+        // Every sheet stands on the same ground as the screen behind it, which is the
+        // one place to say so — the lists inside only have to stop painting their own.
         .sheet(item: $sheet) { which in
-            switch which {
-            case .prompts: PromptsView(serverURL: serverURL)
-            case .corrections: CorrectionsView(serverURL: serverURL)
-            case .server: ServerView(serverURL: $serverURL)
-            case .mode: ModeSheet(mode: $mode)
+            Group {
+                switch which {
+                case .prompts: PromptsView(serverURL: serverURL)
+                case .corrections: CorrectionsView(serverURL: serverURL)
+                case .server: ServerView(serverURL: $serverURL)
+                case .mode: ModeSheet(mode: $mode)
+                }
             }
+            .presentationBackground(Brand.background)
         }
         // The keyboard belongs to the composer, so whatever takes over from it takes
         // the keyboard too. One rule, rather than a dismissal at every door.
         .onChange(of: elsewhere) { if elsewhere { typing = false } }
+        // How far the transcript has to stop short of the composer. Measured rather
+        // than guessed, because the composer grows with what you type.
+        .onPreferenceChange(ComposerHeight.self) { composerHeight = $0 }
+    }
+
+    /// What the app is. Full bleed, and the only thing under the chrome.
+    private var conversation: some View {
+        // Anywhere that is not the composer is somewhere to put the keyboard away.
+        Group {
+            if session.lines.isEmpty { blank } else { transcript }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { typing = false }
+    }
+
+    /// What floats over it. The spacer between draws nothing, so a tap in the middle of
+    /// the screen reaches the conversation rather than this layer.
+    private var chrome: some View {
+        VStack(spacing: 8) {
+            header
+            Spacer(minLength: 0)
+            if let error = session.error {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 8)
+                    .accessibilityIdentifier("error")
+            }
+            composer
+                .background {
+                    GeometryReader { box in
+                        Color.clear.preference(key: ComposerHeight.self, value: box.size.height)
+                    }
+                }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     /// Something other than the composer has the screen: the drawer, a sheet, or a
@@ -503,12 +546,18 @@ struct ModeSheet: View {
     }
 }
 
-/// Where the relay is, and what the audio route turned out to be — the two facts
-/// that explain a session which will not start or cannot hear. Off the home screen
-/// because you set them once.
+/// Where the relay is, and whether it answers — the two facts that explain a session
+/// which will not start. Off the home screen because you set them once.
+///
+/// The address is checked as you type, not when you press Listen. A relay that is not
+/// there fails in the same place you typed the address, with the field still under
+/// your thumb — rather than a screen later, or worse, a reply from yesterday's relay
+/// about some other folder. Where the address comes from is the relay's own startup
+/// lines: it is the one process that knows every way it can be reached.
 struct ServerView: View {
     @Binding var serverURL: String
     @Environment(\.dismiss) private var dismiss
+    @State private var probe = Probe.idle
 
     var body: some View {
         NavigationStack {
@@ -519,20 +568,80 @@ struct ServerView: View {
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                         .accessibilityLabel("Server URL")
+                    Label(probe.text, systemImage: probe.symbol)
+                        .font(.footnote)
+                        .foregroundStyle(probe.color)
+                        .accessibilityIdentifier("reach")
                 } footer: {
-                    Text("The simulator reaches the Mac on localhost; a physical iPhone needs its address on the network.")
+                    Text("Copy one of the addresses the relay prints when it starts: `localhost` for the simulator, your Mac\u{2019}s Wi-Fi address for a phone on the same network, or its `wss://\u{2026}ts.net` name to reach it from anywhere, cellular included.")
                 }
                 Section("Audio route") {
                     Text(AudioPipe.route)
                         .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Brand.secondaryText)
                         .accessibilityIdentifier("route")
                 }
             }
+            .brandList()
             .navigationTitle("Server")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+            // Checked on arrival and on every edit, half a second after the last
+            // keystroke so a URL being typed is not dialled once per character.
+            .task(id: serverURL) {
+                probe = .checking
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled else { return }
+                probe = await Probe.dial(serverURL)
+            }
+        }
+    }
+
+    /// One WebSocket opened and closed: the cheapest question the relay can answer.
+    enum Probe {
+        case idle, checking, reachable, unreachable(String)
+
+        static func dial(_ text: String) async -> Probe {
+            guard let url = URL(string: text), let scheme = url.scheme, ["ws", "wss"].contains(scheme), url.host != nil else {
+                return .unreachable("Needs a ws:// or wss:// address")
+            }
+            let task = URLSession.shared.webSocketTask(with: url)
+            task.resume()
+            defer { task.cancel(with: .normalClosure, reason: nil) }
+            do {
+                // A ping is answered only once the handshake is complete, so it is the
+                // proof of a relay and not just of a host that accepted the TCP connection.
+                try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                    task.sendPing { error in error.map { c.resume(throwing: $0) } ?? c.resume() }
+                }
+                return .reachable
+            } catch {
+                return .unreachable(error.localizedDescription)
+            }
+        }
+
+        var text: String {
+            switch self {
+            case .idle: return " "
+            case .checking: return "Checking\u{2026}"
+            case .reachable: return "Reachable"
+            case .unreachable(let why): return why
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .idle, .checking: return "circle.dotted"
+            case .reachable: return "checkmark.circle.fill"
+            case .unreachable: return "xmark.circle.fill"
+            }
+        }
+        var color: Color {
+            switch self {
+            case .idle, .checking: return Brand.secondaryText
+            case .reachable: return .green
+            case .unreachable: return .red
             }
         }
     }

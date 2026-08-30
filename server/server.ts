@@ -46,6 +46,7 @@ import { billingMode } from './claude.ts';
 import { chat, chats, fork } from './chats.ts';
 import { load, remove, save } from './corrections.ts';
 import { all as prompts, isName, write as writePrompt } from './prompts.ts';
+import { reach } from './reach.ts';
 
 const PORT = Number(process.env['PORT'] ?? 8765);
 // Two jobs, two models: one Live session transcribes what you say, and a
@@ -157,16 +158,24 @@ process.on('unhandledRejection', (e) => console.error('unhandled rejection:', e)
 // otherwise have promised a server. The uncaught handler above would then swallow it
 // and leave a process that answers nothing.
 wss.on('listening', () => {
-  console.log(`voice relay on ws://localhost:${PORT}\n  stt=${STT_MODEL}\n  voice=${VOICE_MODEL}`);
+  // Where a phone can find this — every row the one process that knows can say, so
+  // nobody copies an address out of System Settings or remembers a ts.net name.
+  void reach(PORT).then((r) => {
+    console.log(`  simulator    ${r.simulator}`);
+    if (r.wifi) console.log(`  same Wi-Fi   ${r.wifi}`);
+    console.log(`  anywhere     ${r.anywhere}`);
+    console.log(`  stt ${STT_MODEL}  ·  voice ${VOICE_MODEL}`);
+  });
   // Asking the CLI who it is takes a subprocess and about 700ms, so it is printed
   // when it comes back rather than kept in front of the address someone is waiting for.
-  void billingMode().then((mode) => console.log(`claude: ${mode}`));
+  void billingMode().then((mode) => console.log(`  claude       ${mode}`));
 });
 wss.on('error', (e: NodeJS.ErrnoException) => {
-  // Only an asked-for port reaches here: without --port the cli takes the first free
-  // one, so the advice is to stop asking rather than to ask for a different number.
+  // Almost always a relay from earlier today, still up. Not stepped around: the phone
+  // is pointed at this port — directly, or through a Tailscale door that opens onto
+  // it — so a relay on another port is one the phone cannot reach.
   console.error(e.code === 'EADDRINUSE'
-    ? `port ${PORT} is taken, and you asked for it by name.\n  Leave --port off and duck-talk takes the first free port instead.`
+    ? `port ${PORT} is already taken — probably a relay you started earlier.\n  Stop it: lsof -ti tcp:${PORT} -sTCP:LISTEN | xargs kill`
     : `could not listen on ${PORT}: ${e.message}`);
   process.exit(1);
 });

@@ -12,6 +12,7 @@ duck_talk` runs. Each primitive runs alone:
 - `chats.ts`  — the conversations Claude Code has in this project: list, read, fork. The SDK's own session store, which is what `?resume=` replays.
 - `cli.ts`    — the entry point: the flags, the `.env`, and which folder to serve.
 - `paths.ts`  — where that folder puts everything, now that it is a choice.
+- `reach.ts`  — every address a phone can reach the relay at, printed at startup: simulator, same Wi-Fi, and Tailscale's `wss://` when it is set up.
 
 ```bash
 npm install

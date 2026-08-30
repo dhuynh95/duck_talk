@@ -20,10 +20,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { createServer } from 'node:net';
 import { resolve } from 'node:path';
-
-const DEFAULT_PORT = 8765;
 
 const argv = process.argv.slice(2);
 
@@ -39,9 +36,9 @@ if (argv.includes('--help') || argv.includes('-h')) {
 
   duck-talk [--port <n>] [--cwd <path>]
 
-  --port <n>    listen on exactly this port, or fail saying it is taken.
-                Left out, it starts at 8765 and takes the first free one, so a
-                second project does not have to stop the first.
+  --port <n>    which port to listen on (default 8765). Fixed on purpose: a
+                Tailscale front door opens onto one port, and moving would leave
+                the phone talking to whatever is still behind it.
   --cwd <path>  the project Claude works in (default: this folder)
   --version     print the version and exit
 
@@ -88,44 +85,10 @@ if (process.env['ANTHROPIC_API_KEY']?.trim()) {
   );
 }
 
-/**
- * Which port to serve on, and the rule is about who chose it.
- *
- * The relay is per-folder and a port is per-machine, so one in ~/api and one in ~/web
- * want the same 8765 — normal, not a mistake, and "stop the other one" is the wrong
- * advice when the other one is another project you are talking to. So: a port you
- * named is yours, and server.ts fails loudly if it cannot have it. A port you did not
- * name was never your decision, and a taken one is ours to step around.
- */
-const asked = flag('port') ?? process.env['PORT'];
+const port = flag('port');
+if (port) process.env['PORT'] = port;
 
-async function choosePort(): Promise<number> {
-  if (asked) return Number(asked);
-  for (let port = DEFAULT_PORT; port < DEFAULT_PORT + 20; port++) {
-    if (await free(port)) return port;
-  }
-  return DEFAULT_PORT; // all busy: let server.ts say so, rather than inventing an error here
-}
-
-/** Whether this port can be bound right now. A race, but the loser still reports it. */
-function free(port: number): Promise<boolean> {
-  return new Promise((ok) => {
-    const probe = createServer();
-    probe.once('error', () => ok(false));
-    probe.once('listening', () => probe.close(() => ok(true)));
-    probe.listen(port);
-  });
-}
-
-const port = await choosePort();
-process.env['PORT'] = String(port);
-
-console.log(`duck-talk ${version()}\n  project ${project}`);
-// Worth saying, because a phone with ws://…:8765 saved will still reach the relay
-// that is on it — a real answer about the wrong folder, which is the confusing kind.
-if (!asked && port !== DEFAULT_PORT) {
-  console.log(`  ${DEFAULT_PORT} is busy, so this one is on ${port} — point the phone here`);
-}
+console.log(`duck-talk ${version()}\n  project      ${project}`);
 await import('./server.ts');
 
 /**

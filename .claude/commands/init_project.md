@@ -35,6 +35,7 @@ The request path end to end (phone → relay → Gemini + Claude), the prompts t
 
 - @server/cli.ts
 - @server/paths.ts
+- @server/reach.ts
 - @server/server.ts
 - @server/session.ts
 - @server/ears.ts
@@ -88,7 +89,7 @@ cd app    && ./dt mcp                   # ios-sim MCP, :8766, hot reload
 
 Relay: no build step in the loop, Node ≥ 22.6 runs the `.ts`; `npm run build` is for the package only. Needs `GEMINI_API_KEY` and `claude` on PATH, and its third startup line names the account that will pay — asked of the CLI, not guessed. Mac-half check, no simulator and no audio devices: `node server/probe.ts "what is the latest commit"` — seconds, now that Claude answers. Anything from `server/` runs from the repo root, because the folder you run it in is the folder it works on.
 
-App: `run()` builds, installs, launches and returns the screen; `play_audio(text=)` drives one voice turn and reports it, connecting the app itself. Humans use `app/dt`. Simulator default URL `ws://localhost:8765` works as-is. A physical iPhone is `./dt phone`, which prints the `wss://…ts.net` to put under gear → Server — see `app/CLAUDE.md` for what that needs.
+App: `run()` builds, installs, launches and returns the screen; `play_audio(text=)` drives one voice turn and reports it, connecting the app itself. Humans use `app/dt`. Simulator default URL `ws://localhost:8765` works as-is. A physical iPhone is `./dt phone`; the address to put under gear → Server is on the relay's own startup lines (`same Wi-Fi`, or `anywhere` via Tailscale) — `reach.ts` is the one place that knows them.
 
 Fresh clone also needs `brew install xcodegen cameroncooke/axe/axe`, `brew install --cask blackhole-2ch`, and the venv `.mcp.json` and `dt mcp` both point at:
 
