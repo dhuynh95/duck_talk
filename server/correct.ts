@@ -14,8 +14,12 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI } from '@google/genai';
 import { load, render, type Correction } from './corrections.ts';
+import { packaged } from './paths.ts';
 
-const PROMPT = readFileSync(new URL('./prompts/correct.md', import.meta.url), 'utf8');
+// Ships with the relay and is not editable from the phone: unlike the voice and
+// Claude prompts, this one is not a preference, it is what makes the model rewrite
+// instead of answer.
+const PROMPT = readFileSync(packaged('./prompts/correct.md'), 'utf8');
 export const CORRECT_MODEL = process.env['CORRECT_MODEL'] ?? 'gemini-2.5-flash-lite';
 
 /** The instruction as the user meant it. Returns `text` unchanged if nothing is known or the call fails. */

@@ -263,7 +263,7 @@ async def type_text(text: str) -> Image:
 # --------------------------------------------------------------------------- #
 # Injection is a black box: `say` plays into "BlackHole 2ch", the device the app
 # listens to, so a turn goes through the real microphone path. The result is not
-# inferred from sound — the relay writes every finished turn to .turns.jsonl, with
+# inferred from sound — the relay writes every finished turn to turns.jsonl, with
 # the phone's own timestamp for when the reply reached it.
 #
 # The phone (in the simulator), the relay and this file all run on this Mac, so
@@ -272,7 +272,7 @@ async def type_text(text: str) -> Image:
 
 VOICE_IN = "BlackHole 2ch"  # app's microphone; we play into it
 SAY_VOICE = "Samantha"
-TURNS = APP_DIR.parent / "server" / ".turns.jsonl"
+TURNS = APP_DIR.parent / ".duck-talk" / "turns.jsonl"
 ROUTE_MEMO = (
     APP_DIR / ".build" / "audio-route.json"
 )  # the user's input device, before we moved it
@@ -398,7 +398,8 @@ async def play_audio(
 
     Plays `text` (synthesized) or an audio `file` into the device the app listens to,
     then waits up to `wait` seconds for the relay to finish a turn and reads it from
-    `server/.turns.jsonl`. Returns that turn plus a screenshot of the app.
+    `.duck-talk/turns.jsonl` (the relay serves this repo, so its state is here).
+    Returns that turn plus a screenshot of the app.
 
     latency_ms  question finished playing → the relay sent the first reply byte.
                 Gemini routing, Claude thinking, TTS, and both network legs — the

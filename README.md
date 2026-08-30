@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="src/client/assets/duck_talk_logo.svg" width="80" alt="Duck Talk logo" />
+  <img src="assets/duck_talk_logo.svg" width="80" alt="Duck Talk logo" />
 </p>
 
 # Duck Talk
 
 Talk to Claude Code. Hear it talk back. Approve, interrupt, or redirect — all by voice, from anywhere.
 
-The core tech: a generic a voice layer that can wrap **any** black-box agent using Live Speech models (e.g. Gemini Live, OpenAI Realtime) for low latency conversations. No modifications to the agent.
+The core tech: a generic voice layer that can wrap **any** black-box agent using speech models (Gemini Live to hear, streaming text-to-speech to answer) for low-latency conversations. No modifications to the agent.
 
 ```
              Duck Talk            Claude Code
@@ -16,7 +16,7 @@ You ─speech─▶ │ STT  │ ─inst─▶  ║              ║
               └──────┘          ╚══════════════╝
 
 inst = instruction, e.g. "What is the latest PR?"
-txt = raw stream of tokens 
+txt = raw stream of tokens
 ```
 
 ## Demo
@@ -25,34 +25,65 @@ txt = raw stream of tokens
 
 ## Quick start
 
-You will need:
-
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) on PATH
-- [`ANTHROPIC_API_KEY`](https://console.anthropic.com/) — for Claude Code
-- [`GEMINI_API_KEY`](https://aistudio.google.com/apikey) — for Gemini voice (free tier works, no credit card needed)
-
-### Option 1 — npx (fastest)
-
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=AIza... npx duck-talk
-# Opens http://localhost:8000
+cd ~/code/the-project-you-want-to-talk-about
+GEMINI_API_KEY=AIza... npx duck_talk
 ```
 
-Or set them in a `.env` file in the current directory:
+That's the whole setup. **The folder you run it in is the project Claude works on** —
+its files, its git history, and its Claude Code conversations, including the ones you
+started in a terminal. Run it somewhere else tomorrow and it is about that instead.
+Then point a client at the address it prints.
+
+You will need:
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code), signed in — the relay
+  says which account will pay on its third line, asked of the CLI rather than guessed.
+  An `ANTHROPIC_API_KEY` in the environment bills the API instead.
+- [`GEMINI_API_KEY`](https://aistudio.google.com/apikey) — for the voice. The free tier
+  works, no credit card.
+
+Either in the shell or in a `.env` file in that folder:
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...
 GEMINI_API_KEY=AIza...
 ```
 
-### Option 2 — from source
+```
+duck-talk [--port <n>] [--cwd <path>]
+```
+
+`--cwd` if you want to serve a folder you are not standing in. `--port` defaults to
+8765. Node 22 or newer.
+
+### The client
+
+The relay is a plain WebSocket server, so the client is separable from it. The one in
+this repo is a SwiftUI iPhone app (`app/`) — talk on a walk, read the transcript,
+browse and fork past conversations. Build it with `cd app && ./dt run` for the
+simulator, or `./dt phone` for a cabled iPhone, which prints the `wss://…ts.net`
+address to paste under gear ▸ Server. See [`app/README.md`](app/README.md).
+
+To check the Mac half with no phone at all:
+
+```bash
+node server/probe.ts "what is the latest commit"
+```
+
+### From source
 
 ```bash
 git clone https://github.com/dhuynh95/duck_talk.git && cd duck_talk
 npm install
-cp .env.example .env   # then edit with your API keys
-npm run dev
+npm start     # the relay, watching, serving this repo
 ```
+
+There is no build step in the loop: Node runs the TypeScript. `npm run build` exists
+only for the package, which cannot assume that of a stranger's Node.
+
+The first version of this was a browser client against an Express backend. It is at
+the **`web-app`** tag — `git show web-app`. Everything that mattered is in `server/`;
+the one piece never ported is its audio calibration loop.
 
 ## Why
 
@@ -83,59 +114,49 @@ Nothing combines all of this:
 ## Key features
 
 - **Real-time voice** — talk to Claude Code hands-free. Say "stop" to interrupt mid-response.
-- **Streaming TTS** — responses spoken sentence-by-sentence as they stream. ~1.5s to first audio, not after completion.
-- **Review mode** — hear your instruction read back before it's sent. Accept, edit, or reject by voice or buttons. No more "Cloud Code" when you said "Claude Code."
-- **Correction learning** — edit a misheard instruction, the diff is saved. Future transcriptions auto-correct.
-- **Session management** — browse, resume, and rewind conversations. Built on Claude Code's native JSONL format.
+- **Streaming TTS** — the answer is read a sentence at a time, as it streams. First audio in about a second, not after completion.
+- **Type or talk** — the same conversation either way. A typed instruction opens no voice session at all and gets its answer on screen.
+- **Review mode** — see the instruction before it runs. Fix it, send it, or ignore it. No more "Cloud Code" when you said "Claude Code."
+- **Correction learning** — the fix is kept, and the next transcription starts from it: the recogniser is handed the words you actually use.
+- **Session management** — browse, resume and fork conversations. It is Claude Code's own session store, so a chat you started at the desk carries on from your pocket.
 
 ## Architecture
 
-Two Gemini Live sessions — one listens, one speaks. Claude Code
-is the black box in between.
+The phone is a microphone, a speaker and a keyboard; the Mac holds the sessions.
+Claude Code is the black box in the middle, and the relay is the only thing that knows
+about all three.
 
-```mermaid
-graph LR
-    You((You))
-    STT["Gemini Live #1<br/>STT · VAD · Tools"]
-    API["Express Server<br/>+ Agent SDK"]
-    TTS["Gemini Live #2<br/>Streaming TTS"]
-    CC[["Claude Code<br/>(any agent)"]]
-
-    You -->|speech| STT
-    STT -->|instruction| API
-    API <-->|text stream| CC
-    API -->|sentences| TTS
-    TTS -->|audio| You
-    API -.->|context inject| STT
+```
+iPhone (app/)                 Mac (server/)                              Anthropic + Google
+mic ─▶ AudioPipe ─▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts ─▶ ears ──▶ Gemini Live (transcribes)
+🔊 ◀─ AudioPipe ◀─ VoiceSession ◀─ws─  server.ts ◀─ session.ts ◀─ voice ◀── Gemini TTS  (reads aloud)
+⌨️ ─────────────▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts ─┬── claude ◀▶ Claude Code (the agent)
+                                                              └── (no ears, no voice)
 ```
 
-**Flow of a single instruction:**
+Audio is what buys audio: the ears open on the first microphone buffer and the voice
+speaks only where there are ears, so a connection that is only typed to reaches Claude
+and never Gemini — and nothing in the URL has to say which kind it is. The ears
+transcribe and nothing else, so a finished transcript *is* the instruction, and a
+partial arriving while Claude talks is an interruption.
 
-```mermaid
-sequenceDiagram
-    actor You
-    participant STT as Gemini Live<br/>(STT · VAD)
-    participant API as Express Server
-    participant CC as Claude Code
-    participant TTS as TTS Session
+The cost of putting the Mac in the middle measures about **1 ms**. The wait you
+actually feel is Claude, and every turn records where its seconds went.
 
-    You->>STT: 🎤 speech
-    Note over STT: VAD detects end of speech
-    STT->>API: converse(instruction)
-    Note over STT: ⏸ frozen (BLOCKING tool)
-    STT-->>STT: tool response → unfreeze
+[`server/README.md`](server/README.md) has the wire protocol and the primitives, each
+of which runs alone.
 
-    API->>CC: query(instruction)
+## Releasing
 
-    loop text streaming
-        CC-->>API: text chunk (SSE)
-        API-->>TTS: sentence buffer flush
-        TTS-->>You: 🔊 audio
-        API-->>STT: context inject
-    end
+`npm run check`, `npm run build`, and `./scripts/install-elsewhere.sh` — which packs
+the tarball, installs it into a folder that is not this repo, and starts it there.
+CI runs all three on every push.
 
-    Note over TTS: audio drains
-```
+Publishing is one button: **Actions ▸ Release ▸ Run workflow**, pick patch/minor/major.
+That verifies, bumps, tags, publishes to npm with provenance, and writes the GitHub
+release. It is the only thing that publishes, so the tag and the version on npm cannot
+disagree. It needs one repository secret, `NPM_TOKEN`, which must be an npm
+**Automation** token.
 
 ## License
 

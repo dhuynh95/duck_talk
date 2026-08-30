@@ -1,0 +1,76 @@
+name: Release
+
+# One button, in the Actions tab: pick how far to raise the version and this verifies,
+# bumps, tags, publishes to npm and writes the GitHub release.
+#
+# It is the only thing that publishes, on purpose. When a bump, a tag and a publish are
+# three acts, the version on npm and the tag in this repo drift the first time one of
+# them fails; here they are one run, and the order is chosen so that a failure leaves
+# nothing published rather than something unpublishable.
+#
+# Needs one secret: NPM_TOKEN, an npm **Automation** token — a Publish token is
+# refused by 2FA when nobody is at the keyboard.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to raise
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      dry_run:
+        description: Verify and pack, but publish nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # the version commit, its tag, and the release
+  id-token: write # provenance: npm's proof the tarball was built by this workflow
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      # Installed elsewhere and started there, before the version exists — a release
+      # that cannot be installed should never get a number.
+      - run: ./scripts/install-elsewhere.sh
+
+      - name: Raise the version
+        id: bump
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          echo "tag=$(npm version '${{ inputs.bump }}' -m 'Release %s')" >> "$GITHUB_OUTPUT"
+
+      # npm first: a publish that fails leaves an unpushed commit nobody has to undo,
+      # whereas a tag pushed ahead of a failed publish is a version that never shipped.
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Push the commit and its tag
+        if: ${{ !inputs.dry_run }}
+        run: git push --follow-tags
+
+      - name: Write the release
+        if: ${{ !inputs.dry_run }}
+        run: gh release create '${{ steps.bump.outputs.tag }}' --generate-notes --title '${{ steps.bump.outputs.tag }}'
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: What would have shipped
+        if: ${{ inputs.dry_run }}
+        run: echo "dry run — ${{ steps.bump.outputs.tag }} was built and started, and nothing was published or pushed."

@@ -1,20 +1,19 @@
 node_modules/
 dist/
-.DS_Store
 .env
 .logs/
+.DS_Store
+__pycache__/
 
-# iOS app — .xcodeproj is generated from app/project.yml by xcodegen
+# What the relay learns about the folder it was started in — corrections, turn
+# records, edited prompts. There is one of these per project; this is the repo's own.
+.duck-talk/
+
+# iOS app — .xcodeproj and both Info.plists are generated from app/project.yml
 app/*.xcodeproj
 app/.build/
-xcuserdata/
-app/DuckTalk/Resources/Info.plist
-__pycache__/
 app/.venv/
 app/.team
-server/node_modules/
-
-# relay-owned state, written by the phone
-server/.corrections.jsonl
-server/.turns.jsonl
+app/DuckTalk/Resources/Info.plist
 app/DuckTalkWidget/Info.plist
+xcuserdata/

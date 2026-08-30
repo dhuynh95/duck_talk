@@ -29,7 +29,7 @@
  * at 66 ms/character, "Read this at a brisk, quick pace" at 44, "Read this slowly"
  * at 95.
  *
- * Lifted from src/client/routes/live/tts-session.ts + buffer.ts.
+ * Lifted from the web app's tts-session.ts + buffer.ts, at the `web-app` tag.
  *
  *   node voice.ts "Hello there. How are you?"     write reply.pcm, print timings
  */

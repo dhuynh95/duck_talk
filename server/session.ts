@@ -31,11 +31,12 @@ import { openClaude, type Claude } from './claude.ts';
 import { correct, CORRECT_MODEL } from './correct.ts';
 import { add, load, type Correction } from './corrections.ts';
 import { openEars, keyword, type Ears, type Keyword } from './ears.ts';
+import { state } from './paths.ts';
 import { openVoice, type Voice } from './voice.ts';
 
 export type Mode = 'direct' | 'review';
 
-/** What one turn did and when, on this Mac's clock. Appended to .turns.jsonl. */
+/** What one turn did and when, on this Mac's clock. Appended to .duck-talk/turns.jsonl. */
 export interface Turn {
   turn: number;
   mode: Mode;
@@ -73,8 +74,6 @@ export interface Phone {
    *  the next one the phone opens can carry it on. */
   event(msg: { type: string; text?: string; partial?: boolean; session?: string | null }): void;
 }
-
-const TURNS = new URL('./.turns.jsonl', import.meta.url).pathname;
 
 // A turn that never returns to `listening` — Claude died, the voice stalled, or a
 // task ran away — would hang the session forever. One ceiling on the whole turn
@@ -491,7 +490,7 @@ export class Session {
       `${claude}  buffer ${d(t.claude_first_at, t.tts_sent_at)}  tts ${d(t.tts_sent_at, t.voice_out_at)}  ` +
       `→phone ${d(t.voice_out_at, t.reply_in_at)}  ${(t.voice_ms / 1000).toFixed(1)}s voice`,
     );
-    await appendFile(TURNS, `${JSON.stringify(t)}\n`);
+    await appendFile(state('turns.jsonl'), `${JSON.stringify(t)}\n`);
   }
 }
 

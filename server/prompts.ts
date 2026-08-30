@@ -22,8 +22,12 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { packaged, state } from './paths.ts';
 
-const DIR = new URL('./prompts/', import.meta.url);
+// A prompt has two homes: the wording that ships with the relay, and the one you
+// edited for this project. An edit is a fact about the project, so it is written
+// beside the project's other state and read in preference to the default — which is
+// also what lets `npx duck-talk` start with sensible words and still be changed.
 
 const PROMPTS = [
   {
@@ -53,17 +57,21 @@ export interface Prompt {
   text: string;
 }
 
-/** The prompt as last saved. Empty when the file is not there yet, which is a normal first run. */
+/** The prompt as edited for this project, or — until it has been — the one that ships. */
 export function read(name: Name): string {
-  try {
-    return readFileSync(new URL(entry(name).file, DIR), 'utf8').trim();
-  } catch {
-    return '';
+  const { file } = entry(name);
+  for (const at of [state('prompts', file), packaged(`./prompts/${file}`)]) {
+    try {
+      return readFileSync(at, 'utf8').trim();
+    } catch {
+      // not edited here, or — for the default — a package missing its own asset
+    }
   }
+  return '';
 }
 
 export function write(name: Name, text: string): void {
-  writeFileSync(new URL(entry(name).file, DIR), `${text.trim()}\n`);
+  writeFileSync(state('prompts', entry(name).file), `${text.trim()}\n`);
 }
 
 /** Every prompt, text included — the whole of what the phone's Prompts screen shows. */

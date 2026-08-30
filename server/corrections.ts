@@ -15,6 +15,7 @@
  */
 
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { state } from './paths.ts';
 
 export interface Correction {
   at: number;
@@ -23,14 +24,15 @@ export interface Correction {
   meant: string;
 }
 
-const FILE = new URL('./.corrections.jsonl', import.meta.url).pathname;
+/** One file per project, under the folder the relay was started in — see paths.ts. */
+const file = () => state('corrections.jsonl');
 const MAX = 50; // a prompt is not a database; keep the most recent lessons
 
 /** Every correction learned so far, newest last, one per `heard` (a later edit wins). */
 export function load(): Correction[] {
   let text: string;
   try {
-    text = readFileSync(FILE, 'utf8');
+    text = readFileSync(file(), 'utf8');
   } catch {
     return []; // no corrections yet is the normal first-run state
   }
@@ -48,7 +50,7 @@ export function load(): Correction[] {
 }
 
 export function add(c: Correction): void {
-  appendFileSync(FILE, `${JSON.stringify(c)}\n`);
+  appendFileSync(file(), `${JSON.stringify(c)}\n`);
 }
 
 /** Add one, or replace the one with the same `at`. */
@@ -66,7 +68,7 @@ export function remove(at: number): void {
 function all(): Correction[] {
   let text: string;
   try {
-    text = readFileSync(FILE, 'utf8');
+    text = readFileSync(file(), 'utf8');
   } catch {
     return [];
   }
@@ -79,7 +81,7 @@ function all(): Correction[] {
 }
 
 function rewrite(corrections: Correction[]): void {
-  writeFileSync(FILE, corrections.map((c) => `${JSON.stringify(c)}\n`).join(''));
+  writeFileSync(file(), corrections.map((c) => `${JSON.stringify(c)}\n`).join(''));
 }
 
 /** The block both consumers paste into a prompt. Empty string when nothing is known. */

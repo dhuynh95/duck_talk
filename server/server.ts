@@ -1,6 +1,10 @@
 /**
  * Voice relay: one WebSocket per phone, one Session behind it (ears + Claude + voice).
  *
+ * Started by `cli.ts` in whatever folder you are standing in, and that folder is the
+ * whole of the configuration — it is what Claude works in, so it decides which chats
+ * exist, and it is where everything the relay learns is kept. See paths.ts.
+ *
  *   ↑ binary  raw PCM Int16 LE, 16 kHz, mono          (mic)
  *   ↑ text    {"type":"text","text"}                  an instruction, typed
  *             {"type":"mark","name","at"}             a moment only the phone can see
@@ -17,7 +21,7 @@
  * A session is in one `?mode=`: `direct` (default) runs each instruction at once,
  * `review` holds it for a yes/no/edit first. Orthogonal to both, `?correct=1` has a
  * fast text model fix the instruction first, from the pairs a review-mode edit
- * taught (`.corrections.jsonl`). `?readback=1` also reads a held instruction aloud,
+ * taught (`.duck-talk/corrections.jsonl`). `?readback=1` also reads a held instruction aloud,
  * for deciding without looking at the screen. `?resume=<id>` carries on a past chat
  * instead of starting one — any session Claude Code has in this project, including
  * the ones you started in a terminal.
@@ -30,12 +34,12 @@
  * `chat_open`, because they are the one part that is not small. `fork` branches a
  * chat at one message and answers with the new one, which is `chat_open` on it.
  *
- * Every finished turn is appended to `.turns.jsonl`. The phone, this relay and the
+ * Every finished turn is appended to `.duck-talk/turns.jsonl`. The phone, this relay and the
  * test harness all run on one Mac, so those timestamps share one clock and any
  * latency is a subtraction, never a measurement.
  */
 
-import { WebSocketServer, type WebSocket } from 'ws';
+import { WebSocketServer } from 'ws';
 import { GoogleGenAI } from '@google/genai';
 import { Session, type Mode, type Phone } from './session.ts';
 import { billingMode } from './claude.ts';
@@ -147,8 +151,23 @@ wss.on('connection', (ws, req) => {
 process.on('uncaughtException', (e) => console.error('uncaught:', e));
 process.on('unhandledRejection', (e) => console.error('unhandled rejection:', e));
 
-console.log(`voice relay on ws://localhost:${PORT}\n  stt=${STT_MODEL}\n  voice=${VOICE_MODEL}`);
-console.log(`claude: ${billingMode()}`);
+// Said when the port is actually held, not when it was asked for. Binding is
+// asynchronous, and the failure that matters — someone else already on 8765, which is
+// what a forgotten relay from this morning looks like — arrives after this line would
+// otherwise have promised a server. The uncaught handler above would then swallow it
+// and leave a process that answers nothing.
+wss.on('listening', () => {
+  console.log(`voice relay on ws://localhost:${PORT}\n  stt=${STT_MODEL}\n  voice=${VOICE_MODEL}`);
+  // Asking the CLI who it is takes a subprocess and about 700ms, so it is printed
+  // when it comes back rather than kept in front of the address someone is waiting for.
+  void billingMode().then((mode) => console.log(`claude: ${mode}`));
+});
+wss.on('error', (e: NodeJS.ErrnoException) => {
+  console.error(e.code === 'EADDRINUSE'
+    ? `port ${PORT} is already taken — another relay is probably still running.\n  Stop it, or start this one with --port <n>.`
+    : `could not listen on ${PORT}: ${e.message}`);
+  process.exit(1);
+});
 
 function parse(text: string): Record<string, unknown> | null {
   try { return JSON.parse(text) as Record<string, unknown>; } catch { return null; }

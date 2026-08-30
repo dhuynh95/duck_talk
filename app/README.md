@@ -52,7 +52,7 @@ job each, no duplicated logic.
 plus a screenshot. Injection is a black box — `say` plays into `BlackHole 2ch`, which
 the app listens to, so the question goes through the real microphone path
 (`brew install --cask blackhole-2ch`). The result is not: the relay writes every
-finished turn to `../server/.turns.jsonl`, and the app reports over the same socket
+finished turn to `../.duck-talk/turns.jsonl`, and the app reports over the same socket
 when the first reply byte reached it. The app, the relay and `sim.py` all run on this
 Mac, so those timestamps share a clock and every number is a subtraction — nothing is
 measured from sound. The reply plays out of your normal output, so you can hear it.

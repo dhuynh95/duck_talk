@@ -1,0 +1,33 @@
+{
+  // In this repo Node runs the .ts files directly, so there is no build in the dev
+  // loop — `npm start` is the sources. This exists for the package: a stranger's Node
+  // must not have to strip types, so `npm run build` turns server/ into dist/, and
+  // that is what `duck-talk` runs.
+  //
+  // The tools next to the relay — probe, lab, import, the fixtures — stay source-only.
+  // They are for working on it, not for running it.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "outDir": "dist",
+    "rootDir": "server",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    // The source says `./paths.ts` and the output says `./paths.js`: one spelling in
+    // the repo, where Node runs the TypeScript, and a correct one in the package.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": true
+  },
+  "include": ["server/**/*.ts"],
+  "exclude": ["server/lab.ts", "server/probe.ts", "server/import.ts", "server/fixtures/**"]
+}

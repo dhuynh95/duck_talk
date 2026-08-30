@@ -9,9 +9,9 @@ You can also type. A typed instruction is a socket of its own that lives for one
 and the relay opens ears only for a connection that sends audio, so typing costs no
 Gemini session and gets no spoken reply. The two are exclusive: touching the field while
 listening stops the session. Both carry `resume`, so a typed turn and a spoken one are
-the same conversation. The earlier chat client (session list, SSE against
-`src/server`) is parked on the `ios/wired-mvp` branch; pull pieces over from there
-rather than rewriting them.
+the same conversation. The earlier chat client (session list, SSE against the web app's
+Express backend, now at the `web-app` tag) is parked on the `ios/wired-mvp` branch;
+pull pieces over from there rather than rewriting them.
 
 Two things the phone does that the simulator cannot show you. `UIBackgroundModes:
 audio` keeps the microphone open once the screen locks — iOS will not let a
@@ -58,8 +58,9 @@ reports what the turn actually did, plus a screenshot:
 Injection is a black box and the result is not. `say` plays into `BlackHole 2ch`, the
 device the app listens to, so the question goes through the real microphone path. But
 nothing is measured from sound: the relay writes every finished turn to
-`server/.turns.jsonl`, and the app reports over the same socket the moment the first
-reply byte reached it.
+`turns.jsonl` under the state directory of whatever folder it was started in — this
+repo, so `.duck-talk/turns.jsonl` — and the app reports over the same socket the
+moment the first reply byte reached it.
 
 That works because **the app, the relay and this harness all run on this Mac, so they
 share one clock.** Every number is a subtraction between two timestamps. Nothing is

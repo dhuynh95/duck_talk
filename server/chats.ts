@@ -20,6 +20,8 @@
 
 import { fileURLToPath } from 'node:url';
 import { forkSession, getSessionMessages, listSessions, type SessionMessage } from '@anthropic-ai/claude-agent-sdk';
+// The directory claude.ts runs in, which is what scopes a session to this project.
+import { PROJECT as CWD } from './paths.ts';
 
 /** One exchange, as it would be spoken. `uuid` is where a fork can cut. */
 export interface Message {
@@ -36,9 +38,6 @@ export interface Chat {
   title: string;
 }
 
-// The directory claude.ts runs in, which is what scopes a session to this project.
-// Without the trailing slash a directory URL leaves behind.
-const CWD = (process.env['PROJECT_CWD'] ?? fileURLToPath(new URL('..', import.meta.url))).replace(/\/+$/, '');
 const LIST = 50; // a phone list, not an archive
 
 /** Every chat in this project, most recently touched first. */

@@ -33,6 +33,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renameSession } from '@anthropic-ai/claude-agent-sdk';
+import { PROJECT as CWD } from './paths.ts';
 
 interface Turn {
   role: 'user' | 'model';
@@ -44,8 +45,6 @@ interface Conversation {
   name?: string;
   turns: Turn[];
 }
-
-const CWD = (process.env['PROJECT_CWD'] ?? fileURLToPath(new URL('..', import.meta.url))).replace(/\/+$/, '');
 
 /** Claude Code names a project's directory after its path, with everything else dashed out. */
 function projectDir(): string {

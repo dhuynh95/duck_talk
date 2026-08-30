@@ -1,0 +1,39 @@
+name: CI
+
+# The relay, checked the way it will be used: typechecked, built, then packed,
+# installed into a folder that is not this repo, and started there. A green run here
+# is the same evidence a release run collects, so Release has nothing new to discover.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: ./scripts/install-elsewhere.sh
+
+      # The one thing packaging cannot prove. The relay's startup line asks Claude Code
+      # who is signed in, which costs nothing and shows the binary launches and holds
+      # credentials — but an account that is rate-limited or lapsed answers that just as
+      # cleanly. Only a turn shows a turn. Skipped where there is no key, so a fork or a
+      # pull request from one still goes green.
+      - name: One real turn
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo 'no ANTHROPIC_API_KEY secret — skipping the turn'
+            exit 0
+          fi
+          node dist/claude.js 'Reply with the single word: ok'
