@@ -163,8 +163,10 @@ wss.on('listening', () => {
   void billingMode().then((mode) => console.log(`claude: ${mode}`));
 });
 wss.on('error', (e: NodeJS.ErrnoException) => {
+  // Only an asked-for port reaches here: without --port the cli takes the first free
+  // one, so the advice is to stop asking rather than to ask for a different number.
   console.error(e.code === 'EADDRINUSE'
-    ? `port ${PORT} is already taken — another relay is probably still running.\n  Stop it, or start this one with --port <n>.`
+    ? `port ${PORT} is taken, and you asked for it by name.\n  Leave --port off and duck-talk takes the first free port instead.`
     : `could not listen on ${PORT}: ${e.message}`);
   process.exit(1);
 });
