@@ -1,18 +1,35 @@
 {
   "name": "duck_talk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Talk to Claude Code from your phone: a voice relay you run in the folder you want it to work on",
-  "keywords": ["claude", "claude-code", "voice", "speech-to-text", "text-to-speech", "gemini", "agent"],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "voice",
+    "speech-to-text",
+    "text-to-speech",
+    "gemini",
+    "agent"
+  ],
   "license": "MIT",
   "author": "Daniel Huynh",
   "homepage": "https://github.com/dhuynh95/duck_talk#readme",
-  "repository": { "type": "git", "url": "git+https://github.com/dhuynh95/duck_talk.git" },
-  "bugs": { "url": "https://github.com/dhuynh95/duck_talk/issues" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dhuynh95/duck_talk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dhuynh95/duck_talk/issues"
+  },
   "bin": {
     "duck-talk": "dist/cli.js"
   },
-  "files": ["dist/", "README.md", "LICENSE"],
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=22"
   },
