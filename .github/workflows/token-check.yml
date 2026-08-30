@@ -21,10 +21,21 @@ jobs:
           trimmed=$(printf %s "$T" | tr -d '[:space:]')
           echo "length            ${#T}   (a classic npm token is 40: npm_ plus 36)"
           echo "length trimmed    ${#trimmed}"
-          case "$T" in
-            npm_*) echo 'prefix            npm_ (classic automation/publish token)' ;;
-            npms_*) echo 'prefix           npms_ (granular access token)' ;;
-            *) echo 'prefix            NOT npm_ or npms_ — this is not an npm token' ;;
+          shape() {
+            case "$1" in
+              npm_*) echo 'npm_ (classic automation/publish token)' ;;
+              npms_*) echo 'npms_ (granular access token)' ;;
+              ghp_*|github_pat_*) echo 'a GitHub token, not an npm one' ;;
+              *) echo 'neither npm_ nor npms_' ;;
+            esac
+          }
+          echo "prefix, as stored     $(shape "$T")"
+          echo "prefix, trimmed       $(shape "$trimmed")"
+          echo "lines                 $(printf %s "$T" | wc -l | tr -d ' ') newline(s)"
+          # Whether what is there is even token-shaped: a legacy npm token is a UUID.
+          case "$trimmed" in
+            [0-9a-f]*-[0-9a-f]*-[0-9a-f]*-[0-9a-f]*-[0-9a-f]*) echo 'shape                 looks like a legacy UUID token' ;;
+            *) echo 'shape                 not a UUID' ;;
           esac
 
           ask() {
