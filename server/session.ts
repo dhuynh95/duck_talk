@@ -41,9 +41,16 @@ export interface Turn {
   approval: 'accepted' | 'rejected' | null;
   said: string;
   speech_end_at: number | null; // caller marked the moment its audio stopped (probe/app)
+  partial_last_at: number | null; // last interim transcript before the final
   heard_at: number | null; // the utterance was finished — the instruction exists
   corrected_at: number | null; // auto-correct came back
+  /** The instruction went to Claude. In review mode everything before this is a
+   *  human deciding, which is not latency; timing Claude from here keeps the two apart. */
+  ran_at: number | null;
+  claude_start_at: number | null; // Claude opened its first block of the turn
+  claude_opens: string | null; // and what it was: text, thinking, tool_use
   claude_first_at: number | null; // Claude's first token
+  tts_sent_at: number | null; // first sentence handed to the voice model
   voice_out_at: number | null; // first reply byte written to the phone
   reply_in_at: number | null; // phone reported that byte arrived
   voice_ms: number; // reply audio sent, exact (24 kHz Int16 = 48 bytes/ms)
@@ -135,6 +142,9 @@ export class Session {
         this.turn.voice_ms += pcm.length / 48;
         this.phone.pcm(pcm);
       },
+      // Same guard as the first byte out, for the same reason: a review readback is
+      // read through this voice too, and timing the turn from it is the wrong sound.
+      onSay: () => { if (this.state !== 'held') this.turn.tts_sent_at ??= Date.now(); },
       // Fires when the voice drains. In review mode the readback drains too — that is
       // not the turn ending, so only end when Claude's reply is what just played.
       onDone: () => { if (this.state === 'claude') this.endTurn(); },
@@ -148,6 +158,10 @@ export class Session {
     this.claude = openClaude({
       resume: this.resume,
       log: this.log,
+      onStart: (kind) => {
+        this.turn.claude_start_at ??= Date.now();
+        this.turn.claude_opens ??= kind;
+      },
       onText: (text) => {
         this.turn.claude_first_at ??= Date.now();
         this.turn.said += text;
@@ -186,6 +200,9 @@ export class Session {
         // utterance, never the tail of the one that started the turn.
         if (this.state === 'claude') this.cancel('spoke over the reply');
         this.turn.heard = text;
+        // The last one before the final says how long Gemini took to decide the
+        // utterance was over — the one wait an endpointing setting would change.
+        this.turn.partial_last_at = Date.now();
         this.phone.event({ type: 'user', text, partial: true });
       },
       onFinal: (text) => {
@@ -339,6 +356,7 @@ export class Session {
 
   private run(instruction: string): void {
     this.state = 'claude';
+    this.turn.ran_at = Date.now();
     this.arm();
     this.claude.send(instruction); // the callbacks wired in open() carry the reply
   }
@@ -378,8 +396,9 @@ export class Session {
   private blank(): Turn {
     return {
       turn: ++this.turns, mode: this.mode, session_id: null, heard: '', proposed: '', corrected: null, instruction: '',
-      approval: null, said: '', speech_end_at: null, heard_at: null, corrected_at: null,
-      claude_first_at: null, voice_out_at: null, reply_in_at: null, voice_ms: 0, cost_usd: null,
+      approval: null, said: '', speech_end_at: null, partial_last_at: null, heard_at: null, corrected_at: null,
+      ran_at: null, claude_start_at: null, claude_opens: null, claude_first_at: null, tts_sent_at: null,
+      voice_out_at: null, reply_in_at: null, voice_ms: 0, cost_usd: null,
     };
   }
 
@@ -389,13 +408,22 @@ export class Session {
     // answered still belongs to the chat, and by now the id is known.
     t.session_id = this.sessionId;
     const d = (a: number | null, b: number | null) => (a && b ? `${b - a}ms` : '—');
-    // The stages a user waits through, split apart: Gemini STT+routing, the optional
-    // correction, Claude to first token, then Gemini TTS to first byte. speech_end
-    // only exists when the caller marks it (probe/app); without it the STT stage reads —.
+    // Every stage a user waits through, and each one is a subtraction between two
+    // stamps on this Mac's clock. `stt` needs the caller to mark speech_end
+    // (probe/app) and reads — without it; `final` is Gemini deciding the utterance
+    // ended, which needs no mark at all. `claude` is split at its first block, so
+    // the API's share and the model's own thinking are separate numbers, and
+    // `buffer` is text waiting for a sentence boundary rather than for the voice.
     const corrected = t.corrected_at ? `correct ${d(t.heard_at, t.corrected_at)}  ` : '';
+    // Review mode only: the gap between the instruction existing and it being sent
+    // is a person deciding, and putting it in the Claude number would hide both.
+    const held = t.approval ? `held ${d(t.corrected_at ?? t.heard_at, t.ran_at)}  ` : '';
+    const claude = t.claude_start_at
+      ? `claude ${d(t.ran_at, t.claude_start_at)}+${d(t.claude_start_at, t.claude_first_at)} (${t.claude_opens})`
+      : `claude ${d(t.ran_at, t.claude_first_at)}`;
     this.log(
-      `turn ${t.turn} end  stt ${d(t.speech_end_at, t.heard_at)}  ${corrected}` +
-      `claude ${d(t.corrected_at ?? t.heard_at, t.claude_first_at)}  tts ${d(t.claude_first_at, t.voice_out_at)}  ` +
+      `turn ${t.turn} end  stt ${d(t.speech_end_at, t.heard_at)}  final ${d(t.partial_last_at, t.heard_at)}  ${corrected}${held}` +
+      `${claude}  buffer ${d(t.claude_first_at, t.tts_sent_at)}  tts ${d(t.tts_sent_at, t.voice_out_at)}  ` +
       `→phone ${d(t.voice_out_at, t.reply_in_at)}  ${(t.voice_ms / 1000).toFixed(1)}s voice`,
     );
     await appendFile(TURNS, `${JSON.stringify(t)}\n`);

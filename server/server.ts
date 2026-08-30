@@ -17,8 +17,8 @@
  * the ones you started in a terminal.
  *
  * `?data=1` is a connection that reads and edits what the relay can see and nothing
- * else — the corrections, how the voice should read, and the chats — so the phone
- * can show those screens with no voice session running. Every message is answered
+ * else — the corrections, the prompts it says to each model, and the chats — so the
+ * phone can show those screens with no voice session running. Every message is answered
  * with all of it, so the phone never has to ask twice or guess what the files now
  * say. The exception is one chat's messages, which are only sent when asked for by
  * `chat_open`, because they are the one part that is not small. `fork` branches a
@@ -35,7 +35,7 @@ import { Session, type Mode, type Phone } from './session.ts';
 import { billingMode } from './claude.ts';
 import { chat, chats, fork } from './chats.ts';
 import { load, remove, save } from './corrections.ts';
-import { readStyle, writeStyle } from './voice.ts';
+import { all as prompts, isName, write as writePrompt } from './prompts.ts';
 
 const PORT = Number(process.env['PORT'] ?? 8765);
 // Two jobs, two models: one Live session transcribes what you say, and a
@@ -81,13 +81,15 @@ wss.on('connection', (ws, req) => {
       } else if (f?.['type'] === 'correction_delete' && typeof f['at'] === 'number') {
         remove(f['at']);
         log(`correction deleted`);
-      } else if (f?.['type'] === 'voice_save') {
-        writeStyle(String(f['style'] ?? ''));
-        log(`voice style: ${readStyle() || '(none)'}`);
+      } else if (f?.['type'] === 'prompt_save' && isName(f['name'])) {
+        writePrompt(f['name'], String(f['text'] ?? ''));
+        log(`prompt saved: ${f['name']}`);
       }
       if (ws.readyState !== ws.OPEN) return;
       ws.send(JSON.stringify({ type: 'corrections', items: load() }));
-      ws.send(JSON.stringify({ type: 'voice', style: readStyle() }));
+      // Every prompt with its text, and with when it takes effect — so the phone can
+      // grey out one it cannot usefully change without knowing what any of them are.
+      ws.send(JSON.stringify({ type: 'prompts', prompts: prompts() }));
       // Branching a chat has to happen before the list is sent, or the new one is
       // missing from the answer that reports it.
       let forked: string | null = null;

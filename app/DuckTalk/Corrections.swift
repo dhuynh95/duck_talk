@@ -19,9 +19,8 @@ struct Correction: Identifiable, Codable, Hashable {
 @MainActor
 final class RelayStore {
     private(set) var items: [Correction] = []
-    /// How the voice should read the reply. The relay puts it in front of every
-    /// sentence; the wording is the only speed control the API has.
-    private(set) var style = ""
+    /// What the relay says to each model, described by the relay itself.
+    private(set) var prompts: [Prompt] = []
     /// Every conversation Claude Code has in this project, newest first.
     private(set) var chats: [Chat] = []
     /// The one chat asked for by `openChat`, and which one it was — the messages are
@@ -66,8 +65,8 @@ final class RelayStore {
         send(["type": "correction_delete", "at": correction.at])
     }
 
-    func saveStyle(_ style: String) {
-        send(["type": "voice_save", "style": style])
+    func savePrompt(_ name: String, _ text: String) {
+        send(["type": "prompt_save", "name": name, "text": text])
     }
 
     func openChat(_ id: String) {
@@ -82,7 +81,7 @@ final class RelayStore {
     private struct State: Decodable {
         let type: String
         let items: [Correction]?
-        let style: String?
+        let prompts: [Prompt]?
         let chats: [Chat]?
         let id: String?
         let messages: [ChatMessage]?
@@ -93,7 +92,7 @@ final class RelayStore {
         guard let data = json.data(using: .utf8),
               let state = try? JSONDecoder().decode(State.self, from: data) else { return }
         if let items = state.items { self.items = items.reversed() }  // newest first
-        if let style = state.style { self.style = style }
+        if let prompts = state.prompts { self.prompts = prompts }
         if let chats = state.chats { self.chats = chats }  // already newest first
         if let messages = state.messages {
             self.messages = messages
@@ -240,53 +239,6 @@ private struct CorrectionDetail: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") { onSave(correction) }.disabled(!complete)
             }
-        }
-    }
-}
-
-/// How the voice should read Claude's answer. One free-text line, because that is
-/// genuinely the whole control: the text-to-speech API has no rate parameter, and
-/// the relay simply says this before each sentence.
-struct VoiceView: View {
-    let serverURL: String
-    @State private var store = RelayStore()
-    @State private var draft = ""
-    @State private var loaded = false
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Read this at a brisk, quick pace, no pauses:", text: $draft, axis: .vertical)
-                        .lineLimit(2...6)
-                        .autocorrectionDisabled()
-                        .accessibilityIdentifier("style")
-                        .accessibilityLabel("Speaking style")
-                } header: {
-                    Text("Said before every sentence")
-                } footer: {
-                    Text("There is no speed setting — the wording is it. Asking for a brisk pace is about 1.5× faster than leaving this empty; asking for a slow one is about 1.5× slower. Takes effect on the next sentence.")
-                }
-                if let error = store.error {
-                    Text(error).font(.footnote).foregroundStyle(.red)
-                }
-            }
-            .navigationTitle("Voice")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { store.saveStyle(draft); dismiss() }
-                }
-            }
-        }
-        .onAppear { store.connect(to: serverURL) }
-        .onDisappear { store.disconnect() }
-        // The relay answers with what is on disk; take it once, so typing is not
-        // overwritten by the echo of your own save.
-        .onChange(of: store.style) {
-            if !loaded { draft = store.style; loaded = true }
         }
     }
 }

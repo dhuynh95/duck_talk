@@ -80,7 +80,7 @@ struct ContentView: View {
         }
         .sheet(item: $sheet) { which in
             switch which {
-            case .voice: VoiceView(serverURL: serverURL)
+            case .prompts: PromptsView(serverURL: serverURL)
             case .corrections: CorrectionsView(serverURL: serverURL)
             case .server: ServerView(serverURL: $serverURL)
             case .mode: ModeSheet(mode: $mode)
@@ -88,7 +88,7 @@ struct ContentView: View {
         }
     }
 
-    private enum Sheet: String, Identifiable { case voice, corrections, server, mode; var id: String { rawValue } }
+    private enum Sheet: String, Identifiable { case prompts, corrections, server, mode; var id: String { rawValue } }
 
     /// Branch the conversation at this answer and land on the result.
     ///
@@ -171,7 +171,7 @@ struct ContentView: View {
 
     private var settings: some View {
         Menu {
-            Button { sheet = .voice } label: { Label("Voice", systemImage: "speaker.wave.2") }
+            Button { sheet = .prompts } label: { Label("Prompts", systemImage: "text.bubble") }
             Button { sheet = .corrections } label: { Label("Corrections", systemImage: "text.badge.checkmark") }
             Toggle(isOn: $autocorrect) { Label("Auto-correct", systemImage: "wand.and.stars") }
                 .disabled(live)

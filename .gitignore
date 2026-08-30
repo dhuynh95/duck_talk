@@ -16,6 +16,5 @@ server/node_modules/
 
 # relay-owned state, written by the phone
 server/.corrections.jsonl
-server/.voice.txt
 server/.turns.jsonl
 app/DuckTalkWidget/Info.plist

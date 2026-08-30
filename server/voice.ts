@@ -20,46 +20,27 @@
  * playback by about three to one, so the queue does not starve and only the first
  * sentence's latency (~0.9s to first audio) is one the user can feel. Text is cut
  * at sentence boundaries on the way in, so audio starts long before Claude has
- * finished a paragraph.
+ * finished a paragraph — and the first sentence of a turn is cut as short as it
+ * comes, because it is the only one anyone is waiting for.
  *
- * How the reply is read — brisk, slow, whatever — is a line of text the phone saves
- * and this file puts in front of each sentence. The API has no rate parameter; the
- * wording is the whole knob, and it is worth about 1.5x in either direction.
+ * How the reply is read — brisk, slow, whatever — is the `voice` prompt, which the
+ * phone saves and this file puts in front of each sentence. The API has no rate
+ * parameter, so the wording is the only knob: over the same paragraph, plain reads
+ * at 66 ms/character, "Read this at a brisk, quick pace" at 44, "Read this slowly"
+ * at 95.
  *
  * Lifted from src/client/routes/live/tts-session.ts + buffer.ts.
  *
  *   node voice.ts "Hello there. How are you?"     write reply.pcm, print timings
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, type GenerateContentResponse } from '@google/genai';
+import { read } from './prompts.ts';
 
 /** Which voice Claude speaks in. Any of the prebuilt names. */
 const VOICE_NAME = 'Sulafat';
-
-// How the reply should be read, said to the model ahead of the text itself. This is
-// the only speed control there is — the API has no rate parameter, and the wording
-// does the work: measured over the same paragraph, plain reads at 66 ms/character,
-// "Read this at a brisk, quick pace" at 44, "Read this slowly" at 95.
-//
-// The file is the truth and is read per sentence rather than cached, so editing it
-// from the phone changes how the *next* sentence sounds, mid-conversation, with
-// nothing to invalidate and no reconnect.
-const STYLE_FILE = new URL('./.voice.txt', import.meta.url).pathname;
-
-/** How to read the reply, as last saved. Empty when nothing has been set. */
-export function readStyle(): string {
-  try {
-    return readFileSync(STYLE_FILE, 'utf8').trim();
-  } catch {
-    return ''; // no style yet is the normal first-run state
-  }
-}
-
-export function writeStyle(style: string): void {
-  writeFileSync(STYLE_FILE, style.trim());
-}
 
 // The endpoint returns 400 and 500 on requests that succeed unchanged moments
 // later, so a sentence gets more than one chance. A dropped one is a hole in the
@@ -79,6 +60,9 @@ export interface Voice {
 
 export interface VoiceCallbacks {
   onPcm(pcm: Buffer): void;
+  /** A sentence is being handed to the model — the request side of `onPcm`, and
+   *  what separates waiting for text from waiting for audio. */
+  onSay?(text: string): void;
   onDone?(): void;
   log?(m: string): void;
 }
@@ -111,10 +95,19 @@ export function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbacks): V
     while (queue.length && !closed) {
       const { signal } = aborter; // captured with the sentence, so a later interrupt aborts this one
       const text = queue.shift()!;
-      const style = readStyle();
-      const contents = style ? `${style}\n\n${text}` : text;
+      // Read per sentence rather than cached, so editing it from the phone changes
+      // how the *next* sentence sounds, mid-conversation, with nothing to invalidate.
+      const style = read('voice');
+      // The style is an instruction and the sentence is not, so the sentence says so.
+      // Without the marker a short one is heard as a reply to the instruction and
+      // comes back silent: measured, "Ready." after the style returns no audio at
+      // all, while "Ready." alone returns 1.2s. It costs nothing — the same long
+      // sentence reads in 4.76s with the marker against 4.64s without.
+      const contents = style ? `${style}\n\n[READ]: ${text}` : text;
       let spoke = false; // audio for this sentence has reached the phone
       let failure: unknown = null;
+      cb.onSay?.(text);
+      const askedAt = Date.now();
       for (let attempt = 1; attempt <= ATTEMPTS && !signal.aborted && !closed; attempt++) {
         try {
           const stream = await ai.models.generateContentStream({
@@ -130,6 +123,9 @@ export function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbacks): V
             if (signal.aborted || closed) break;
             const pcm = audio(chunk);
             if (pcm) {
+              // Per sentence, so a cold first request and a warm later one are
+              // separate numbers rather than one average.
+              if (!spoke && process.env['DEBUG']) log(`sentence audio in ${Date.now() - askedAt}ms: ${text.slice(0, 40)}`);
               spoke = true;
               firstAt ||= Date.now();
               playedMs += pcm.length / 48;
@@ -222,30 +218,62 @@ function audio(chunk: GenerateContentResponse): Buffer | null {
 
 // --- Sentence buffer --------------------------------------------------------
 
-/** Accumulate streamed text; emit at `. ! ?` boundaries once `minChars` are in, or after `maxWaitMs`. */
+/**
+ * Accumulate streamed text and emit it a sentence at a time.
+ *
+ * Two rules, and the first one is the whole latency story:
+ *
+ *   - The **first** sentence of a turn goes out at its first `. ! ?`, however
+ *     short. It is the only sentence anyone is waiting for, and Claude's opening
+ *     line is short by design — "Sure." "On it." — so a minimum length here means
+ *     waiting for the *second* sentence before any sound at all.
+ *   - Every sentence after it waits for `minChars`, because by then audio is
+ *     already playing and the minimum buys smoother phrasing at no cost.
+ *
+ * Cutting the first sentence short means the queue can run dry while the second
+ * request is still in flight, since requests are serial. Measured on "Sure." — a
+ * second's worth of audio — the queue was empty for 66 ms, which is shorter than a
+ * syllable. If a shorter opener ever makes that audible, the fix is to let one
+ * request run ahead of the sentence being read, not to go back to waiting.
+ *
+ * `maxWaitMs` is a ceiling on the first character's wait, not a quiet timer: it
+ * starts when the buffer stops being empty and is not restarted by later text.
+ * Restarting it meant it never fired while Claude streamed, so a reply that never
+ * reached a boundary was not read until the turn ended.
+ */
 function sentenceBuffer(onFlush: (text: string) => void, minChars = 40, maxWaitMs = 1000) {
   let buf = '';
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let started = false; // a sentence of this turn has already been sent
   const stopTimer = () => { if (timer) { clearTimeout(timer); timer = undefined; } };
-  const flush = () => { stopTimer(); if (buf.trim()) { onFlush(buf.trim()); buf = ''; } };
+  const emit = (text: string) => { started = true; onFlush(text); };
+  // The cap firing: send what is buffered, but the turn is not over.
+  const cut = () => { stopTimer(); if (buf.trim()) { emit(buf.trim()); buf = ''; } };
   return {
     push(text: string) {
       buf += text;
-      let last = -1;
+      // The first sentence cuts at the *first* boundary and the rest at the last:
+      // one is racing to make a sound, the others are filling a queue that is
+      // already playing, and a longer request there is cheaper than a chopped one.
+      let at = -1;
       for (let i = 0; i < buf.length; i++) {
-        if ('.!?'.includes(buf[i]!) && (i === buf.length - 1 || buf[i + 1] === ' ' || buf[i + 1] === '\n')) last = i;
+        if ('.!?'.includes(buf[i]!) && (i === buf.length - 1 || buf[i + 1] === ' ' || buf[i + 1] === '\n')) {
+          at = i;
+          if (!started) break;
+        }
       }
-      if (last >= 0 && last + 1 >= minChars) {
-        const chunk = buf.slice(0, last + 1).trim();
-        buf = buf.slice(last + 1).trimStart();
+      if (at >= 0 && (!started || at + 1 >= minChars)) {
+        const chunk = buf.slice(0, at + 1).trim();
+        buf = buf.slice(at + 1).trimStart();
         stopTimer();
-        onFlush(chunk);
+        emit(chunk);
       }
-      stopTimer();
-      if (buf) timer = setTimeout(flush, maxWaitMs);
+      if (buf && !timer) timer = setTimeout(cut, maxWaitMs);
+      else if (!buf) stopTimer();
     },
-    flush,
-    clear() { stopTimer(); buf = ''; },
+    /** No more text this turn: send the tail, and the next sentence is a first one again. */
+    flush() { cut(); started = false; },
+    clear() { stopTimer(); buf = ''; started = false; },
   };
 }
 

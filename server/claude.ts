@@ -3,7 +3,8 @@
  * through `send`, text and tool blocks come back through callbacks, and a `result`
  * ends each turn. The session stays warm between turns — the first turn pays the
  * ~3s startup, every turn after is ~1s to first token — and `interrupt` stops the
- * current turn without tearing the session down, which is what barge-in needs.
+ * current turn without tearing the session down, which is what barge-in needs. That
+ * warmth is why the `claude` prompt is read once here and not per turn.
  *
  * Lifted from src/server/claude-client.ts, but stateful: the web backend spawned a
  * fresh subprocess per turn (via `resume`); this keeps one streaming query alive.
@@ -11,11 +12,10 @@
  *   node claude.ts "what is the latest commit"     one turn, streamed to stdout
  */
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { query, type Options, type PermissionMode, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { read } from './prompts.ts';
 
-const PROMPT = readFileSync(new URL('./prompts/claude.md', import.meta.url), 'utf8');
 const CWD = process.env['PROJECT_CWD'] ?? fileURLToPath(new URL('..', import.meta.url));
 const MODEL = process.env['CLAUDE_MODEL'];
 const PERMISSION_MODE = (process.env['CLAUDE_PERMISSION_MODE'] ?? 'plan') as PermissionMode;
@@ -40,6 +40,12 @@ export interface ClaudeCallbacks {
    * so any id this relay recorded can be resumed.
    */
   resume?: string;
+  /**
+   * Claude opened its first block of this turn, and what kind: `text` means it is
+   * answering, `thinking` or `tool_use` mean the wait before any words is its own
+   * doing rather than the API's. Once per turn.
+   */
+  onStart?(kind: string): void;
   onText(text: string): void;
   onBlock(block: Block): void;
   onResult(r: { sessionId: string; costUsd: number | null; error: string | null }): void;
@@ -79,6 +85,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
   let sent = 0;
   let finished = 0;
   let cancelledUpTo = 0;
+  let opened = false; // this turn's first block has been announced
   async function* input(): AsyncGenerator<SDKUserMessage> {
     while (!done) {
       while (queue.length) {
@@ -91,7 +98,10 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
 
   const options: Options = {
     cwd: CWD,
-    systemPrompt: PROMPT,
+    // Read here rather than at module load, so an edit made from the phone reaches
+    // the next session. It cannot reach this one: the SDK takes the prompt when the
+    // query is built, and rebuilding per turn would throw the warm session away.
+    systemPrompt: read('claude'),
     includePartialMessages: true,
     permissionMode: PERMISSION_MODE,
     allowedTools: ['Read', 'WebSearch'],
@@ -112,8 +122,12 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
         const alive = finished + 1 > cancelledUpTo; // is the turn now streaming still wanted?
         if (msg.type === 'stream_event') {
           if (!alive) continue;
-          const delta = (msg.event as { delta?: { text?: unknown } }).delta;
-          if (typeof delta?.text === 'string' && delta.text) cb.onText(delta.text);
+          const event = msg.event as { type?: string; delta?: { text?: unknown }; content_block?: { type?: string } };
+          if (!opened && event.type === 'content_block_start') {
+            opened = true;
+            cb.onStart?.(event.content_block?.type ?? 'unknown');
+          }
+          if (typeof event.delta?.text === 'string' && event.delta.text) cb.onText(event.delta.text);
         } else if (msg.type === 'assistant') {
           if (!alive) continue;
           for (const b of msg.message.content as { type: string; id?: string; name?: string; input?: unknown }[]) {
@@ -130,6 +144,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
           }
         } else if (msg.type === 'result') {
           finished++; // this turn is over, wanted or not
+          opened = false; // the next turn opens its own first block
           if (!alive) continue; // an interrupted turn's result is swallowed with its output
           let error: string | null = null;
           if (msg.is_error) error = 'errors' in msg && Array.isArray(msg.errors) ? msg.errors.join('; ') : 'result' in msg ? String(msg.result) : 'unknown error';

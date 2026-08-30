@@ -39,7 +39,8 @@ screen, and `exec_code` has `ax_tree()` if you ever need the raw tree.
 reports what the turn actually did, plus a screenshot:
 
 ```
-{"latency_ms": 8381, "claude_ms": 6146, "to_phone_ms": 1, "voice_ms": 5630, "cost_usd": 0.063,
+{"latency_ms": 8381, "claude_ms": 6146, "buffer_ms": 30, "tts_ms": 890, "to_phone_ms": 1,
+ "voice_ms": 5630, "cost_usd": 0.063,
  "heard": "What time is it?", "said": "It's 8:45 AM, Friday August 28th."}
 ```
 
@@ -56,7 +57,9 @@ thresholded, calibrated, or detected — there is no signal processing left to b
 `latency_ms` is the question finishing → the relay sending the first reply byte:
 Gemini routing, Claude thinking, TTS, and both network legs — the whole wait, now
 dominated by Claude, not Gemini. `claude_ms` is Claude's slice of it (cold on turn
-one, then resumed and fast). `to_phone_ms` is that byte reaching the phone — the cost
+one, then resumed and fast). `buffer_ms` and `tts_ms` split what used to be one
+number: text waiting for a sentence boundary, then the voice model's own latency —
+so a slow reply says which of the two to go after. `to_phone_ms` is that byte reaching the phone — the cost
 of relaying through the Mac, the number Architecture B lives or dies on; it measures
 ~1 ms. `voice_ms` is exact: 24 kHz Int16 is 48 bytes per millisecond. `cost_usd` is
 what the Claude turn cost.

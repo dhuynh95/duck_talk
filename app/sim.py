@@ -389,8 +389,12 @@ async def play_audio(
     latency_ms  question finished playing → the relay sent the first reply byte.
                 Gemini routing, Claude thinking, TTS, and both network legs — the
                 whole wait a user sits through. Now dominated by Claude, not Gemini.
-    claude_ms   Gemini routed the instruction → Claude's first token. Claude's own
-                cost (cold start on turn one, then resumed and fast).
+    claude_ms   the instruction was sent → Claude's first token. Claude's own cost
+                (cold start on turn one, then resumed and fast). In review mode this
+                starts at the approval, so a slow decision is not billed to Claude.
+    buffer_ms   Claude's first token → the first sentence handed to the voice model.
+                Text waiting for a sentence boundary, not for anything remote.
+    tts_ms      that sentence sent → its first audio byte. The voice model's own cost.
     to_phone_ms first reply byte → the phone says it arrived. What relaying through
                 the Mac costs, which is the question Architecture B has to answer.
     voice_ms    reply audio the relay sent, exact (24 kHz Int16 is 48 bytes/ms).
@@ -444,13 +448,24 @@ async def play_audio(
             + f"said={turn.get('said')!r} approval={turn.get('approval')!r}",
             await _shot(),
         ]
-    route_at, claude_at = turn.get("heard_at"), turn.get("claude_first_at")
+    # Claude's cost is timed from when the instruction was actually sent, which in
+    # review mode is after a person decided; `heard_at` would bill that to Claude.
+    route_at, claude_at = turn.get("ran_at"), turn.get("claude_first_at")
+    sent_at = turn.get("tts_sent_at")
+
+    def span(a: object, b: object) -> int | None:
+        return (
+            round(b - a)
+            if isinstance(a, (int, float)) and isinstance(b, (int, float))
+            else None
+        )
+
     metrics = {
         "latency_ms": round(out_at - asked_at),
-        "claude_ms": round(claude_at - route_at)
-        if isinstance(route_at, (int, float)) and isinstance(claude_at, (int, float))
-        else None,
-        "to_phone_ms": round(in_at - out_at) if isinstance(in_at, (int, float)) else None,
+        "claude_ms": span(route_at, claude_at),
+        "buffer_ms": span(claude_at, sent_at),
+        "tts_ms": span(sent_at, out_at),
+        "to_phone_ms": span(out_at, in_at),
         "voice_ms": round(cast(float, turn.get("voice_ms", 0))),
         "cost_usd": turn.get("cost_usd"),
         "heard": turn.get("heard"),

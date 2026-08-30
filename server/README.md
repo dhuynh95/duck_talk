@@ -53,17 +53,22 @@ voice session, no Gemini, no Claude:
 | `{"type":"corrections"}` (or anything) | the current state |
 | `{"type":"correction_save","at","heard","meant"}` | … |
 | `{"type":"correction_delete","at"}` | … |
-| `{"type":"voice_save","style"}` | … |
+| `{"type":"prompt_save","name","text"}` | … |
 | `{"type":"chat_open","id"}` | that chat's messages |
 | `{"type":"fork","id","at"}` | a new chat ending at message `at`, then opened |
 
 Every message is answered with `{"type":"corrections","items":[…]}`,
-`{"type":"voice","style":"…"}` and `{"type":"chats","chats":[…]}`, so the phone reads
-what is there rather than tracking it. One chat's messages are the exception, sent
-only when asked for, because they are the one part that is not small. `style` is put in front of every sentence the voice reads: the text-to-speech
-API has no rate parameter, so the wording is the speed control — "Read this at a
-brisk, quick pace" is about 1.5x faster than leaving it empty. It is stored in
-`.voice.txt` and read per sentence, so a change is audible on the next one.
+`{"type":"prompts","prompts":[…]}` and `{"type":"chats","chats":[…]}`, so the phone
+reads what is there rather than tracking it. One chat's messages are the exception,
+sent only when asked for, because they are the one part that is not small.
+
+A prompt is one of the files in `prompts/` — see `prompts.ts`, which is the only
+thing that names them. Each arrives with its `title`, a `detail` explaining what it
+does, and `live`: whether an edit reaches the session already running. `voice` is
+live, because it is re-read per sentence and goes in front of each one — the
+text-to-speech API has no rate parameter, so its wording is the only speed control
+there is. `claude` is not, because the SDK takes the system prompt when the session's
+query is built, so an edit reaches the next session.
 
 ## What a turn leaves behind
 
