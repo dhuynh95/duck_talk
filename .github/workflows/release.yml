@@ -32,8 +32,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -45,6 +45,14 @@ jobs:
       # Installed elsewhere and started there, before the version exists — a release
       # that cannot be installed should never get a number.
       - run: ./scripts/install-elsewhere.sh
+
+      # A secret that exists and a secret npm accepts are different facts, and only
+      # this one is worth knowing before a version number has been spent. Runs on a
+      # dry run too — checking the token is most of why you would do one.
+      - name: Who npm thinks we are
+        run: npm whoami
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Raise the version
         id: bump
