@@ -32,37 +32,36 @@ GEMINI_API_KEY=AIza... npx duck_talk
 
 That's the whole setup. **The folder you run it in is the project Claude works on** —
 its files, its git history, and its Claude Code conversations, including the ones you
-started in a terminal. Run it somewhere else tomorrow and it is about that instead.
-Then point a client at the address it prints.
+started in a terminal. It is also where the relay keeps what it learns: a `.duck-talk/`
+directory holding the turn records, the corrections, and any prompt you edited from the
+phone. Run it somewhere else tomorrow and it is about that instead. Then point a client
+at the address it prints.
 
 You will need:
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code), signed in — the relay
-  says which account will pay on its third line, asked of the CLI rather than guessed.
-  An `ANTHROPIC_API_KEY` in the environment bills the API instead.
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code), signed in — the relay's
+  last startup line names the account that will pay, asked of the CLI rather than
+  guessed from the environment. An `ANTHROPIC_API_KEY` bills the API instead.
 - [`GEMINI_API_KEY`](https://aistudio.google.com/apikey) — for the voice. The free tier
-  works, no credit card.
+  works, no credit card. In the shell, or in a `.env` file in that folder.
 
-Either in the shell or in a `.env` file in that folder:
-
-```bash
-GEMINI_API_KEY=AIza...
-```
-
-```
-duck-talk [--port <n>] [--cwd <path>]
-```
-
-`--cwd` if you want to serve a folder you are not standing in. `--port` defaults to
-8765. Node 22 or newer.
+The command the package installs is `duck-talk`, and `duck-talk --help` has the rest:
+`--cwd` serves a folder you are not standing in, `--port` defaults to 8765. Node 22 or
+newer.
 
 ### The client
 
 The relay is a plain WebSocket server, so the client is separable from it. The one in
 this repo is a SwiftUI iPhone app (`app/`) — talk on a walk, read the transcript,
 browse and fork past conversations. Build it with `cd app && ./dt run` for the
-simulator, or `./dt phone` for a cabled iPhone, which prints the `wss://…ts.net`
-address to paste under gear ▸ Server. See [`app/README.md`](app/README.md).
+simulator, or `./dt phone` for a cabled iPhone. See [`app/README.md`](app/README.md).
+
+An iPhone refuses cleartext `ws://`, and it does not have to accept it:
+`tailscale serve --bg 8765` puts a publicly trusted certificate in front of the relay
+at your Mac's own `ts.net` name, so the phone reaches
+`wss://<your-machine>.ts.net` from anywhere on the tailnet, cellular included — while
+the relay stays a plain WebSocket server that knows nothing about TLS. `./dt phone`
+runs that command for you and prints the address to paste under gear ▸ Server.
 
 To check the Mac half with no phone at all:
 

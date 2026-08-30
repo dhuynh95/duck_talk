@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  What the app touches that Apple asks about, and what it does not collect.
+
+  Nothing leaves the phone except to the relay, which is a machine the user runs and
+  addresses themselves — so there is no data type here. The microphone is covered by
+  NSMicrophoneUsageDescription in Info.plist, which is a different question: what the
+  user is asked, rather than what is declared to Apple.
+
+  UserDefaults is here because @AppStorage is UserDefaults, and Apple requires a
+  declared reason for reading it at all. CA92.1 is "read and write only this app's own
+  settings" — which is the server URL, the mode, and the auto-correct toggle.
+
+  Written by hand, unlike Info.plist, which xcodegen generates from project.yml.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSPrivacyTracking</key>
+  <false/>
+  <key>NSPrivacyTrackingDomains</key>
+  <array/>
+  <key>NSPrivacyCollectedDataTypes</key>
+  <array/>
+  <key>NSPrivacyAccessedAPITypes</key>
+  <array>
+    <dict>
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+      <key>NSPrivacyAccessedAPIReasons</key>
+      <array>
+        <string>CA92.1</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>
