@@ -1,0 +1,37 @@
+name: Check the npm token
+
+# Temporary. Answers "why does NPM_TOKEN get a 401" without anyone having to look at
+# the token: the runner holds it, and prints only facts about it — how long it is,
+# whether it has the npm_ prefix, whether it has whitespace, and what the registry
+# says to it raw versus trimmed. GitHub masks the value itself in every log line.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Facts, not the value
+        env:
+          T: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$T" ]; then echo 'the secret is empty or missing'; exit 1; fi
+
+          trimmed=$(printf %s "$T" | tr -d '[:space:]')
+          echo "length            ${#T}   (a classic npm token is 40: npm_ plus 36)"
+          echo "length trimmed    ${#trimmed}"
+          case "$T" in
+            npm_*) echo 'prefix            npm_ (classic automation/publish token)' ;;
+            npms_*) echo 'prefix           npms_ (granular access token)' ;;
+            *) echo 'prefix            NOT npm_ or npms_ — this is not an npm token' ;;
+          esac
+
+          ask() {
+            curl -s -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer $1" https://registry.npmjs.org/-/whoami
+          }
+          echo "registry, as stored   $(ask "$T")"
+          echo "registry, whitespace stripped   $(ask "$trimmed")"
+          echo
+          echo '200 = accepted, 401 = rejected.'
