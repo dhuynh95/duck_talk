@@ -8,6 +8,7 @@ answer back. Four primitives, each runnable alone:
 - `claude.ts` — Claude Code via the Agent SDK: one instruction → streamed text + tool calls + a session id to resume.
 - `voice.ts`  — Gemini text-to-speech, one request per sentence: Claude's text in → 24 kHz PCM out.
 - `session.ts`— the turn state machine wiring the three together, per phone connection.
+- `chats.ts`  — the conversations Claude Code has in this project: list, read, fork. The SDK's own session store, which is what `?resume=` replays.
 
 ```bash
 cd server
@@ -40,7 +41,9 @@ for a yes/no, `turn_end` says the reply is finished — the only such signal.
 
 Connect to `ws://<mac>:8765`. One `?mode=`: `direct` (default) runs each instruction
 at once, `review` holds it for a spoken "yes"/"no" or an approve/reject frame first.
-`?correct=1` and `?readback=1` are orthogonal to both.
+`?correct=1` and `?readback=1` are orthogonal to both. `?resume=<session id>` carries
+on a past conversation instead of starting one — any session Claude Code has in this
+project, including the ones you started in a terminal.
 
 `?data=1` opens a connection that edits what the relay owns and nothing else — no
 voice session, no Gemini, no Claude:
@@ -51,10 +54,13 @@ voice session, no Gemini, no Claude:
 | `{"type":"correction_save","at","heard","meant"}` | … |
 | `{"type":"correction_delete","at"}` | … |
 | `{"type":"voice_save","style"}` | … |
+| `{"type":"chat_open","id"}` | that chat's messages |
+| `{"type":"fork","id","at"}` | a new chat ending at message `at`, then opened |
 
-Every message is answered with **both** `{"type":"corrections","items":[…]}` and
-`{"type":"voice","style":"…"}`, so the phone reads the files rather than tracking
-them. `style` is put in front of every sentence the voice reads: the text-to-speech
+Every message is answered with `{"type":"corrections","items":[…]}`,
+`{"type":"voice","style":"…"}` and `{"type":"chats","chats":[…]}`, so the phone reads
+what is there rather than tracking it. One chat's messages are the exception, sent
+only when asked for, because they are the one part that is not small. `style` is put in front of every sentence the voice reads: the text-to-speech
 API has no rate parameter, so the wording is the speed control — "Read this at a
 brisk, quick pace" is about 1.5x faster than leaving it empty. It is stored in
 `.voice.txt` and read per sentence, so a change is audible on the next one.
@@ -65,7 +71,7 @@ Every finished turn is appended to `.turns.jsonl` as one line:
 
 ```json
 {"turn":1,"mode":"direct","heard":"What branch am I on?","instruction":"What branch am I on?",
- "approval":null,"said":"You're on main.","heard_at":1787900000000,"claude_first_at":1787900006146,
+ "approval":null,"said":"You're on main.","session_id":"0d85ded9-…","heard_at":1787900000000,"claude_first_at":1787900006146,
  "voice_out_at":1787900007000,"reply_in_at":1787900007001,"voice_ms":5630,"cost_usd":0.063}
 ```
 
@@ -86,6 +92,9 @@ node claude.ts "what is the latest commit"          # stream Claude's answer to 
 node voice.ts  "Hello there. How are you?"          # write reply.pcm, print timings
 node ears.ts   --file turn.wav                       # 16 kHz mono in → print partials, then the final
 node probe.ts  "what is the latest commit"           # the whole path, no phone
+node chats.ts                                        # list them; <id> prints one; fork <id> <uuid> branches
+node import.ts ~/Downloads/conversation.json         # a conversation from elsewhere, as a chat
+node lab.ts                                          # hold a Live session open and read its raw messages
 ```
 
 `probe.ts` is the Mac half end to end: it connects like a phone, speaks, and prints

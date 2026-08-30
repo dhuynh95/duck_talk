@@ -11,9 +11,10 @@
  * giant message is the only thing the SDK will take, and a phone draws nothing at all
  * for 160KB of text: the chat opens blank.
  *
- * So the entries are written here, and then checked rather than trusted — see the
- * verification at the bottom of this file's docs. The format is small: entries chain
- * by `parentUuid`, alternate user and assistant, and carry the session's own id.
+ * So the entries are written here, and then checked rather than trusted — the two
+ * commands below the usage line are that check, and both were run. The format is
+ * small: entries chain by `parentUuid`, alternate user and assistant, and carry the
+ * session's own id.
  *
  * Input is JSON — `{ name, turns: [{ role: "user" | "model", at, text }] }`.
  * Deliberately not HTML: a saved claude.ai page holds only the messages that were
@@ -58,7 +59,7 @@ function projectDir(): string {
  * orders — because a resumed session is read from the top, and without it the whole
  * transcript reads as instructions.
  */
-export function importConversation(conversation: Conversation): string {
+function importConversation(conversation: Conversation): string {
   const turns = conversation.turns.filter((t) => t.text?.trim());
   if (!turns.length) throw new Error('no turns to import');
 

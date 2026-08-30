@@ -1,9 +1,17 @@
 # app/ — Duck Talk iOS client
 
-SwiftUI, iOS 17+, no external Swift packages. One screen: a voice session against
-`server/` (mic → relay → Gemini → speaker). The earlier chat client (session list,
-SSE against `src/server`) is parked on the `ios/wired-mvp` branch; pull pieces over
-from there rather than rewriting them.
+SwiftUI, iOS 17+, no external Swift packages. Two targets: the app, and a widget
+extension holding the lock-screen Live Activity. The home screen is the conversation —
+a voice session against `server/` (mic → relay → Gemini → speaker) — with past chats
+behind the drawer on the left. The earlier chat client (session list, SSE against
+`src/server`) is parked on the `ios/wired-mvp` branch; pull pieces over from there
+rather than rewriting them.
+
+Two things the phone does that the simulator cannot show you. `UIBackgroundModes:
+audio` keeps the microphone open once the screen locks — iOS will not let a
+backgrounded app *start* recording, so a session always begins in the foreground. The
+Live Activity is what makes a running session visible and stoppable without unlocking;
+it buys no background time of its own.
 
 ## Working loop — the `ios-sim` MCP
 
@@ -81,8 +89,16 @@ cd app
 ./dt shot           # screenshot -> .build/shot.png
 ./dt logs 10        # app logs for 10s
 ./dt udid           # target simulator, booting it if needed
+./dt phone          # build signed, install and launch on the iPhone on the cable
 ./dt mcp            # serve the ios-sim MCP over HTTP, reloading on every edit
 ```
+
+`./dt phone` needs a signing team in `app/.team` (gitignored) and a phone that is
+paired with Developer Mode on. It prints the URL to put under gear ▸ Server: Tailscale's
+`wss://…ts.net` when the tailnet is up, which reaches the Mac from anywhere including
+cellular and carries a certificate iOS accepts. A LAN `ws://` address only works on the
+same Wi-Fi, and only because `NSAllowsLocalNetworking` covers it — which is there for
+the simulator's `localhost`, not for the phone.
 
 Override the simulator with `SIM="iPhone 17" ./dt run` (`sim.py` follows it).
 
@@ -93,15 +109,10 @@ whose job it is.
 ## Project files
 
 `DuckTalk.xcodeproj` is **generated** and gitignored. Edit `project.yml` and
-re-run `./dt gen`. Sources are globbed from `DuckTalk/`, so a new `.swift` file
-needs no project edit. Never hand-edit `.pbxproj`.
+re-run `./dt gen`. Sources are globbed from `DuckTalk/` (the app), `DuckTalkWidget/`
+(the Live Activity) and `Shared/` (compiled into both — a Live Activity is two
+processes agreeing on a shape), so a new `.swift` file needs no project edit. Never
+hand-edit `.pbxproj`.
 
 Adding an SPM dependency means editing `project.yml` — ask first, the app is
 deliberately dependency-free.
-
-## Backend, when it gets wired
-
-Types mirror `src/shared/types.ts`. Endpoints: `GET /api/config`,
-`GET /api/sessions`, `GET /api/sessions/:id/messages`, `POST /api/converse` (SSE).
-Backend runs with `npm run dev` at the repo root; the simulator reaches it on
-`http://localhost:8000`, a physical iPhone needs the Mac's LAN address.
