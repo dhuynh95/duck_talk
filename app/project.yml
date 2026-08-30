@@ -63,6 +63,10 @@ targets:
         # DuckTalk/Assets.xcassets, generated from the logo by scripts/app-icon.sh —
         # one drawing of the duck, and the icon derived from it.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # The brand orange, as the colour the *system* tints with: a text cursor, a
+        # toolbar button, a list checkmark are drawn by iOS, not by us, and this is the
+        # only way to reach them. Brand.accent is the same orange for what we draw.
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
 
   # The lock-screen card, which has to be its own process: a Live Activity is drawn
   # by WidgetKit, not by the app. It shares exactly one file with the app, Shared/,

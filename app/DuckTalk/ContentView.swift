@@ -37,6 +37,8 @@ struct ContentView: View {
     /// The chat on screen, or nil for a new one. Everything about resuming is derived
     /// from this — the title in the header, and whether the session carries `resume`.
     @State private var chat: Chat?
+    /// How tall the composer is right now — see `ComposerHeight`.
+    @State private var composerHeight: CGFloat = 0
 
     private var live: Bool { session.status != .idle }
 
@@ -48,27 +50,14 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            header
-
-            // Anywhere that is not the composer is somewhere to put the keyboard away.
-            Group {
-                if session.lines.isEmpty { blank } else { transcript }
-            }
-            .contentShape(Rectangle())
-            .onTapGesture { typing = false }
-
-            if let error = session.error {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-                    .accessibilityIdentifier("error")
-            }
-
-            composer
+        // Two layers, and which one a thing belongs to is the whole of the layout: the
+        // conversation runs edge to edge and scrolls the full height of the screen, and
+        // everything you press floats over it in glass. Nothing takes a strip away.
+        ZStack {
+            conversation
+            chrome
         }
-        .padding()
+        .background(Brand.background.ignoresSafeArea())
         .overlay {
             ChatsDrawer(
                 serverURL: serverURL,
@@ -172,18 +161,25 @@ struct ContentView: View {
     /// The chats on the left, what configures the app on the right, and between them
     /// the name of the conversation you are in — blank when it is a new one, because
     /// a chat has no name until it has been had.
+    ///
+    /// All three float over the transcript, so all three are glass: over moving text a
+    /// bare glyph is unreadable half the time, and a bar drawn behind them would take
+    /// the room the conversation is using.
     private var header: some View {
         ZStack {
             if let chat {
                 Text(chat.title)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
-                    .padding(.horizontal, 44)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .floating(in: Capsule())
+                    .padding(.horizontal, 52) // clear of the two circles, either side
                     .accessibilityIdentifier("chat-title")
             }
             HStack {
                 Button { drawer = true } label: {
-                    Image(systemName: "line.3.horizontal").font(.title3)
+                    Image(systemName: "line.3.horizontal").font(.title3).slot(.glass)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("chats")
@@ -212,7 +208,7 @@ struct ContentView: View {
                     .textFieldStyle(.plain)
                     .lineLimit(1...6)
                     .italic(hearing)
-                    .foregroundStyle(hearing ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                    .foregroundStyle(hearing ? Brand.secondaryText : Brand.text)
                     // Never "corrected" while reviewing — iOS autocorrect rewrites the
                     // very words you are there to fix.
                     .autocorrectionDisabled(held != nil)
@@ -240,12 +236,13 @@ struct ContentView: View {
             controls
         }
         .padding(12)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+        .floating(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         // Listening, the box is the only live thing on the screen, and its edge says
-        // so. Nothing else changes, because nothing else has to.
+        // so — in the accent, which is where the orange goes once it has left the
+        // microphone. Nothing else changes, because nothing else has to.
         .overlay {
-            RoundedRectangle(cornerRadius: 18)
-                .strokeBorder(Color.primary.opacity(live ? 0.85 : 0), lineWidth: 2)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Brand.accent.opacity(live ? 1 : 0), lineWidth: 2)
         }
         .animation(.easeOut(duration: 0.2), value: live)
         .onChange(of: session.pending) { held = session.pending }
@@ -319,10 +316,10 @@ struct ContentView: View {
                     Button { sheet = .mode } label: {
                         Text(mode.title)
                             .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Brand.secondaryText)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
-                            .background(Color(.tertiarySystemFill), in: Capsule())
+                            .background(Brand.fill, in: Capsule())
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("mode")
@@ -339,7 +336,9 @@ struct ContentView: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(accent ? AnyShapeStyle(Color.white) : AnyShapeStyle(.primary))
+                // On the accent it is the ground colour, not white — the same pairing
+                // the web app's primary button makes: orange-400 under grey-900.
+                .foregroundStyle(accent ? Brand.background : Brand.text)
                 .slot(accent ? .accent : .plain)
         }
         .buttonStyle(.plain)
@@ -354,7 +353,7 @@ struct ContentView: View {
             Divider()
             Button { sheet = .server } label: { Label("Server", systemImage: "network") }
         } label: {
-            Image(systemName: "gearshape").font(.title3)
+            Image(systemName: "gearshape").font(.title3).slot(.glass)
         }
         .accessibilityIdentifier("settings")
         .accessibilityLabel("Settings")
@@ -362,12 +361,28 @@ struct ContentView: View {
 
     // MARK: - Messages
 
-    /// Nothing said yet. The screen is the conversation, so an empty one should say
-    /// what to do rather than be blank.
+    /// Nothing said yet, so the screen is the mark and the name.
+    ///
+    /// No instructions: the microphone is the only thing lit on the screen and the field
+    /// says "Message", which is the whole of "tap to talk, or type" without a sentence
+    /// asking to be read. The one link in the app is here, because who made this is
+    /// worth a tap exactly when there is nothing else to do.
     private var blank: some View {
-        VStack(spacing: 6) {
-            Text("Duck Talk").font(.title2.weight(.semibold))
-            Text("Tap to talk, or type").font(.callout).foregroundStyle(.secondary)
+        VStack(spacing: 14) {
+            Image("Logo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 76)
+                .accessibilityHidden(true)
+            VStack(spacing: 2) {
+                Text("Duck Talk").font(.title3.weight(.medium))
+                Link(destination: URL(string: "https://reduck.ai")!) {
+                    Text("by ").foregroundStyle(Brand.tertiaryText)
+                        + Text("Reduck").foregroundStyle(Brand.accent)
+                }
+                .font(.subheadline)
+                .accessibilityLabel("Reduck")
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -392,7 +407,12 @@ struct ContentView: View {
                     row(line).scaleEffect(x: 1, y: -1)
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.horizontal, 16)
+            // The stack is upside down, so its top edge is the bottom of the screen:
+            // this is the room the composer floats in, and the bottom padding is the
+            // header's. Both are room the conversation can still scroll through.
+            .padding(.top, composerHeight + 16)
+            .padding(.bottom, Self.headerHeight)
         }
         .scaleEffect(x: 1, y: -1)
         // It would run backwards, being drawn in a flipped view.
@@ -409,12 +429,12 @@ struct ContentView: View {
         case .tools:
             Text(line.toolLabel)
                 .font(.caption.monospaced())
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Brand.tertiaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .user:
             Text(line.text)
                 .frame(maxWidth: .infinity, alignment: .trailing)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Brand.secondaryText)
         case .model:
             VStack(alignment: .leading, spacing: 6) {
                 Text(line.text)
@@ -445,9 +465,29 @@ struct ContentView: View {
             .accessibilityLabel("Copy")
         }
         .font(.footnote)
-        .foregroundStyle(.tertiary)
+        .foregroundStyle(Brand.tertiaryText)
         .buttonStyle(.plain)
     }
+}
+
+extension ContentView {
+    /// The room the floating header needs. Fixed, because it is one row of circles.
+    static let headerHeight: CGFloat = 46
+}
+
+/// How tall the composer is, from the composer itself.
+///
+/// The transcript scrolls underneath it, so this is not layout — it is how far the
+/// transcript's own content stops short, which is the difference between the newest
+/// message sitting just above the composer and being hidden behind it. It has to be
+/// measured because the composer grows to six lines as you type.
+///
+/// `max` rather than last-wins: every other view in the screen reports the default of
+/// zero, and the fold sees all of them — taking the last one read the composer as
+/// nothing at all, and the transcript ran under it.
+private struct ComposerHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 /// What happens to what you say. Two answers, and the difference matters enough to
@@ -493,9 +533,9 @@ struct ModeSheet: View {
                     Button { dismiss() } label: {
                         Image(systemName: "xmark")
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Brand.secondaryText)
                             .frame(width: 34, height: 34)
-                            .background(Color(.secondarySystemBackground), in: Circle())
+                            .background(Brand.fill, in: Circle())
                     }
                     .accessibilityLabel("Close")
                     Spacer()
@@ -517,8 +557,8 @@ struct ModeSheet: View {
                                 .foregroundStyle(.tint)
                                 .frame(width: 26)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(option.title).font(.body).foregroundStyle(.primary)
-                                Text(option.detail).font(.subheadline).foregroundStyle(.secondary)
+                                Text(option.title).font(.body).foregroundStyle(Brand.text)
+                                Text(option.detail).font(.subheadline).foregroundStyle(Brand.secondaryText)
                             }
                             Spacer()
                             if mode == option {
@@ -536,7 +576,7 @@ struct ModeSheet: View {
                 }
             }
             .padding(.horizontal, 16)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+            .background(Brand.surface, in: RoundedRectangle(cornerRadius: 16))
             .padding(.horizontal, 16)
 
             Spacer(minLength: 0)

@@ -1,23 +1,26 @@
 import SwiftUI
 
-/// What a control in the bar sits on: `plain` for a glyph you press, `accent` for the
-/// one that is what you are about to do, `bare` for the waveform — which is your voice
-/// rather than a button face, and wears no chrome.
-enum SlotFill { case bare, plain, accent }
+/// What a control sits on: `plain` for a glyph you press on a surface, `accent` for the
+/// one that is what you are about to do, `glass` for one floating over the conversation
+/// itself, and `bare` for the waveform — which is your voice rather than a button face,
+/// and wears no chrome.
+enum SlotFill { case bare, plain, accent, glass }
 
 extension View {
     /// The one size and place every control in the bar shares, so swapping between the
     /// microphone, the send arrow and the stop moves nothing under your thumb.
+    ///
+    /// A glass one is the same circle with the treatment every floating thing gets —
+    /// see `floating(in:)`, which is where the shadow comes from.
+    @ViewBuilder
     func slot(_ fill: SlotFill = .plain) -> some View {
-        self.frame(width: 38, height: 38)
-            .background {
-                switch fill {
-                case .bare: Color.clear
-                case .plain: Circle().fill(Color(.tertiarySystemFill))
-                case .accent: Circle().fill(Color.accentColor)
-                }
-            }
-            .contentShape(Circle())
+        let sized = frame(width: 38, height: 38).contentShape(Circle())
+        switch fill {
+        case .bare: sized
+        case .plain: sized.background(Circle().fill(Brand.fill))
+        case .accent: sized.background(Circle().fill(Brand.accent))
+        case .glass: sized.floating(in: Circle())
+        }
     }
 }
 
@@ -51,7 +54,7 @@ struct ListenButton: View {
                 HStack(spacing: spacing) {
                     ForEach(0..<bars, id: \.self) { i in
                         Capsule()
-                            .fill(Color.accentColor)
+                            .fill(Brand.accent)
                             .frame(width: barWidth, height: height(i))
                     }
                 }
@@ -59,11 +62,12 @@ struct ListenButton: View {
                 .slot(.bare) // your voice, not a button — it needs nothing behind it
             } else {
                 // A waveform with nothing to show is a row of dots that says nothing.
-                // Silent, the control names what it does instead.
+                // Silent, the control names what it does instead — and it is the one
+                // thing lit on the screen, which is the whole of "tap to talk".
                 Image(systemName: "mic.fill")
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .slot()
+                    .foregroundStyle(Brand.background)
+                    .slot(.accent)
             }
         }
         .buttonStyle(.plain)

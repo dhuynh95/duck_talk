@@ -15,8 +15,8 @@ struct DuckTalkLiveActivity: Widget {
         ActivityConfiguration(for: LiveSession.self) { context in
             card(context.state, since: context.attributes.startedAt)
                 .padding(16)
-                .activityBackgroundTint(.black.opacity(0.6))
-                .activitySystemActionForegroundColor(.white)
+                .activityBackgroundTint(Brand.background.opacity(0.85))
+                .activitySystemActionForegroundColor(Brand.text)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
@@ -47,16 +47,16 @@ struct DuckTalkLiveActivity: Widget {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "waveform")
-                    .foregroundStyle(state.status == "live" ? .green : .orange)
+                    .foregroundStyle(state.status == "live" ? Brand.accent : Brand.tertiaryText)
                 Text(state.status == "live" ? "Listening" : state.status.capitalized)
                     .font(.headline)
                 Spacer()
-                elapsed(startedAt).font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+                elapsed(startedAt).font(.subheadline.monospacedDigit()).foregroundStyle(Brand.secondaryText)
                 stop
             }
             Text(line(state))
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Brand.secondaryText)
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

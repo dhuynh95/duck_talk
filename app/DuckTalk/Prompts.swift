@@ -50,6 +50,7 @@ struct PromptsView: View {
                     Text(error).font(.footnote).foregroundStyle(.red)
                 }
             }
+            .brandList()
             .navigationTitle("Prompts")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -73,7 +74,7 @@ struct PromptsView: View {
             Text(prompt.title).font(.body)
             Text(prompt.text.isEmpty ? "Not set" : prompt.text)
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Brand.secondaryText)
                 .lineLimit(2)
         }
         .padding(.vertical, 2)
@@ -103,11 +104,12 @@ private struct PromptDetail: View {
 
             Text(prompt.detail)
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Brand.secondaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
-                .background(Color(.secondarySystemBackground))
+                .background(Brand.surface)
         }
+        .background(Brand.background)
         .navigationTitle(prompt.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

@@ -122,6 +122,8 @@ struct CorrectionsView: View {
             Group {
                 if store.items.isEmpty { empty } else { list }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Brand.background)
             .navigationTitle("Corrections")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -157,15 +159,16 @@ struct CorrectionsView: View {
                 Text("Used to bias the recogniser when a session starts, and to auto-correct what you said.")
             }
         }
+        .brandList()
     }
 
     private func row(_ correction: Correction) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(correction.heard)
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Brand.secondaryText)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Image(systemName: "arrow.turn.down.right").font(.caption2).foregroundStyle(.tertiary)
+                Image(systemName: "arrow.turn.down.right").font(.caption2).foregroundStyle(Brand.tertiaryText)
                 Text(correction.meant).font(.callout)
             }
         }
@@ -179,7 +182,7 @@ struct CorrectionsView: View {
                 .font(.headline)
             Text("Turn on Review, and when the ears mishear you, fix the text before you accept it. That edit lands here.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Brand.secondaryText)
                 .multilineTextAlignment(.center)
             Button("Add one by hand") { path.append(blank()) }
                 .buttonStyle(.bordered)
@@ -233,6 +236,7 @@ private struct CorrectionDetail: View {
                 }
             }
         }
+        .brandList()
         .navigationTitle(isNew ? "New correction" : "Correction")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

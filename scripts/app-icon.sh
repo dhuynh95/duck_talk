@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # The app icon, from the logo — so there is one drawing of the duck and the icon is
-# derived rather than drawn again.
+# derived rather than drawn again. The screens draw the same file: it is copied into
+# Logo.imageset here rather than kept as a second copy someone has to remember.
 #
 # Two things the logo cannot be as it stands. It is 43.11 × 33.2, and an icon is
 # square; and it has a transparent background, which App Store Connect rejects. So
@@ -18,6 +19,9 @@ cd "$(dirname "$0")/.."
 
 LOGO=assets/duck_talk_logo.svg
 SET=app/DuckTalk/Assets.xcassets/AppIcon.appiconset
+# The same drawing, unwrapped, for the screens that show the mark — the home screen
+# and the drawer. Vector, so one file serves every size they ask for.
+MARK=app/DuckTalk/Assets.xcassets/Logo.imageset
 # Dark, and not a free choice: the duck's head is #f9fafb and its eye is a hole, so
 # the ground is what the eye is drawn in. On white the head vanishes; on the brand
 # orange the tail does, because the tail is that same orange. Slate leaves all three
@@ -82,3 +86,6 @@ if sips -g hasAlpha "$SET/icon-1024.png" | grep -q 'hasAlpha: yes'; then
 fi
 sips -g pixelWidth -g pixelHeight -g hasAlpha "$SET/icon-1024.png" | tail -3
 echo "wrote $SET/icon-1024.png"
+
+cp "$LOGO" "$MARK/$(basename "$LOGO")"
+echo "wrote $MARK/$(basename "$LOGO")"
