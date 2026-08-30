@@ -16,6 +16,11 @@
  * revises itself ("what is the letter" → "what is the latest"). Callers replace
  * rather than append.
  *
+ * The line is drawn by silence, and it is drawn fast — see SILENCE_MS — so a pause
+ * for thought inside a sentence ends it early. A final that comes soon enough after
+ * the last one is therefore the rest of that sentence, and is stitched back onto it
+ * here: a final is always a whole utterance, and the caller never sees the seam.
+ *
  *   node ears.ts --file turn.wav      feed a 16 kHz mono recording, print events
  */
 
@@ -33,6 +38,31 @@ export interface EarsCallbacks {
   onPartial(text: string): void;
   onFinal(text: string): void;
   log?(m: string): void;
+}
+
+// How much quiet ends an utterance. Unset, the model waits about two seconds after
+// the text has stopped changing before it commits it — measured on recordings with
+// a real noise floor, the final came 2199ms after speech, 1990ms of it spent
+// re-sending an unchanged hypothesis. At 200ms it comes at 467ms. The price is that
+// a pause for thought now ends the sentence, which is what the join below repays.
+// `endOfSpeechSensitivity` is deliberately not set: alongside 200 it measured slower.
+const SILENCE_MS = 200;
+
+// A final arriving this soon after the last one continues it rather than starting
+// something new. Derived, not chosen: the reply's first sound reaches the listener
+// about two seconds after a final (Claude ~0.9s, sentence buffer ~0.5s, voice
+// ~0.75s, from the turn log), so speech inside that window cannot be an answer to
+// anything heard — it is the rest of the same thought. A longer pause is not joined;
+// the tail reaches Claude on its own, and Claude's own transcript holds the head.
+const JOIN_MS = 2000;
+
+/**
+ * `b` continuing `a`: the sentence rejoined. Each fragment was punctuated as a
+ * sentence of its own — a full stop on the head, a capital on the tail — and both
+ * go, or the seam shows.
+ */
+function join(a: string, b: string): string {
+  return a ? `${a.replace(/[.?!]+$/, '')} ${b.charAt(0).toLowerCase()}${b.slice(1)}` : b;
 }
 
 /**
@@ -60,6 +90,11 @@ export async function openEars(
   const forward = (pcm: Buffer) =>
     session?.sendRealtimeInput({ audio: { data: pcm.toString('base64'), mimeType: 'audio/pcm;rate=16000' } });
 
+  // The utterance before this one, kept in case this one turns out to continue it.
+  let prefix = '';
+  let finalAt = 0;
+  let speaking = false;
+
   const vocab = vocabulary(corrections);
   const t0 = performance.now();
   session = await ai.live.connect({
@@ -67,6 +102,7 @@ export async function openEars(
     config: {
       responseModalities: [Modality.TEXT],
       inputAudioTranscription: vocab.length ? { customVocabulary: vocab } : {},
+      realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: SILENCE_MS } },
     },
     callbacks: {
       onopen: () => log(`ears connected (${Math.round(performance.now() - t0)}ms)${vocab.length ? `, ${vocab.length} phrases biased` : ''}`),
@@ -75,11 +111,26 @@ export async function openEars(
         const sc = msg.serverContent;
         if (!sc) return;
         const partial = sc.interimInputTranscription?.text;
-        if (partial) cb.onPartial(partial);
+        if (partial) {
+          // Whether this utterance continues the last is settled on its first word
+          // and held for its whole length, so a long tail cannot lose its head midway.
+          if (!speaking) {
+            speaking = true;
+            if (Date.now() - finalAt > JOIN_MS) prefix = '';
+          }
+          cb.onPartial(join(prefix, partial));
+        }
         // The finalized transcript. It arrives only when the utterance is over, so
         // it is both the text and the "they are done talking" signal.
         const final = sc.inputTranscription?.text;
-        if (final) cb.onFinal(final);
+        if (final) {
+          const text = join(prefix, final);
+          if (prefix) log(`joined: ${text}`);
+          finalAt = Date.now();
+          prefix = text;
+          speaking = false;
+          cb.onFinal(text);
+        }
       },
       onerror: (e) => log(`ears error: ${e.message}`),
       onclose: (e) => { closed = true; session = null; log(`ears closed: ${e.reason || e.code}`); },
@@ -128,19 +179,46 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const pcm = wav.subarray(wav.indexOf('data') + 8);
   const ai = new GoogleGenAI({ apiKey: process.env['GEMINI_API_KEY'] });
   const model = process.env['LISTEN_MODEL'] ?? 'gemini-3.5-transcribe-live';
-  const t0 = performance.now();
-  const ms = () => Math.round(performance.now() - t0);
+  // Times are from the end of the recording, so "how long after I stopped talking"
+  // is read straight off the line; negative means it arrived while still speaking.
+  let spoken = 0;
+  const ms = () => (spoken ? `${Math.round(performance.now() - spoken)}ms` : 'mid-speech');
+  let finals = 0;
   const ears = await openEars(ai, model, {
     log: console.log,
-    onPartial: (t) => console.log(`${ms()}ms  partial: ${t}`),
-    onFinal: (t) => { console.log(`${ms()}ms  FINAL:   ${t}`); ears.close(); process.exit(0); },
+    onPartial: (t) => console.log(`${ms()}  partial: ${t}`),
+    // Every final, not just the first: a sentence split by a pause is two, and
+    // exiting on the first is exactly how that would go unseen.
+    onFinal: (t) => { finals++; console.log(`${ms()}  FINAL:   ${t}`); },
   });
   const FRAME = 640;
   for (let i = 0; i < pcm.length; i += FRAME) {
     ears.send(pcm.subarray(i, i + FRAME));
     await new Promise((r) => setTimeout(r, 20));
   }
-  const silence = Buffer.alloc(FRAME);
-  const keep = setInterval(() => ears.send(silence), 20);
-  setTimeout(() => { clearInterval(keep); ears.close(); process.exit(1); }, 12_000);
+  spoken = performance.now();
+  // A phone keeps sending after you stop talking, and what it sends is the room, not
+  // zeros — zeros are the easiest end-of-speech there is and would flatter the
+  // timing. Stream the recording's own quietest stretch instead.
+  const tone = roomTone(pcm);
+  let k = 0;
+  const keep = setInterval(() => { ears.send(tone.subarray(k, k + FRAME)); k = (k + FRAME) % (tone.length - FRAME); }, 20);
+  setTimeout(() => {
+    clearInterval(keep);
+    ears.close();
+    console.log(`${finals} final${finals === 1 ? '' : 's'}`);
+    process.exit(finals ? 0 : 1);
+  }, 4_000);
+}
+
+/** The quietest 200ms in a recording — its own noise floor. */
+function roomTone(pcm: Buffer): Buffer {
+  const win = 200 * 32; // 16 kHz Int16 is 32 bytes/ms
+  let best = Infinity, at = 0;
+  for (let i = 0; i + win <= pcm.length; i += win) {
+    let sum = 0;
+    for (let j = i; j < i + win; j += 32) sum += Math.abs(pcm.readInt16LE(j));
+    if (sum < best) { best = sum; at = i; }
+  }
+  return pcm.subarray(at, at + win);
 }
