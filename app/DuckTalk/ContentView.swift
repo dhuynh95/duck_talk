@@ -1,12 +1,20 @@
 import SwiftUI
 
-/// The home screen, which is two regions and one control:
+/// The home screen, which is the conversation plus one box to add to it:
 ///
-///   messages   what already happened, frozen
-///   input      what is being said now, and will be sent — automatically, or once
-///              you accept it in review
-///   controls   the listen button, centred, with the mode beside it when idle and a
-///              way out of the session when live
+///   messages   what was actually sent and what came back, and nothing else
+///   composer   the field — written by you, by the ears, or by the relay when it holds
+///              an instruction for review — and under it the one control: a microphone
+///              to start talking, your voice while you are, an arrow to send what is in
+///              the field, a stop while a typed reply arrives.
+///
+/// Reviewing is not a second panel and Accept is not a second button: what was heard
+/// lands in the same field, and the same arrow sends it, edited or not. An edit is what
+/// teaches the relay; ignoring it is how you drop it.
+///
+/// Talking and typing are exclusive, and the field says so without a word: while the
+/// ears are writing it, it is not editable, and touching it stops the session and gives
+/// you the keyboard. That is the whole of the mode switch.
 ///
 /// Everything that configures the thing rather than being the conversation lives
 /// behind the gear.
@@ -16,6 +24,11 @@ struct ContentView: View {
     @AppStorage("autocorrect") private var autocorrect = false
     private let session = VoiceSession.shared
     @State private var draft = ""
+    /// The instruction the relay is holding for review, as you may have edited it.
+    /// Separate from `draft`, because one is a question put to you and the other is
+    /// what you are writing — and nil is how the field knows which it is showing.
+    @State private var held: String?
+    @FocusState private var typing: Bool
     @State private var sheet: Sheet?
     @State private var drawer = false
     /// The home screen's own connection to the relay, for forking a chat. Not the
@@ -27,21 +40,23 @@ struct ContentView: View {
 
     private var live: Bool { session.status != .idle }
 
-    /// One exclusive mode, plus auto-correct as an independent axis, plus the chat
-    /// being carried on if one was opened.
+    /// One exclusive mode, plus auto-correct as an independent axis. Which chat is
+    /// being carried on is the session's own business — it appends `resume` itself, so
+    /// a turn typed after one spoken lands in the same conversation.
     private var url: URL? {
-        URL(string: serverURL + "?mode=\(mode.rawValue)"
-            + (autocorrect ? "&correct=1" : "")
-            + (chat.map { "&resume=\($0.id)" } ?? ""))
+        URL(string: serverURL + "?mode=\(mode.rawValue)" + (autocorrect ? "&correct=1" : ""))
     }
 
     var body: some View {
         VStack(spacing: 12) {
             header
 
-            if session.lines.isEmpty { blank } else { transcript }
-
-            if session.pending != nil || session.utterance != nil { input }
+            // Anywhere that is not the composer is somewhere to put the keyboard away.
+            Group {
+                if session.lines.isEmpty { blank } else { transcript }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { typing = false }
 
             if let error = session.error {
                 Text(error)
@@ -51,7 +66,7 @@ struct ContentView: View {
                     .accessibilityIdentifier("error")
             }
 
-            controls
+            composer
         }
         .padding()
         .overlay {
@@ -61,13 +76,13 @@ struct ContentView: View {
                 current: chat,
                 onOpen: { opened, messages in
                     // Loading a chat is not starting one: the transcript appears, and
-                    // the listen button is now the resume button.
+                    // whatever you do next — talk or type — carries it on.
                     chat = opened
-                    session.show(messages)
+                    session.show(messages, id: opened.id)
                 },
                 onNew: {
                     chat = nil
-                    session.show([])
+                    session.show([], id: nil)
                 },
             )
         }
@@ -76,7 +91,7 @@ struct ContentView: View {
         .onChange(of: relay.loaded) {
             guard relay.wasForked, let id = relay.loaded else { return }
             chat = relay.chats.first { $0.id == id }
-            session.show(relay.messages)
+            session.show(relay.messages, id: id)
         }
         .sheet(item: $sheet) { which in
             switch which {
@@ -86,7 +101,14 @@ struct ContentView: View {
             case .mode: ModeSheet(mode: $mode)
             }
         }
+        // The keyboard belongs to the composer, so whatever takes over from it takes
+        // the keyboard too. One rule, rather than a dismissal at every door.
+        .onChange(of: elsewhere) { if elsewhere { typing = false } }
     }
+
+    /// Something other than the composer has the screen: the drawer, a sheet, or a
+    /// session that is listening.
+    private var elsewhere: Bool { drawer || sheet != nil || live }
 
     private enum Sheet: String, Identifiable { case prompts, corrections, server, mode; var id: String { rawValue } }
 
@@ -129,44 +151,155 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Controls
+    // MARK: - Composer
 
-    /// The listen button is centred on the screen, not in the row: the mode and the
-    /// cancel sit beside it without moving it, so it never shifts under your thumb.
+    /// The field, and under it the one control. Which face each of them wears follows
+    /// from a single question — what are you about to do — so they can never disagree.
+    ///
+    /// Live, the field is not yours to type in, and tapping it is how you stop
+    /// listening and start typing. The exception is an instruction held for review:
+    /// that one is yours to fix, and fixing it is how the relay learns what you said.
+    private var composer: some View {
+        VStack(spacing: 10) {
+            // One field, three writers: you, the ears, and the relay when it holds an
+            // instruction back for you to look at. What is being said is not history
+            // until it has been sent, so this is where it lives until then.
+            ZStack(alignment: .topLeading) {
+                TextField("Message", text: text, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...6)
+                    .italic(hearing)
+                    .foregroundStyle(hearing ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                    // Never "corrected" while reviewing — iOS autocorrect rewrites the
+                    // very words you are there to fix.
+                    .autocorrectionDisabled(held != nil)
+                    .textInputAutocapitalization(held != nil ? .never : .sentences)
+                    .focused($typing)
+                    .disabled(hearing)
+                    .accessibilityIdentifier("message")
+                    .accessibilityLabel(held != nil ? "Instruction" : "Message")
+                // Reaching for the keyboard is how you say you would rather type, so it
+                // is also how you stop listening. A sibling of the field rather than a
+                // layer on it, because `disabled` reaches everything inside.
+                if hearing {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            session.stop()
+                            // The field is still disabled this turn of the run loop,
+                            // and a disabled field cannot take focus — so ask on the
+                            // next one, once stopping has been drawn.
+                            Task { typing = true }
+                        }
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            controls
+        }
+        .padding(12)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+        // Listening, the box is the only live thing on the screen, and its edge says
+        // so. Nothing else changes, because nothing else has to.
+        .overlay {
+            RoundedRectangle(cornerRadius: 18)
+                .strokeBorder(Color.primary.opacity(live ? 0.85 : 0), lineWidth: 2)
+        }
+        .animation(.easeOut(duration: 0.2), value: live)
+        .onChange(of: session.pending) { held = session.pending }
+    }
+
+    /// What pressing the middle button does. The field's contents follow from the same
+    /// answer, which is why there is one of these and not two.
+    private enum Intent { case talk, send, stop }
+
+    private var intent: Intent {
+        if held != nil || (!live && !draft.isEmpty) { return .send }
+        if session.asking { return .stop }
+        return .talk
+    }
+
+    /// The ears are writing the field: it is not yours until they are done, or until
+    /// the relay hands you what it heard to look at.
+    private var hearing: Bool { live && held == nil }
+
+    /// What the field shows, and who may change it.
+    private var text: Binding<String> {
+        if held != nil { return Binding(get: { held ?? "" }, set: { held = $0 }) }
+        if live { return .constant(session.utterance ?? "") }
+        return $draft
+    }
+
+    /// Send what is in the field. A held instruction you edited is also the only
+    /// evidence of what you actually said, so sending it teaches the relay.
+    private func send() {
+        if let instruction = held {
+            session.approve(instruction)
+            held = nil
+        } else if let url {
+            session.ask(draft, url: url)
+            draft = ""
+        }
+    }
+
+    /// The one control is centred on the screen, not in the row: the mode and the way
+    /// out sit beside it without moving it, so it never shifts under your thumb.
     private var controls: some View {
         ZStack {
-            ListenButton(live: live, level: CGFloat(session.level), status: session.status.rawValue) {
-                if let url { session.connect(url: url) }
+            switch intent {
+            case .send:
+                glyph("arrow.up", accent: true) { send() }
+                    .accessibilityIdentifier("send")
+                    // The same act either way, and the label says which one it is here.
+                    .accessibilityLabel(held != nil ? "Accept" : "Send")
+            case .stop:
+                glyph("stop.fill", accent: false) { session.cancelAsk() }
+                    .accessibilityIdentifier("stop-reply")
+                    .accessibilityLabel("Stop")
+            case .talk:
+                ListenButton(live: live, level: CGFloat(session.level), status: session.status.rawValue) {
+                    if let url { session.connect(url: url) }
+                }
             }
             HStack {
                 Spacer()
                 if live {
-                    Button { session.stop() } label: {
-                        Image(systemName: "xmark").font(.title3.weight(.medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Stop")
+                    glyph("xmark", accent: false) { session.stop() }
+                        .accessibilityIdentifier("end")
+                        .accessibilityLabel("Stop listening")
                 } else {
                     // Bound at connect time on the relay, so it is settled before a
                     // session starts and cannot change under one. It opens a sheet
                     // rather than toggling silently: which mode you are in decides
-                    // whether what you say runs immediately, so it is worth naming.
+                    // whether what you say runs immediately, so it is worth naming —
+                    // and a name is all it is, because an icon for it would be one
+                    // nobody could read without being told.
                     Button { sheet = .mode } label: {
-                        VStack(spacing: 3) {
-                            Image(systemName: mode.icon).font(.title3)
-                            Text(mode.title).font(.caption2)
-                        }
+                        Text(mode.title)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color(.tertiarySystemFill), in: Capsule())
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
                     .accessibilityIdentifier("mode")
                     .accessibilityLabel("Mode")
                     .accessibilityValue(mode.title)
                 }
             }
         }
-        .padding(.bottom, 4)
+    }
+
+    /// One of the control's other faces — the same circle the microphone wears, with a
+    /// glyph in it instead of your voice.
+    private func glyph(_ symbol: String, accent: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(accent ? AnyShapeStyle(Color.white) : AnyShapeStyle(.primary))
+                .slot(accent ? .accent : .plain)
+        }
+        .buttonStyle(.plain)
     }
 
     private var settings: some View {
@@ -184,50 +317,6 @@ struct ContentView: View {
         .accessibilityLabel("Settings")
     }
 
-    // MARK: - Input
-
-    /// One box in two states. Listening, it shows what is being transcribed and is
-    /// not yours to touch. Held for review, the same text becomes editable and grows
-    /// two buttons — and that edit is how the relay learns what you actually said.
-    private var input: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if session.pending != nil {
-                // Never "corrected" — iOS autocorrect rewrites the very words you are
-                // here to fix.
-                TextField("instruction", text: $draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.title3)
-                    .lineLimit(1...6)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .accessibilityIdentifier("instruction")
-                    .accessibilityLabel("Instruction")
-
-                HStack {
-                    Button("Reject") { session.reject() }
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel("Reject")
-                    Spacer()
-                    Button("Accept") { session.approve(draft) }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityLabel("Accept")
-                }
-            } else {
-                Text(session.utterance ?? "")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("utterance")
-                    .accessibilityLabel("Hearing")
-            }
-        }
-        .padding(12)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
-        .onChange(of: session.pending) {
-            if let text = session.pending { draft = text }
-        }
-    }
-
     // MARK: - Messages
 
     /// Nothing said yet. The screen is the conversation, so an empty one should say
@@ -235,7 +324,7 @@ struct ContentView: View {
     private var blank: some View {
         VStack(spacing: 6) {
             Text("Duck Talk").font(.title2.weight(.semibold))
-            Text("Tap to start talking").font(.callout).foregroundStyle(.secondary)
+            Text("Tap to talk, or type").font(.callout).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -265,6 +354,7 @@ struct ContentView: View {
         .scaleEffect(x: 1, y: -1)
         // It would run backwards, being drawn in a flipped view.
         .scrollIndicators(.hidden)
+        .scrollDismissesKeyboard(.interactively)
         .frame(maxHeight: .infinity)
     }
 

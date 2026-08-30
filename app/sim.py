@@ -238,10 +238,24 @@ async def swipe(
 
 @mcp.tool
 async def type_text(text: str) -> Image:
-    """Type into the focused field. Tap the field first. US-keyboard characters
-    only (a HID limitation: no accents, no £/€). Returns a screenshot after typing."""
+    """Put text in the focused field, at the cursor. Tap the field first. Returns a
+    screenshot.
+
+    Pasted, not typed. Keystrokes go in as HID keycodes, so what arrives is whatever
+    the simulator's keyboard layout and autocorrect make of them — "what is two plus
+    two" landed as "Abat os tao plus tzo". The pasteboard has neither, so what you ask
+    for is what appears, accents and emoji included.
+
+    It appends, because there is no way to clear that does not also leave the app: on
+    this simulator Cmd+A sends it to the home screen. Tap into an empty field."""
     _ = Path(TYPE_FILE).write_text(text)
-    return await _act(_axe("type", "--file", TYPE_FILE))
+    udid = await _udid()
+    # The device pasteboard, straight from the file — nothing to quote, and no newline
+    # added, so the field gets exactly the string that was asked for.
+    out, err, code = await _sh(f"xcrun simctl pbcopy {udid} < {shlex.quote(TYPE_FILE)}")
+    if code != 0:
+        raise RuntimeError(f"pbcopy failed: {(err or out).strip()}")
+    return await _act(_axe("key-combo", "--modifiers", "227", "--key", "25"))  # Cmd+V
 
 
 # --------------------------------------------------------------------------- #

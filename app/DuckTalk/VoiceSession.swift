@@ -2,11 +2,20 @@ import ActivityKit
 import Foundation
 import Observation
 
-/// One voice session: a WebSocket to the relay server, an AudioPipe on each end.
+/// One conversation with Claude, reached two ways: by talking, or by typing.
 ///
-///   mic → pipe.onChunk → socket (binary)
-///   socket (binary) → pipe.play
-///   socket (text JSON) → transcript lines / flush on "interrupted" / error
+///   talking   mic → pipe.onChunk → socket (binary) ─┐
+///             socket (binary) → pipe.play           ├─ socket (text JSON) → transcript
+///   typing    one socket, one text frame ───────────┘
+///
+/// The two are exclusive, and the difference is only how the instruction is made — the
+/// relay, Claude, and the events that come back are the same either way, so `handle`
+/// is shared and `ask` is a connection that opens for one turn and closes. The relay
+/// opens ears only for a connection that sends audio, so typing costs no Gemini
+/// session and no spoken reply; it needs no flag to say so.
+///
+/// `chatId` is what makes them one conversation: the relay names the chat at every
+/// `turn_end`, and every connection opened after that resumes it.
 ///
 /// What you are saying and what has been said are kept apart, because the screen
 /// keeps them apart: `utterance` is the sentence being transcribed right now, and
@@ -69,8 +78,16 @@ final class VoiceSession {
     private(set) var utterance: String?
     /// The instruction the server is holding for a yes/no/edit, in review mode.
     private(set) var pending: String?
+    /// A typed instruction is running: sent, and the reply has not finished arriving.
+    private(set) var asking = false
+    /// The conversation this screen is in, named by the relay and carried into every
+    /// connection opened after it — which is what makes a typed turn and a spoken one
+    /// the same chat.
+    private(set) var chatId: String?
 
     private var task: URLSessionWebSocketTask?
+    /// The socket of a typed turn, which lives exactly as long as that turn.
+    private var askTask: URLSessionWebSocketTask?
     private var pipe: AudioPipe?
     private var turnEnded = false
     private var replied = false  // a reply byte has been marked for this turn
@@ -79,7 +96,7 @@ final class VoiceSession {
     private var activity: Activity<LiveSession>?
 
     func connect(url: URL) {
-        guard status == .idle else { return }
+        guard status == .idle, !asking else { return }
         self.url = url
         wantLive = true
         error = nil
@@ -88,15 +105,24 @@ final class VoiceSession {
         Task { await run() }
     }
 
+    /// The chat this screen is in, added to a connection about to be opened. Written
+    /// here rather than by the caller so that every way in — talking, typing, a
+    /// reconnect — carries the conversation without being told to.
+    private func resuming(_ url: URL) -> URL {
+        guard let chatId else { return url }
+        return URL(string: url.absoluteString + "&resume=\(chatId)") ?? url
+    }
+
     /// Put a conversation on screen without starting one — opening a past chat, or
     /// clearing for a new one.
     ///
     /// The transcript is what is on screen, live session or not, which is why
     /// `connect` no longer empties it: a resumed chat has to survive being connected
     /// to, and emptying it is something only "New chat" ever means.
-    func show(_ past: [ChatMessage]) {
-        guard status == .idle else { return }
+    func show(_ past: [ChatMessage], id: String?) {
+        guard status == .idle, !asking else { return }
         lines = past.map(Line.init)
+        chatId = id
         utterance = nil
         pending = nil
         error = nil
@@ -122,8 +148,10 @@ final class VoiceSession {
         self.pipe = pipe
 
         var backoff: Duration = .milliseconds(250)
-        while wantLive, let url {
-            let task = URLSession.shared.webSocketTask(with: url)
+        while wantLive, let base = url {
+            // Resolved per attempt, not once: by the time a dropped session reconnects
+            // the chat has a name, and reconnecting means carrying it on.
+            let task = URLSession.shared.webSocketTask(with: resuming(base))
             self.task = task
             // The mic feeds whichever socket is current, so a reconnect rebinds it.
             pipe.onChunk = { data in task.send(.data(data)) { _ in } }
@@ -169,6 +197,52 @@ final class VoiceSession {
         endActivity()
     }
 
+    // MARK: - Typing
+    //
+    // One turn, one socket. There is no microphone to keep alive between turns and
+    // nothing to reconnect to, so the connection is the turn: it opens with the
+    // instruction and closes when the reply is done. Everything in between is the
+    // same events a spoken turn produces, so `handle` is the whole of it.
+
+    func ask(_ text: String, url: URL) {
+        let said = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !said.isEmpty, status == .idle, !asking else { return }
+        // Nothing has to prove this was sent — you wrote it — so it is history at once.
+        lines.append(Line(kind: .user, text: said))
+        asking = true
+        Task { await converse(said, url: resuming(url)) }
+    }
+
+    /// Drop the turn. The socket is the turn, so closing it is the whole cancel.
+    func cancelAsk() {
+        askTask?.cancel(with: .normalClosure, reason: nil)
+    }
+
+    private func converse(_ said: String, url: URL) async {
+        let task = URLSession.shared.webSocketTask(with: url)
+        askTask = task
+        task.resume()
+        defer {
+            task.cancel(with: .normalClosure, reason: nil)
+            askTask = nil
+            asking = false
+            endToolRun()
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["type": "text", "text": said]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        do {
+            try await task.send(.string(json))
+            // `turn_end` clears `asking`, so the relay ending the turn is what ends the
+            // loop; a cancel throws out of `receive`, which is the other way it ends.
+            while asking {
+                guard case .string(let json) = try await task.receive() else { continue }
+                handle(json)
+            }
+        } catch {
+            if asking, !Task.isCancelled { self.error = error.localizedDescription }
+        }
+    }
+
     // MARK: - Lock screen
     //
     // The same session, shown where you can see it once the screen is off. It is a
@@ -205,20 +279,17 @@ final class VoiceSession {
         )
     }
 
-    /// Run the held instruction, as edited on screen. An edit teaches the server
-    /// what was really said, so the same mishearing stops repeating.
+    /// Run the held instruction, as edited on screen. An edit teaches the server what
+    /// was really said, so the same mishearing stops repeating.
+    ///
+    /// There is no opposite. Refusing one is not doing anything with it: say something
+    /// else, or stop listening. A button for that would be a third thing to aim at in
+    /// the one place the screen is asking you a yes-or-no question.
     func approve(_ text: String) {
         guard pending != nil else { return }
         pending = nil
         commit(text) // accepting is what sends it, so that is when it becomes history
         send(["type": "approve", "text": text])
-    }
-
-    func reject() {
-        guard pending != nil else { return }
-        pending = nil
-        utterance = nil
-        send(["type": "reject"])
     }
 
     /// Move what was said into the history, now that it has actually been sent.
@@ -272,6 +343,8 @@ final class VoiceSession {
         /// Live transcription revises its guess as you speak, so each update carries the
         /// whole utterance and replaces the last one instead of extending it.
         let partial: Bool?
+        /// On `turn_end`: which chat this connection turned out to be in.
+        let session: String?
     }
 
     private func handle(_ json: String) {
@@ -321,6 +394,9 @@ final class VoiceSession {
             turnEnded = true
             replied = false
             pending = nil
+            // Now the conversation has a name, so the next connection can carry it on.
+            if let session = event.session { chatId = session }
+            asking = false // a typed turn is its socket, and this closes it
             endToolRun()
             publish() // the reply is complete; this is the readable moment
         case "interrupted":

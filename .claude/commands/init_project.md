@@ -19,12 +19,13 @@ Adding a bullet here is a code smell — ask first whether a code change would o
 iPhone (app/)                 Mac (server/)                              Anthropic + Google
 mic ─▶ AudioPipe ─▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts ─▶ ears ──▶ Gemini Live (transcribes)
 🔊 ◀─ AudioPipe ◀─ VoiceSession ◀─ws─  server.ts ◀─ session.ts ◀─ voice ◀── Gemini TTS  (reads aloud)
-                                                          └────────── claude ◀▶ Claude Code (the agent)
+⌨️ ─────────────▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts ─┬── claude ◀▶ Claude Code (the agent)
+                                                              └── (no ears, no voice)
 ```
 
 The conversations are Claude Code's own sessions, so the drawer, `?resume=` and a fork all read one store — `chats.ts` is the only thing that touches it.
 
-Architecture B: the phone is a mic and a speaker, the Mac holds the sessions. Chosen over "phone talks to Gemini directly" because the orchestrator between Gemini and Claude Code belongs on the server, not in two clients. `session.ts` is that orchestrator, and its state is who holds the floor — user, held (review), or claude. `ears` transcribes only, so a finished transcript IS the instruction and a partial arriving while Claude talks is an interruption; `claude` (Claude Code, one warm streaming session) answers, and `voice` (a text-to-speech request per sentence, not a session) reads the answer back. Measured cost of the phone hop: **~1 ms**; the wait a user feels is Claude (a few seconds), recorded per turn in `server/.turns.jsonl`. The app, the relay and the test harness all run on this Mac, so those timestamps share one clock and latency is a subtraction, never a measurement.
+Architecture B: the phone is a mic, a speaker and a keyboard, the Mac holds the sessions. Chosen over "phone talks to Gemini directly" because the orchestrator between Gemini and Claude Code belongs on the server, not in two clients. `session.ts` is that orchestrator, and its state is who holds the floor — user, held (review), or claude. `ears` transcribes only, so a finished transcript IS the instruction and a partial arriving while Claude talks is an interruption; `claude` (Claude Code, one warm streaming session) answers, and `voice` (a text-to-speech request per sentence, not a session) reads the answer back. Audio is what buys audio: the ears open on the first microphone buffer and the voice speaks only where there are ears, so a typed instruction — one socket, one turn — reaches Claude and never Gemini, with nothing in the URL saying which kind of connection it is. Both carry `?resume=`, so talking and typing are one conversation. Measured cost of the phone hop: **~1 ms**; the wait a user feels is Claude (a few seconds), recorded per turn in `server/.turns.jsonl`. The app, the relay and the test harness all run on this Mac, so those timestamps share one clock and latency is a subtraction, never a measurement.
 
 ## Core files (@ loaded)
 

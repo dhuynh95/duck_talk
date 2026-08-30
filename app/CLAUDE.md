@@ -3,7 +3,13 @@
 SwiftUI, iOS 17+, no external Swift packages. Two targets: the app, and a widget
 extension holding the lock-screen Live Activity. The home screen is the conversation —
 a voice session against `server/` (mic → relay → Gemini → speaker) — with past chats
-behind the drawer on the left. The earlier chat client (session list, SSE against
+behind the drawer on the left.
+
+You can also type. A typed instruction is a socket of its own that lives for one turn,
+and the relay opens ears only for a connection that sends audio, so typing costs no
+Gemini session and gets no spoken reply. The two are exclusive: touching the field while
+listening stops the session. Both carry `resume`, so a typed turn and a spoken one are
+the same conversation. The earlier chat client (session list, SSE against
 `src/server`) is parked on the `ios/wired-mvp` branch; pull pieces over from there
 rather than rewriting them.
 
@@ -23,6 +29,11 @@ Claude Code.
 `run()` is the whole loop: it builds, installs, launches, and returns a screenshot —
 or the compiler's errors, or the log tail if the app died. Then `tap(label="…")`,
 `swipe`, and `type_text` drive the app, each returning the screen it produced.
+
+`type_text` pastes; it does not type. Keystrokes arrive as whatever the simulator's
+keyboard layout and autocorrect make of them — "what is two plus two" landed as "Abat os
+tao plus tzo" — and the pasteboard has neither. It appends at the cursor, because Cmd+A
+on this simulator sends the app to the home screen; tap into an empty field.
 
 Never claim a UI change works off a successful compile — `run()` hands you the
 screen, so look at it.

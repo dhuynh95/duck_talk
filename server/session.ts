@@ -5,11 +5,19 @@
  * The state is who holds the floor, and there are only three answers:
  *
  *   user ──final transcript──▶ claude ──voice drained──▶ user
- *     └──(review)──▶ held ──yes/edit──▶ claude      claude ──partial──▶ user (barge-in)
+ *     ├──(review)──▶ held ──yes/edit──▶ claude      claude ──partial──▶ user (barge-in)
+ *     └──typed─────────────▶ claude
  *
  * A finished transcript means something different in each, which is why there are
  * exactly three: the instruction, the answer to a held question, or — because a
- * partial has already cancelled the turn — the instruction that replaces it.
+ * partial has already cancelled the turn — the instruction that replaces it. A typed
+ * instruction has none of that ambiguity: it cannot have been misheard, so it is never
+ * corrected and never held, and it runs the moment it arrives.
+ *
+ * Audio in is what buys audio out. The ears open on the first microphone buffer rather
+ * than on connect, and the voice speaks only for a connection that has ears — so a
+ * connection that is only typed to never opens a Gemini session in either direction,
+ * and nothing has to be told which kind of connection it is.
  *
  * ears and claude are long-lived sessions for the connection, so an interrupt cancels
  * a turn and leaves both warm; the next one is fast. The voice is not a session at
@@ -60,8 +68,10 @@ export interface Turn {
 /** The phone side of the socket — the only thing this file knows about the network. */
 export interface Phone {
   pcm(buf: Buffer): void;
-  /** `partial` marks text that replaces the current line instead of extending it. */
-  event(msg: { type: string; text?: string; partial?: boolean }): void;
+  /** `partial` marks text that replaces the current line instead of extending it.
+   *  `session` rides on `turn_end`: the chat this connection turned out to be in, so
+   *  the next one the phone opens can carry it on. */
+  event(msg: { type: string; text?: string; partial?: boolean; session?: string | null }): void;
 }
 
 const TURNS = new URL('./.turns.jsonl', import.meta.url).pathname;
@@ -77,7 +87,8 @@ const TURN_TIMEOUT_MS = Number(process.env['TURN_TIMEOUT_MS'] ?? 180_000);
 const AUDIO_GAP_MS = 2_000;
 
 export class Session {
-  private ears!: Ears;
+  /** Null until the phone sends its first microphone buffer — see `listen`. */
+  private ears: Ears | null = null;
   private voice!: Voice;
   private state: 'user' | 'held' | 'claude' = 'user';
   private turns = 0;
@@ -87,7 +98,7 @@ export class Session {
   private closed = false;
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   // ears takes ~1s to connect; audio that arrives meanwhile is held, not dropped.
-  private ready = false;
+  private opening = false;
   private backlog: Buffer[] = [];
   // Whether the phone is still sending microphone audio at all — see `hearing`.
   private audioAt = 0;
@@ -125,7 +136,13 @@ export class Session {
     this.log = log;
   }
 
-  async open(): Promise<void> {
+  /**
+   * Everything that costs nothing until it is used: the corrections, the voice (which
+   * has no connection) and Claude (which is warm but silent until sent to). Nothing
+   * here awaits, so an instruction arriving with the handshake finds a session ready
+   * for it. The ears are not here — they wait for audio.
+   */
+  open(): void {
     // Kept in memory as well as on disk, so an edit made this session is used by the
     // next auto-correct without re-reading the file.
     this.corrections = load();
@@ -150,8 +167,6 @@ export class Session {
       onDone: () => { if (this.state === 'claude') this.endTurn(); },
     });
 
-    await this.openEars();
-
     // Claude is a session too, warm for the whole connection. Its callbacks always
     // belong to the turn now running — claude.ts fences an interrupted turn's
     // stragglers — so no correlation guard is needed here.
@@ -166,7 +181,9 @@ export class Session {
         this.turn.claude_first_at ??= Date.now();
         this.turn.said += text;
         this.phone.event({ type: 'model', text });
-        this.voice.say(text);
+        // Read aloud only to someone who spoke. A typed instruction wants its answer
+        // on the screen it was typed on.
+        if (this.ears) this.voice.say(text);
       },
       // A `tool` event with a name means Claude started that tool; without one, it
       // finished. Only the running name is worth showing, so the phone needs no
@@ -178,12 +195,36 @@ export class Session {
         this.sessionId = sessionId;
         this.turn.cost_usd = costUsd;
         if (error) { this.phone.event({ type: 'error', text: error }); this.cancel(`claude error: ${error}`); return; }
-        this.voice.finish(); // onDone → endTurn once the audio drains
+        // With a voice, the turn ends when the audio has been heard; without one,
+        // Claude finishing is the whole of it.
+        if (this.ears) this.voice.finish(); // onDone → endTurn once the audio drains
+        else this.endTurn();
       },
     });
+  }
 
-    this.ready = true;
-    if (!this.closed) this.backlog.splice(0).forEach((pcm) => this.ears.send(pcm));
+  /**
+   * Open the ears, once, on the first audio — so a connection that is only typed to
+   * never opens a Gemini session at all, and one that is spoken to needs no flag.
+   *
+   * Failing here costs the microphone and nothing else: the connection stays up and
+   * can still be typed to, which is exactly what the phone should offer if Gemini is
+   * unreachable.
+   */
+  private async listen(): Promise<void> {
+    if (this.ears || this.opening || this.closed) return;
+    this.opening = true;
+    try {
+      const ears = await this.openEars();
+      if (this.closed) return void ears.close();
+      this.ears = ears;
+      this.backlog.splice(0).forEach((pcm) => ears.send(pcm));
+    } catch (e) {
+      this.log(`ears failed: ${e}`);
+      this.phone.event({ type: 'error', text: `could not start listening: ${e}` });
+    } finally {
+      this.opening = false;
+    }
   }
 
   /**
@@ -191,8 +232,8 @@ export class Session {
    * talking is the user talking over it, and the final that follows is the next
    * instruction.
    */
-  private async openEars(): Promise<void> {
-    this.ears = await openEars(this.ai, this.sttModel, {
+  private openEars(): Promise<Ears> {
+    return openEars(this.ai, this.sttModel, {
       log: this.log,
       onPartial: (text) => {
         // Unambiguous here in a way the routing ears never were: a partial can only
@@ -219,8 +260,10 @@ export class Session {
 
   send(pcm: Buffer): void {
     this.hearing();
-    if (this.ready) this.ears.send(pcm);
-    else this.backlog.push(pcm);
+    if (this.ears) return this.ears.send(pcm);
+    // The first buffer is what opens the ears; the ~1s that takes is held here.
+    this.backlog.push(pcm);
+    void this.listen();
   }
 
   /**
@@ -246,12 +289,18 @@ export class Session {
     }, AUDIO_GAP_MS);
   }
 
-  /** A text frame from the phone: approve or reject a held turn, or mark a moment. */
+  /**
+   * A text frame: an instruction, a held one approved, or a mark.
+   *
+   * There is no reject frame. Refusing a held instruction is not doing anything with
+   * it — say "no", or hang up — so the only refusal that needs a message is the
+   * spoken one, and that arrives as a transcript like any other.
+   */
   frame(msg: { type?: string; name?: string; at?: number; text?: string }): void {
     if (msg.type === 'mark' && msg.name === 'reply_in' && typeof msg.at === 'number') this.turn.reply_in_at = msg.at;
     else if (msg.type === 'mark' && msg.name === 'speech_end' && typeof msg.at === 'number') this.turn.speech_end_at = msg.at;
+    else if (msg.type === 'text' && typeof msg.text === 'string') this.typed(msg.text);
     else if (msg.type === 'approve') this.decide(true, msg.text);
-    else if (msg.type === 'reject') this.decide(false);
   }
 
   async close(): Promise<void> {
@@ -282,6 +331,20 @@ export class Session {
     this.log(`heard: ${said}`);
     // Runs on its own because auto-correct may need a moment first.
     void this.propose(said).catch((e) => this.log(`propose failed: ${e}`));
+  }
+
+  /**
+   * A typed instruction. It cannot have been misheard, so there is nothing to correct
+   * and nothing to review — it is final the moment it arrives, and runs.
+   */
+  private typed(said: string): void {
+    const instruction = said.trim();
+    if (!instruction || this.state !== 'user') return;
+    this.turn.proposed = instruction;
+    this.turn.instruction = instruction;
+    this.turn.heard_at = Date.now();
+    this.log(`typed: ${instruction}`);
+    this.run(instruction);
   }
 
   /** Remember what was really meant, so the next transcription starts from it. */
@@ -387,7 +450,9 @@ export class Session {
   private endTurn(): void {
     if (this.state === 'user') return; // nothing in flight
     this.disarm();
-    this.phone.event({ type: 'turn_end' });
+    // Which chat this turned out to be, so the next connection the phone opens can
+    // carry it on — including one it opens to type into.
+    this.phone.event({ type: 'turn_end', session: this.sessionId });
     void this.record(this.turn).catch((e) => this.log(`record failed: ${e}`));
     this.turn = this.blank();
     this.state = 'user';

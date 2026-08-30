@@ -28,8 +28,9 @@ No build step — Node ≥ 22.6 runs the `.ts`.
 | Direction | Frame | Meaning |
 |---|---|---|
 | phone → server | binary | raw PCM Int16 LE, 16 kHz, mono |
+| phone → server | text | `{"type":"text","text"}` — an instruction, typed |
 | phone → server | text | `{"type":"mark","name","at"}` — a moment only the phone can see |
-| phone → server | text | `{"type":"approve","text"?}` / `{"type":"reject"}` — decide a held instruction |
+| phone → server | text | `{"type":"approve","text"?}` — run a held instruction, as edited |
 | server → phone | binary | raw PCM Int16 LE, 24 kHz, mono (Claude's voice) |
 | server → phone | text | `{"type":"user"\|"model"\|"tool"\|"approval"\|"interrupted"\|"turn_end"\|"error","text"?}` |
 
@@ -37,10 +38,18 @@ No build step — Node ≥ 22.6 runs the `.ts`.
 replaces what came before, because the guess is revised while you speak; its `partial`
 is false on the last one. `model` is Claude's answer as it is spoken and does join up,
 `tool` names a tool Claude used, `approval` (review mode) offers a held instruction
-for a yes/no, `turn_end` says the reply is finished — the only such signal.
+for a yes/no, `turn_end` says the reply is finished — the only such signal — and
+carries `session`, the chat this connection turned out to be in.
+
+Audio is what buys audio. The ears open on the first microphone buffer and the voice
+speaks only where there are ears, so a connection that only ever sends `text` frames
+reaches Claude and never Gemini, and nothing in the URL has to say so. A typed
+instruction is also never corrected and never held: it cannot have been misheard.
 
 Connect to `ws://<mac>:8765`. One `?mode=`: `direct` (default) runs each instruction
-at once, `review` holds it for a spoken "yes"/"no" or an approve/reject frame first.
+at once, `review` holds it until it is approved — by an `approve` frame, or by saying
+"yes". Refusing one is not doing anything with it, so the only way to refuse is to say
+"no" or to hang up.
 `?correct=1` and `?readback=1` are orthogonal to both. `?resume=<session id>` carries
 on a past conversation instead of starting one — any session Claude Code has in this
 project, including the ones you started in a terminal.

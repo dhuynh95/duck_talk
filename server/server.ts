@@ -2,11 +2,17 @@
  * Voice relay: one WebSocket per phone, one Session behind it (ears + Claude + voice).
  *
  *   ↑ binary  raw PCM Int16 LE, 16 kHz, mono          (mic)
- *   ↑ text    {"type":"mark","name","at"}             a moment only the phone can see
- *             {"type":"approve","text"?} / {"type":"reject"}   decide a held instruction
+ *   ↑ text    {"type":"text","text"}                  an instruction, typed
+ *             {"type":"mark","name","at"}             a moment only the phone can see
+ *             {"type":"approve","text"?}              run a held instruction, as edited
  *   ↓ binary  raw PCM Int16 LE, 24 kHz, mono          (Claude's voice)
  *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"interrupted"|"turn_end"|"error","text"?}
  *             a `user` event also carries `partial`: true replaces the line, false ends it
+ *             a `turn_end` carries `session`: which chat this connection is in
+ *
+ * Audio is what buys audio: the ears open on the first microphone buffer and the voice
+ * speaks only where there are ears, so a connection that is only typed to reaches
+ * Claude and never Gemini — with nothing in the URL saying which kind it is.
  *
  * A session is in one `?mode=`: `direct` (default) runs each instruction at once,
  * `review` holds it for a yes/no/edit first. Orthogonal to both, `?correct=1` has a
@@ -126,11 +132,13 @@ wss.on('connection', (ws, req) => {
   });
   ws.on('close', () => { log('close'); void session.close().catch((e) => log(`close failed: ${e}`)); });
 
-  session.open().catch((e) => {
+  try {
+    session.open();
+  } catch (e) {
     phone.event({ type: 'error', text: String(e) });
     log(`open failed: ${e}`);
     ws.close();
-  });
+  }
 });
 
 // One session's bad moment must not disconnect every phone. Node exits on an
