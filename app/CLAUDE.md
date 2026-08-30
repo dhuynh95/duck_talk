@@ -126,7 +126,10 @@ whose job it is.
 ## Project files
 
 `DuckTalk.xcodeproj` is **generated** and gitignored. Edit `project.yml` and
-re-run `./dt gen`. Sources are globbed from `DuckTalk/` (the app), `DuckTalkWidget/`
+re-run `./dt gen`. The same step writes `buildServer.json` (also gitignored, absolute
+paths) so SourceKit-LSP reads the generated project instead of compiling each file
+alone for macOS — which is what "Cannot find 'Brand' in scope" in an editor means:
+run `./dt gen`, or `brew install xcode-build-server` if it is not on the machine. Sources are globbed from `DuckTalk/` (the app), `DuckTalkWidget/`
 (the Live Activity) and `Shared/` (compiled into both — a Live Activity is two
 processes agreeing on a shape), so a new `.swift` file needs no project edit. Never
 hand-edit `.pbxproj`.

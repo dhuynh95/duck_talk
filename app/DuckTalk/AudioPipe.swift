@@ -11,6 +11,11 @@ final class AudioPipe {
     var onChunk: ((Data) -> Void)?
     /// A 0…1 loudness of the mic — how loud you're speaking. Drives the waveform.
     var onLevel: ((Float) -> Void)?
+    /// Send silence instead of the room. Silence, not nothing: the relay reads a gap
+    /// in the bytes as the phone going away, and Gemini's endpointing watches a
+    /// continuous stream — so the frames keep coming at the same rate, zeroed. The
+    /// ears stay open and hear a quiet room; the speaker is untouched.
+    var muted = false
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -58,10 +63,19 @@ final class AudioPipe {
                 return buffer
             }
 
-            guard out.frameLength > 0, let samples = out.int16ChannelData else { return }
+            guard out.frameLength > 0, let samples = out.int16ChannelData, let self else { return }
             let n = Int(out.frameLength)
-            self?.onLevel?(self?.meter(samples[0], n) ?? 0)
-            self?.onChunk?(Data(bytes: samples[0], count: n * 2))
+            if self.muted {
+                // Zeroed after conversion, so the frame is exactly the shape a heard one
+                // would be. The meter is skipped rather than fed zeros, so it drops to
+                // the floor at once instead of decaying — the waveform going flat is how
+                // the screen says muted.
+                memset(samples[0], 0, n * 2)
+                self.onLevel?(0)
+            } else {
+                self.onLevel?(self.meter(samples[0], n))
+            }
+            self.onChunk?(Data(bytes: samples[0], count: n * 2))
         }
 
         engine.prepare()

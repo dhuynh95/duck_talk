@@ -19,6 +19,9 @@ struct LiveSession: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         /// `VoiceSession.Status` as text; this file cannot see that type.
         var status: String
+        /// The microphone is sending silence. Projected here so the card can draw the
+        /// mute button in the state it is in, and say "Muted" when nothing is heard.
+        var muted: Bool
         /// What you are saying now, or the instruction being held for review.
         var heard: String
         /// The last thing Claude said.

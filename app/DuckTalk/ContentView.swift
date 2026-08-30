@@ -240,11 +240,14 @@ struct ContentView: View {
         // Listening, the box is the only live thing on the screen, and its edge says
         // so — in the accent, which is where the orange goes once it has left the
         // microphone. Nothing else changes, because nothing else has to.
+        // Orange means live *and hearing*. Muted, the edge stays drawn — the session is
+        // still up — but in the border grey, and the orange moves to the mute button.
         .overlay {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Brand.accent.opacity(live ? 1 : 0), lineWidth: 2)
+                .strokeBorder(live ? (session.muted ? Brand.border : Brand.accent) : .clear, lineWidth: 2)
         }
         .animation(.easeOut(duration: 0.2), value: live)
+        .animation(.easeOut(duration: 0.2), value: session.muted)
         .onChange(of: session.pending) { held = session.pending }
     }
 
@@ -300,9 +303,15 @@ struct ContentView: View {
                     if let url { session.connect(url: url) }
                 }
             }
-            HStack {
+            HStack(spacing: 10) {
                 Spacer()
                 if live {
+                    // Mute lit on the accent when it is on: the orange has left the
+                    // border and the bars, and this is where it went. Same order as the
+                    // lock-screen card, so the thumb learns one layout.
+                    glyph("mic.slash", accent: session.muted) { session.toggleMute() }
+                        .accessibilityIdentifier("mute")
+                        .accessibilityLabel(session.muted ? "Unmute" : "Mute")
                     glyph("xmark", accent: false) { session.stop() }
                         .accessibilityIdentifier("end")
                         .accessibilityLabel("Stop listening")

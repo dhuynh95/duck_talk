@@ -1,14 +1,16 @@
 import AppIntents
 
-/// The one thing you can do to a session from a locked phone: end it.
+/// The two things you can do to a session from a locked phone: end it, or stop it
+/// hearing you for a while.
 ///
 /// A `LiveActivityIntent` runs in the *app's* process rather than the widget's,
-/// which is the whole reason the button can work: it ends the session that is
+/// which is the whole reason the buttons can work: they act on the session that is
 /// actually holding the microphone, instead of a second process trying to describe
 /// one it cannot see.
 ///
 /// This file is compiled into both targets, and only one of them has a session. The
-/// widget needs the type to draw a `Button`; the app fills in what pressing it does.
+/// widget needs the types to draw a `Button`; the app fills in what pressing one does,
+/// at launch, in `DuckTalkApp`.
 struct StopListening: LiveActivityIntent {
     static let title: LocalizedStringResource = "Stop"
     static let description = IntentDescription("Stop listening and end the session.")
@@ -20,6 +22,25 @@ struct StopListening: LiveActivityIntent {
 
     /// What the app does when the button is pressed, installed at launch. It stays
     /// empty in the widget, which draws the button but never runs it.
+    @MainActor static var action: () -> Void = {}
+
+    init() {}
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        Self.action()
+        return .result()
+    }
+}
+
+/// Stop being heard without ending anything. The session, the ears and Claude all
+/// stay warm; the microphone sends silence until pressed again.
+struct MuteListening: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Mute"
+    static let description = IntentDescription("Mute the microphone, or unmute it.")
+    static let isDiscoverable = false
+    static let openAppWhenRun = false
+
     @MainActor static var action: () -> Void = {}
 
     init() {}

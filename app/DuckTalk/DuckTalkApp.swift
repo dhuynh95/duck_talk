@@ -8,6 +8,7 @@ struct DuckTalkApp: App {
     /// backgrounded launch never shows.
     init() {
         StopListening.action = { VoiceSession.shared.stop() }
+        MuteListening.action = { VoiceSession.shared.toggleMute() }
     }
 
     var body: some Scene {

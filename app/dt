@@ -39,8 +39,28 @@ filter() {
   grep -E '(error|warning|note):|^\*\* .* \*\*|Testing failed|failed with' || true
 }
 
+# Regenerate the project — and, beside it, what an editor needs to read it. Without
+# buildServer.json SourceKit compiles each file alone, for the Mac, and every iOS type
+# and every symbol from another file shows as an error; with it, the editor and
+# `./dt build` see the same project from the same derived data. Absolute paths, so it
+# is written here rather than committed. Skipped without `brew install xcode-build-server`.
 gen() {
   xcodegen generate --quiet
+  local bsp
+  bsp=$(command -v xcode-build-server) || return 0
+  cat > buildServer.json <<JSON
+{
+  "name": "xcode build server",
+  "version": "1.3.0",
+  "bspVersion": "2.2.0",
+  "languages": ["c", "cpp", "objective-c", "objective-cpp", "swift"],
+  "argv": ["$bsp"],
+  "workspace": "$PWD/$PROJECT/project.xcworkspace",
+  "build_root": "$PWD/$DERIVED",
+  "scheme": "$SCHEME",
+  "kind": "xcode"
+}
+JSON
 }
 
 build() {

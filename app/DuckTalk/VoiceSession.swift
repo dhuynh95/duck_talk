@@ -74,6 +74,10 @@ final class VoiceSession {
     private(set) var lines: [Line] = []
     private(set) var error: String?
     private(set) var level: Float = 0  // 0…1 live loudness, for the waveform
+    /// The microphone is sending silence. The session, the ears and Claude stay warm;
+    /// only what they hear changes. `AudioPipe.muted` is the bit that does it — this is
+    /// that bit as the screen and the lock screen read it.
+    private(set) var muted = false
     /// What is being said right now, revised as it is spoken. Not yet history.
     private(set) var utterance: String?
     /// The instruction the server is holding for a yes/no/edit, in review mode.
@@ -184,6 +188,15 @@ final class VoiceSession {
         stop()
     }
 
+    /// Stop being heard, or start again. Reached from the composer and, through
+    /// `MuteListening`, from the lock screen — one bit either way.
+    func toggleMute() {
+        guard let pipe else { return }
+        muted.toggle()
+        pipe.muted = muted
+        publish() // the card draws the button in its new state, and says "Muted"
+    }
+
     func stop() {
         wantLive = false
         task?.cancel(with: .normalClosure, reason: nil)
@@ -191,6 +204,7 @@ final class VoiceSession {
         pipe?.stop()
         pipe = nil
         level = 0
+        muted = false // a new session starts hearing
         pending = nil
         utterance = nil
         status = .idle
@@ -274,6 +288,7 @@ final class VoiceSession {
     private func snapshot() -> LiveSession.ContentState {
         LiveSession.ContentState(
             status: status.rawValue,
+            muted: muted,
             heard: pending ?? utterance ?? "",
             said: lines.last(where: { $0.kind == .model })?.text ?? "",
         )

@@ -1,4 +1,5 @@
 import ActivityKit
+import AppIntents
 import SwiftUI
 import WidgetKit
 
@@ -31,7 +32,10 @@ struct DuckTalkLiveActivity: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    stop
+                    HStack(spacing: 8) {
+                        mute(context.state)
+                        stop
+                    }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     Text(line(context.state))
@@ -74,6 +78,7 @@ struct DuckTalkLiveActivity: Widget {
                 Text("Duck Talk").font(.headline)
                 Spacer()
                 elapsed(startedAt).font(.subheadline.monospacedDigit()).foregroundStyle(Brand.tertiaryText)
+                mute(state)
                 stop
             }
             Text(line(state))
@@ -90,15 +95,27 @@ struct DuckTalkLiveActivity: Widget {
     /// The same plain circle the app's own stop wears. It was red, which was the only
     /// red in the product and made ending a session look like deleting something.
     private var stop: some View {
-        Button(intent: StopListening()) {
-            Image(systemName: "xmark")
+        control("xmark", intent: StopListening(), label: "Stop listening")
+    }
+
+    /// Stop being heard without ending the session. Lit on the accent while muted —
+    /// the same rule as the composer, where the orange leaves the border and lands here.
+    private func mute(_ state: LiveSession.ContentState) -> some View {
+        control("mic.slash", intent: MuteListening(), label: state.muted ? "Unmute" : "Mute", accent: state.muted)
+    }
+
+    /// One face for both buttons, so they read as a pair here and as the pair in the
+    /// app's composer. The intent runs in the app, which is what makes either work.
+    private func control(_ symbol: String, intent: some LiveActivityIntent, label: String, accent: Bool = false) -> some View {
+        Button(intent: intent) {
+            Image(systemName: symbol)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Brand.text)
+                .foregroundStyle(accent ? Brand.background : Brand.text)
                 .frame(width: 34, height: 34)
-                .background(Brand.fill, in: Circle())
+                .background(accent ? Brand.accent : Brand.fill, in: Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Stop listening")
+        .accessibilityLabel(label)
     }
 
     /// The line being sent, which is what the card is for. What you are saying wins
@@ -108,6 +125,7 @@ struct DuckTalkLiveActivity: Widget {
     private func line(_ state: LiveSession.ContentState) -> String {
         if !state.heard.isEmpty { return state.heard }
         if !state.said.isEmpty { return state.said }
+        if state.muted { return "Muted" }
         return state.status == "live" ? "Listening" : state.status.capitalized
     }
 
