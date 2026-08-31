@@ -31,7 +31,8 @@ in — or `ANTHROPIC_API_KEY`, which bills the API instead. The relay's third st
 line says which account will actually pay, asked of the CLI rather than guessed from
 the environment. `--port` and `--cwd` are the flags; `PORT` and `PROJECT_CWD` are the
 same two as environment variables. `STT_MODEL`, `VOICE_MODEL`, `CLAUDE_MODEL`,
-`CLAUDE_PERMISSION_MODE` (default `plan`) override the rest. `TURN_TIMEOUT_MS`
+`CLAUDE_PERMISSION_MODE` (default `plan`) override the rest — the last two say only
+where a session starts, since the phone moves either one on the session already running. `TURN_TIMEOUT_MS`
 (default 180000, `0` disables) caps one turn — a turn that never finishes is
 interrupted and the session recovers.
 
@@ -46,6 +47,7 @@ published package, which cannot assume that of a stranger's Node.
 | phone → server | text | `{"type":"text","text"}` — an instruction, typed |
 | phone → server | text | `{"type":"mark","name","at"}` — a moment only the phone can see |
 | phone → server | text | `{"type":"approve","text"?}` — run a held instruction, as edited |
+| phone → server | text | `{"type":"claude","model"?,"permission"?}` — which model answers, and what it may do |
 | server → phone | binary | raw PCM Int16 LE, 24 kHz, mono (Claude's voice) |
 | server → phone | text | `{"type":"user"\|"model"\|"tool"\|"approval"\|"interrupted"\|"turn_end"\|"error","text"?}` |
 
@@ -69,6 +71,13 @@ at once, `review` holds it until it is approved — by an `approve` frame, or by
 on a past conversation instead of starting one — any session Claude Code has in this
 project, including the ones you started in a terminal.
 
+Which model answers and what it may do are deliberately not URL parameters. The CLI
+takes both mid-session, so they arrive as a `claude` frame — sent when a socket opens
+and again whenever they change — and hold from the next turn. `plan` reads and thinks,
+`acceptEdits` writes and deletes files, `bypassPermissions` runs anything. The other
+three the SDK offers wait for someone to answer "can I run this?", which nothing here
+can, so every action under them is denied.
+
 `?data=1` opens a connection that edits what the relay owns and nothing else — no
 voice session, no Gemini, no Claude:
 
@@ -82,8 +91,10 @@ voice session, no Gemini, no Claude:
 | `{"type":"fork","id","at"}` | a new chat ending at message `at`, then opened |
 
 Every message is answered with `{"type":"corrections","items":[…]}`,
-`{"type":"prompts","prompts":[…]}` and `{"type":"chats","chats":[…]}`, so the phone
-reads what is there rather than tracking it. One chat's messages are the exception,
+`{"type":"prompts","prompts":[…]}`, `{"type":"models","models":[…]}` and
+`{"type":"chats","chats":[…]}`, so the phone reads what is there rather than tracking
+it. The models are the ones this account may use, asked of the CLI once and remembered
+— the phone writes no model list of its own. One chat's messages are the exception,
 sent only when asked for, because they are the one part that is not small.
 
 A prompt is one of the files in `prompts/` — see `prompts.ts`, which is the only
@@ -92,14 +103,17 @@ does, and `live`: whether an edit reaches the session already running. `voice` i
 live, because it is re-read per sentence and goes in front of each one — the
 text-to-speech API has no rate parameter, so its wording is the only speed control
 there is. `claude` is not, because the SDK takes the system prompt when the session's
-query is built, so an edit reaches the next session.
+query is built, so an edit reaches the next session. It is added to Claude Code's own
+prompt rather than standing in for it: what it holds is a way of speaking, and the
+working directory is one of the things that prompt carries.
 
 ## What a turn leaves behind
 
 Every finished turn is appended to `.duck-talk/turns.jsonl` as one line:
 
 ```json
-{"turn":1,"mode":"direct","heard":"What branch am I on?","instruction":"What branch am I on?",
+{"turn":1,"mode":"direct","model":"haiku","permission":"plan",
+ "heard":"What branch am I on?","instruction":"What branch am I on?",
  "approval":null,"said":"You're on main.","session_id":"0d85ded9-…","heard_at":1787900000000,"claude_first_at":1787900006146,
  "voice_out_at":1787900007000,"reply_in_at":1787900007001,"voice_ms":5630,"cost_usd":0.063}
 ```

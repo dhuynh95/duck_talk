@@ -42,7 +42,7 @@ const PROMPTS = [
     file: 'claude.md',
     title: 'Claude',
     live: false,
-    detail: 'How Claude answers: how long, in what tone, and what to do before it speaks. Remember it is being read aloud, not printed. Fixed when a session starts, so this takes effect the next time you press listen.',
+    detail: 'How Claude answers: how long, in what tone, and what to do before it speaks. Remember it is being read aloud, not printed. Added to Claude Code’s own instructions rather than replacing them, so this is a way of speaking and not the whole brief. Fixed when a session starts, so it takes effect the next time you press listen.',
   },
 ] as const;
 
