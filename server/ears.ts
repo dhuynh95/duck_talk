@@ -43,10 +43,19 @@ export interface Ears {
 }
 
 export interface EarsCallbacks {
-  onPartial(text: string): void;
+  /** `continuing` is the JOIN decision below, said out loud: this utterance carries on
+   *  the previous final rather than starting something new. The text was always
+   *  stitched accordingly; the caller needs the same fact, because an instruction
+   *  still being spoken is not a barge-in. */
+  onPartial(text: string, continuing: boolean): void;
   /** The finished utterance, and the audio it was made from — null only if the stream
    *  buffer no longer reaches back that far, which takes a minute of speech. */
   onFinal(text: string, clip: Buffer | null): void;
+  /** The server hung up — a session that hit Gemini's duration limit, or a dropped
+   *  network. Never called for a close() of our own. The model offers no way around
+   *  it (`sessionResumption` is ignored by the transcribe model — measured), so the
+   *  recovery is the caller's open path, run again. */
+  onClosed?(): void;
   log?(m: string): void;
 }
 
@@ -131,6 +140,9 @@ export async function openEars(
   let prefix = '';
   let finalAt = 0;
   let speaking = false;
+  // The JOIN decision for the utterance now being spoken, held for its whole length —
+  // every partial of one utterance says the same thing.
+  let joined = false;
 
   // --- The stream as something that can be sliced --------------------------
   //
@@ -195,14 +207,14 @@ export async function openEars(
           // and held for its whole length, so a long tail cannot lose its head midway.
           if (!speaking) {
             speaking = true;
-            const joining = Date.now() - finalAt <= JOIN_MS;
-            if (!joining) prefix = '';
+            joined = Date.now() - finalAt <= JOIN_MS;
+            if (!joined) prefix = '';
             // A joined utterance keeps the head fragment's start, so the clip grows
             // with the text: each final's audio is the audio of the whole sentence so
             // far, exactly as `prefix` makes each final the whole sentence so far.
-            if (!joining || utteranceAt === null) utteranceAt = Math.max(lastEndMs, sentMs - MAX_LEAD_MS, baseMs);
+            if (!joined || utteranceAt === null) utteranceAt = Math.max(lastEndMs, sentMs - MAX_LEAD_MS, baseMs);
           }
-          cb.onPartial(join(prefix, partial));
+          cb.onPartial(join(prefix, partial), joined);
         }
         // The finalized transcript. It arrives only when the utterance is over, so
         // it is both the text and the "they are done talking" signal.
@@ -228,7 +240,13 @@ export async function openEars(
         }
       },
       onerror: (e) => log(`ears error: ${e.message}`),
-      onclose: (e) => { closed = true; session = null; log(`ears closed: ${e.reason || e.code}`); },
+      onclose: (e) => {
+        const mine = closed; // close() sets it first, so a close we asked for stays quiet
+        closed = true;
+        session = null;
+        log(`ears closed: ${e.reason || e.code}`);
+        if (!mine) cb.onClosed?.();
+      },
     },
   });
   backlog.splice(0).forEach(forward);

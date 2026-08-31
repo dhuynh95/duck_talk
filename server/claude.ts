@@ -20,6 +20,7 @@
  *   node claude.ts "what is the latest commit"     one turn, streamed to stdout
  */
 
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { query, type AccountInfo, type ModelInfo, type Options, type PermissionMode, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { PROJECT as CWD } from './paths.ts';
@@ -163,16 +164,22 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
 
   // The input side: `send` drops an instruction in the queue and wakes the generator
   // the SDK is reading. One message per turn — the caller never queues two.
-  const queue: string[] = [];
+  const queue: SDKUserMessage[] = [];
   let wake: (() => void) | null = null;
   let done = false;
-  // Turn bookkeeping so an interrupted turn's stragglers never reach the next turn.
-  // The SDK is sequential: an interrupted turn still ends with its own `result`
-  // before the next turn's output, so we swallow everything up to and including the
-  // result of any turn at or below `cancelledUpTo`. `finished` counts results seen.
-  let sent = 0;
-  let finished = 0;
-  let cancelledUpTo = 0;
+  // Which send this session is answering, by the uuid minted for it. The CLI echoes
+  // that uuid back on a turn's first stream frame and on its result
+  // (`user_message_uuid`), so output is matched to the send that caused it rather
+  // than counted — and an interrupt simply stops wanting. Whatever still arrives for
+  // an abandoned turn matches nothing: its cost is booked below and it goes no
+  // further. Counting was the fence here before, and it lost to the one race this
+  // relay runs constantly: `interrupt()` is a request racing the next send, and a
+  // turn that died on the wrong side of it emitted results the count misfiled — a
+  // stray error on the phone for a turn nobody was waiting on, and turn records
+  // with impossible negative timings (3 of the first 133).
+  let wanted: string | null = null;
+  let streaming: string | null = null; // whose frames are arriving now, by the last stamp seen
+  let stamps = false; // this CLI stamps frames — proven the first time one arrives
   let opened = false; // this turn's first block has been announced
   // What the session has cost so far, as the last result reported it. A turn's own
   // cost is the difference — see the result branch.
@@ -196,7 +203,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
         // granted. Costs nothing once nothing is pending, which is every turn after the
         // first.
         await settled;
-        yield { type: 'user', message: { role: 'user', content: queue.shift()! }, parent_tool_use_id: null };
+        yield queue.shift()!;
       }
       if (done) break;
       await new Promise<void>((r) => { wake = r; });
@@ -251,7 +258,14 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
   void (async () => {
     try {
       for await (const msg of q) {
-        const alive = finished + 1 > cancelledUpTo; // is the turn now streaming still wanted?
+        // The stamp rides only a turn's first frame; everything after it, tool
+        // results included, belongs to the turn last stamped — the CLI is sequential.
+        // A CLI too old to stamp anything falls back to trusting order, which is what
+        // this loop did before there were stamps.
+        const stamp = (msg as { user_message_uuid?: string }).user_message_uuid;
+        if (stamp) stamps = true;
+        if (stamp && msg.type !== 'result') streaming = stamp;
+        const alive = wanted !== null && (!stamps || streaming === wanted); // still wanted?
         if (msg.type === 'stream_event') {
           if (!alive) continue;
           const event = msg.event as { type?: string; delta?: { text?: unknown }; content_block?: { type?: string } };
@@ -275,8 +289,6 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
             }
           }
         } else if (msg.type === 'result') {
-          finished++; // this turn is over, wanted or not
-          opened = false; // the next turn opens its own first block
           // What the turn cost, which is not what the result says it cost. On a warm
           // streaming session `total_cost_usd` is the running total for the whole
           // query — measured across four turns: 0.017, 0.027, 0.035, 0.118 — so a turn
@@ -291,10 +303,17 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
             cost = msg.total_cost_usd - spent;
             spent = msg.total_cost_usd;
           }
-          // Booked above the fence, so an interrupted turn still moves the running
+          // Booked above the match, so an abandoned turn still moves the running
           // total: nobody is listening for what it cost, but it must not be billed to
           // the turn that comes next.
-          if (!alive) continue; // an interrupted turn's result is swallowed with its output
+          const mine = wanted !== null && (stamps ? stamp === wanted : true);
+          if (!mine) {
+            // An interrupted turn's result, or a diagnostic the CLI files as one.
+            // Said in the log, where a stray belongs — never on the phone.
+            log(`stray result dropped (${msg.subtype}${msg.is_error ? ', error' : ''})`);
+            continue;
+          }
+          wanted = null; // answered; nothing is owed until the next send
           let error: string | null = null;
           if (msg.is_error) error = 'errors' in msg && Array.isArray(msg.errors) ? msg.errors.join('; ') : 'result' in msg ? String(msg.result) : 'unknown error';
           cb.onResult({ sessionId: msg.session_id, costUsd: cost, error, model: model ?? null, permission });
@@ -307,8 +326,9 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
 
   return {
     send(instruction) {
-      sent++;
-      queue.push(instruction);
+      wanted = randomUUID();
+      opened = false; // this turn announces its own first block
+      queue.push({ type: 'user', message: { role: 'user', content: instruction }, parent_tool_use_id: null, uuid: wanted } as SDKUserMessage);
       wake?.();
       wake = null;
     },
@@ -338,8 +358,9 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
     },
     interrupt() {
       // Turn-level: stops the running turn, session stays alive for the next send.
-      // Fence its stragglers — every turn sent so far is now unwanted.
-      cancelledUpTo = sent;
+      // Stop wanting before asking — the request races the next send, and whichever
+      // turn it lands on, that turn's output now matches nothing.
+      wanted = null;
       void q.interrupt().catch((e) => log(`claude interrupt: ${e}`));
     },
     close() {

@@ -5,14 +5,17 @@
  * The state is who holds the floor, and there are only three answers:
  *
  *   user ──final transcript──▶ claude ──voice drained──▶ user
- *     ├──(review)──▶ held ──yes/edit──▶ claude      claude ──partial──▶ user (barge-in)
- *     └──typed─────────────▶ claude
+ *     ├──(review)──▶ held ──yes/edit──▶ claude      claude ──new utterance──▶ user (barge-in)
+ *     └──typed─────────────▶ claude                 claude ──continuation──▶ user (retract)
  *
  * A finished transcript means something different in each, which is why there are
  * exactly three: the instruction, the answer to a held question, or — because a
- * partial has already cancelled the turn — the instruction that replaces it. A typed
- * instruction has none of that ambiguity: it cannot have been misheard, so it is never
- * corrected and never held, and it runs the moment it arrives.
+ * partial has already cancelled the turn — the instruction that replaces it. Speech
+ * during a turn splits on the ears' own JOIN decision: a new utterance is a barge-in
+ * and cancels, a continuation is the instruction still being spoken and takes the
+ * turn back to run again whole — see `retract`. A typed instruction has none of that
+ * ambiguity: it cannot have been misheard, so it is never corrected and never held,
+ * and it runs the moment it arrives.
  *
  * Audio in is what buys audio out. The ears open on the first microphone buffer rather
  * than on connect, and the voice speaks only for a connection that has ears — so a
@@ -215,11 +218,15 @@ export class Session {
   private openEars(): Promise<Ears> {
     return openEars(this.ai, this.sttModel, {
       log: this.log,
-      onPartial: (text) => {
-        // Unambiguous here in a way the routing ears never were: a partial can only
-        // follow the previous final, so any partial while Claude speaks is a new
-        // utterance, never the tail of the one that started the turn.
-        if (this.state === 'claude') this.cancel('spoke over the reply');
+      onPartial: (text, continuing) => {
+        // Speech during a turn is one of two things, and the ears already know which:
+        // `continuing` is their own JOIN decision, so this utterance is the rest of
+        // the instruction that started the turn — take the turn back and wait for the
+        // fuller sentence. Anything else is a new utterance over the reply: barge-in.
+        if (this.state === 'claude') {
+          if (continuing) this.retract();
+          else this.cancel('spoke over the reply');
+        }
         this.turn.heard = text;
         // The last one before the final says how long Gemini took to decide the
         // utterance was over — the one wait an endpointing setting would change.
@@ -237,6 +244,16 @@ export class Session {
         // further revision is coming.
         this.phone.event({ type: 'user', text, partial: false, clip: this.turn.clip });
         this.heard(text); // the transcript is the instruction
+      },
+      // Gemini caps a Live session's length and there is no way around it on this
+      // model, so losing the ears is a matter of when. The recovery is the open path,
+      // run again: the very next microphone buffer reopens through `listen`, which
+      // already holds audio in a backlog, re-sends the vocabulary, and tells the
+      // phone if it fails. Nothing else to keep in step.
+      onClosed: () => {
+        if (this.closed) return;
+        this.log('the next audio reopens them');
+        this.ears = null;
       },
     }, this.corrections);
   }
@@ -455,6 +472,30 @@ export class Session {
   }
 
   // --- Teardown --------------------------------------------------------------
+
+  /**
+   * Take the turn back: the instruction that started it is still being spoken.
+   *
+   * Everything a cancel does except ending the turn — the record, the clip and the
+   * turn number stay, the joined final re-runs the same turn with the whole sentence,
+   * and the phone commits one line instead of one per fragment. What ran on the
+   * fragment is wiped from the record, because the numbers that matter are the ones
+   * from the instruction that was actually meant.
+   */
+  private retract(): void {
+    this.log('retract (still talking)');
+    this.claude.interrupt();
+    this.voice.interrupt();
+    this.phone.event({ type: 'interrupted' });
+    this.disarm();
+    const t = this.turn;
+    t.said = ''; // a reply this fast is to the fragment, and the fragment is gone
+    t.corrected = t.corrected_at = t.ran_at = null;
+    t.claude_start_at = t.claude_opens = t.claude_first_at = null;
+    t.tts_sent_at = t.voice_out_at = t.reply_in_at = null;
+    t.voice_ms = 0;
+    this.state = 'user';
+  }
 
   /** Interrupt Claude, silence the voice, tell the phone to flush, record the partial turn. */
   private cancel(why: string): void {
