@@ -29,6 +29,9 @@ struct ContentView: View {
     @AppStorage("model") private var model = "default"
     @AppStorage("permission") private var permissionName = Permission.plan.rawValue
     @AppStorage("autocorrect") private var autocorrect = false
+    /// A quiet chime loop while Claude works and nothing is being said — see
+    /// `AudioPipe.waiting`. Client-only, so unlike the three above it never travels.
+    @AppStorage("filler") private var filler = true
     private let session = VoiceSession.shared
     @State private var draft = ""
     /// The instruction the relay is holding for review, as you may have edited it.
@@ -151,6 +154,9 @@ struct ContentView: View {
         // again on every change. The session carries it to the socket it has open and to
         // every socket it opens after, so talking and typing never disagree about it.
         .task(id: "\(model)|\(permissionName)") { session.use(model: model, permission: permissionName) }
+        // Client-only, so it reaches the session directly rather than riding a frame —
+        // and mid-wait, so switching it off silences a loop already playing.
+        .task(id: filler) { session.fillerEnabled = filler }
         // Which models exist is the relay's to say, and the capsule needs the answer
         // before any sheet is opened. Connecting twice is a no-op — forking shares this
         // store.
@@ -513,6 +519,7 @@ struct ContentView: View {
             Button { sheet = .corrections(nil) } label: { Label("Corrections", systemImage: "text.badge.checkmark") }
             Toggle(isOn: $autocorrect) { Label("Auto-correct", systemImage: "wand.and.stars") }
                 .disabled(live)
+            Toggle(isOn: $filler) { Label("Filler sound", systemImage: "music.note") }
             Divider()
             Button { sheet = .server } label: { Label("Server", systemImage: "network") }
         } label: {

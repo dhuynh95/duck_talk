@@ -17,6 +17,43 @@ final class AudioPipe {
     /// ears stay open and hear a quiet room; the speaker is untouched.
     var muted = false
 
+    /// The speaker's sound for a reply that is owed but has not arrived: a quiet
+    /// chime loop, faded in and out so neither edge is a click. One bit, the same
+    /// shape as `muted` — VoiceSession says when the wait is on, this says what a
+    /// wait sounds like. The same echo cancellation that keeps the reply's voice
+    /// out of the microphone keeps the chimes out of it.
+    var waiting = false {
+        didSet {
+            guard waiting != oldValue, let chime else { return }
+            if waiting {
+                chime.currentTime = 0
+                chime.volume = 0
+                chime.play()
+                chime.setVolume(Self.chimeVolume, fadeDuration: 0.4)
+            } else {
+                chime.setVolume(0, fadeDuration: 0.15)
+                // Paused only once the fade has played out — and not at all if a
+                // new wait began during it, which the volume ramp then serves.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                    if self?.waiting != true { chime.pause() }
+                }
+            }
+        }
+    }
+
+    /// Quiet on purpose: the chimes sit under a voice about to speak, never in place
+    /// of one. The file itself peaks well below full scale for the same reason.
+    private static let chimeVolume: Float = 0.5
+
+    /// The loop, from the bundle — written by scripts/filler-sound.py, never by hand.
+    /// Nil only if the resource is missing, and then a wait is simply silent.
+    private lazy var chime: AVAudioPlayer? = {
+        guard let url = Bundle.main.url(forResource: "chimes", withExtension: "wav"),
+              let player = try? AVAudioPlayer(contentsOf: url) else { return nil }
+        player.numberOfLoops = -1
+        return player
+    }()
+
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
 
@@ -166,6 +203,7 @@ final class AudioPipe {
     }
 
     func stop() {
+        waiting = false // fades the chimes out with the session, if they were playing
         engine.inputNode.removeTap(onBus: 0)
         player.stop()
         engine.stop()

@@ -397,7 +397,25 @@ final class VoiceSession {
     private func markFirstReply() {
         guard !replied else { return }
         replied = true
+        waiting(false) // the reply's own sound takes over from the chimes
         mark("reply_in", at: Date().timeIntervalSince1970 * 1000)
+    }
+
+    /// The wait for a reply is on, or over — the filler chimes are its sound.
+    ///
+    /// On means proof, never prediction: it is asserted only by a silent sign of
+    /// work arriving — a tool, or words with no voice yet — because a turn that
+    /// provably runs is guaranteed a closer (the first reply byte, `turn_end`, or
+    /// `interrupted`), where an utterance the relay shrugs off (a bare "stop" said
+    /// to an idle session) would start a loop nothing ever stops. `replied` keeps
+    /// mid-reply tool runs from chiming under the voice, and a typed turn has no
+    /// pipe, so audio keeps buying audio without being told to.
+    private func waiting(_ on: Bool) { pipe?.waiting = on && fillerEnabled && !replied }
+
+    /// The gear menu's "Filler sound", handed in like the model choice so this class
+    /// reads no settings. Off takes effect mid-wait: a loop already playing stops.
+    var fillerEnabled = true {
+        didSet { if !fillerEnabled { pipe?.waiting = false } }
     }
 
     /// A `mark`: a moment only the phone can see, stamped into the relay's turn
@@ -455,6 +473,7 @@ final class VoiceSession {
             }
         case "model":
             commit() // Claude answering is proof the instruction went
+            waiting(true) // and words with no voice for them yet are still the wait
             if !turnEnded, let last = lines.last, last.kind == .model {
                 lines[lines.count - 1].text += event.text ?? ""   // Claude's reply joins up
             } else {
@@ -473,6 +492,7 @@ final class VoiceSession {
             // and a subagent's tools join the Agent's line, which is where they belong.
             if let name = event.text {
                 commit() // a tool running is proof too, and it can come before any text
+                waiting(true) // the longest waits are exactly here, under the tools
                 turnEnded = false
                 if let i = lines.indices.last, lines[i].kind == .tools {
                     lines[i].tools.append(name)
@@ -494,6 +514,7 @@ final class VoiceSession {
             turnEnded = true
             replied = false
             pending = nil
+            waiting(false) // a turn that never produced a reply byte still ended
             // Now the conversation has a name, so the next connection can carry it on.
             if let session = event.session { chatId = session }
             asking = false // a typed turn is its socket, and this closes it
@@ -504,6 +525,7 @@ final class VoiceSession {
             // so the card goes away however the decision was made. What is being said
             // now is the barge-in, and it stays in the box.
             pending = nil
+            waiting(false) // whatever was being waited for is not coming
             // A retract: you are still speaking the instruction, and a warm Claude can
             // answer the fragment inside the pause that made it. That answer must not
             // sit beside the real one, so the turn's lines come off — back to the last

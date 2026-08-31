@@ -146,7 +146,9 @@ shape), so a new `.swift` file needs no project edit. Never hand-edit `.pbxproj`
 The brand is in `Shared/` for the same reason the shape is: `Brand.swift` for the
 palette, `Brand.xcassets` for the mark (`Image("Logo")`) and the `AccentColor` the
 system tints with. Both targets draw them. `scripts/app-icon.sh` writes that mark and
-the app icon from the one drawing in `assets/`, so neither is edited by hand.
+the app icon from the one drawing in `assets/`, so neither is edited by hand — and
+`scripts/filler-sound.py` writes `DuckTalk/Resources/chimes.wav`, the loop the app
+plays while a reply is owed, the same way: synthesized from numbers, never edited.
 
 Adding an SPM dependency means editing `project.yml` — ask first, the app is
 deliberately dependency-free.
