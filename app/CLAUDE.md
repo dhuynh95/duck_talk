@@ -16,8 +16,9 @@ pull pieces over from there rather than rewriting them.
 Two things the phone does that the simulator cannot show you. `UIBackgroundModes:
 audio` keeps the microphone open once the screen locks — iOS will not let a
 backgrounded app *start* recording, so a session always begins in the foreground. The
-Live Activity is what makes a running session visible and stoppable without unlocking;
-it buys no background time of its own.
+Live Activity is what makes a running session visible without unlocking — and mutable
+and stoppable, through App Intents that run in the app; it buys no background time of
+its own.
 
 ## Working loop — the `ios-sim` MCP
 
@@ -129,10 +130,16 @@ whose job it is.
 re-run `./dt gen`. The same step writes `buildServer.json` (also gitignored, absolute
 paths) so SourceKit-LSP reads the generated project instead of compiling each file
 alone for macOS — which is what "Cannot find 'Brand' in scope" in an editor means:
-run `./dt gen`, or `brew install xcode-build-server` if it is not on the machine. Sources are globbed from `DuckTalk/` (the app), `DuckTalkWidget/`
-(the Live Activity) and `Shared/` (compiled into both — a Live Activity is two
-processes agreeing on a shape), so a new `.swift` file needs no project edit. Never
-hand-edit `.pbxproj`.
+run `./dt gen`, or `brew install xcode-build-server` if it is not on the machine.
+
+Sources are globbed from `DuckTalk/` (the app), `DuckTalkWidget/` (the Live Activity)
+and `Shared/` (compiled into both — a Live Activity is two processes agreeing on a
+shape), so a new `.swift` file needs no project edit. Never hand-edit `.pbxproj`.
+
+The brand is in `Shared/` for the same reason the shape is: `Brand.swift` for the
+palette, `Brand.xcassets` for the mark (`Image("Logo")`) and the `AccentColor` the
+system tints with. Both targets draw them. `scripts/app-icon.sh` writes that mark and
+the app icon from the one drawing in `assets/`, so neither is edited by hand.
 
 Adding an SPM dependency means editing `project.yml` — ask first, the app is
 deliberately dependency-free.

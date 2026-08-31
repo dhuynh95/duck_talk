@@ -49,6 +49,7 @@ The request path end to end (phone → relay → Gemini + Claude), the prompts t
 - @server/prompts/claude.md
 - @server/prompts/voice.md
 - @server/prompts/correct.md
+- @app/Shared/Brand.swift
 - @app/DuckTalk/VoiceSession.swift
 - @app/DuckTalk/AudioPipe.swift
 - @app/DuckTalk/ContentView.swift
@@ -69,10 +70,10 @@ The request path end to end (phone → relay → Gemini + Claude), the prompts t
 - **`web-app` tag** — the browser client and its Express backend, which this replaced. `git show web-app` for the ancestors of `ears.ts`, `voice.ts` and `claude.ts`, and for the one piece never ported: audio calibration.
 - `docs/gemini-live-api-swift-reference.md` — raw WebSocket protocol for Gemini Live; the SDK in `server/` hides it, useful when a field name drifts.
 - `docs/ios-codebase-guide.md` — describes the parked `ios/wired-mvp` chat client (under its old name, Reduck), not the current app.
-- `todos/` — web-app-era problems, most now solved in `server/`: muting, stop words, voice approval, tool streaming, STT corrections. Worth reading for the dead ends they record, especially `correction_gemini_live.md` on the audio calibration loop.
+- `todos/` — web-app-era problems, most now solved in `server/` or `app/`: muting, stop words, voice approval, tool streaming, STT corrections. Worth reading for the dead ends they record, especially `correction_gemini_live.md` on the audio calibration loop.
 - `server/import.ts` — a conversation from elsewhere written in as a session. Writes the transcript by hand, because there is no API that puts a past conversation into one.
 - `server/lab.ts` — holds a Gemini Live session open over HTTP and logs every raw message, for answering what the SDK docs do not.
-- `app/Shared/{LiveSession,StopListening}.swift` — the `ActivityAttributes` and the App Intent behind the lock-screen card; compiled into both targets.
+- `app/Shared/{LiveSession,StopListening}.swift` — the `ActivityAttributes`, and the two App Intents behind the lock-screen card's buttons: mute and stop. Compiled into both targets, and the intents run in the app, which is what lets them touch the session that holds the microphone.
 - `app/DuckTalkWidget/LiveActivity.swift` — that card, and the Dynamic Island pill. Draws only; the microphone stays alive because of `UIBackgroundModes`, not because of this.
 - `README.md` — the npm page: what `npx duck_talk` does, and how a release is cut.
 

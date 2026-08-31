@@ -10,7 +10,7 @@
 # and no rounded corners — iOS applies the mask itself, and baking one in shows as a
 # dark fringe against the real one.
 #
-#   ./scripts/app-icon.sh          rewrite app/DuckTalk/Assets.xcassets
+#   ./scripts/app-icon.sh          rewrite the icon, and the mark beside it
 #
 # Needs `brew install librsvg`.
 
