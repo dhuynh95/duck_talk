@@ -11,8 +11,8 @@
  * filename, and nothing has to keep an index.
  *
  * How long one lives is one rule: a clip a correction points at is part of that
- * correction and stays; every other clip is a debugging aid with a short life. The
- * whole store is asked, not the window a prompt gets — see `load` in corrections.ts.
+ * correction and stays; every other clip lives a week. The whole correction store is
+ * asked, not the window a prompt gets — see `load` in corrections.ts.
  *
  * Written as a WAV rather than raw PCM because the one consumer is a phone that plays
  * it: 44 bytes of header is what turns "some bytes" into something AVAudioPlayer opens
@@ -26,11 +26,15 @@ import { load as loadCorrections } from './corrections.ts';
 /** The format the ears listen in — see ears.ts, which declares it to Gemini. */
 const RATE = 16_000;
 
-// A clip nothing points at is a debugging aid with a short life; one a correction was
-// taught from is part of that correction and outlives everything. So retention is not
-// a number of days, it is: keep what is referenced, plus enough recent ones to fix a
-// mishearing you noticed a minute ago.
-const KEEP_RECENT = 20;
+// A clip a correction was taught from is part of that correction and outlives
+// everything. Every other clip lives a week — long enough to reopen a conversation
+// from the other day and fix what it misheard, which is when you notice.
+//
+// Days rather than a count, because days is the unit the question is asked in, and
+// because the id already is the moment it was recorded: a clip's age is read off its
+// own name, so nothing here has to stat a file or sort a directory. At ~140 KB an
+// utterance a week is tens of megabytes, and it stays there.
+const KEEP_DAYS = 7;
 
 const file = (id: number) => state('utterances', `${id}.wav`);
 
@@ -50,7 +54,7 @@ export function read(id: number): Buffer | null {
 }
 
 /**
- * Drop clips nothing refers to, keeping the most recent few regardless.
+ * Forget the clips that are neither spoken for nor recent.
  *
  * Called on every save rather than on a timer: the moment a clip is written is the
  * moment the set changed, and there is no daemon here to run a timer anyway.
@@ -60,13 +64,14 @@ function prune(): void {
   for (const c of loadCorrections()) if (c.clip) keep.add(`${c.clip}.wav`);
   let names: string[];
   try {
-    names = readdirSync(state('utterances', '.')).filter((n) => n.endsWith('.wav'));
+    names = readdirSync(state('utterances', '.'));
   } catch {
     return; // nothing written yet, which is the normal first-run state
   }
-  // Newest last, so the tail is what a "fix that" a minute later still finds.
-  const loose = names.filter((n) => !keep.has(n)).sort();
-  for (const name of loose.slice(0, Math.max(0, loose.length - KEEP_RECENT))) {
+  const cutoff = Date.now() - KEEP_DAYS * 86_400_000;
+  for (const name of names) {
+    if (!name.endsWith('.wav') || keep.has(name)) continue;
+    if (Number(name.slice(0, -4)) >= cutoff) continue;
     try { unlinkSync(state('utterances', name)); } catch { /* already gone, which is the goal */ }
   }
 }

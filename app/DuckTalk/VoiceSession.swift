@@ -57,7 +57,7 @@ final class VoiceSession {
 
         /// One message of a stored chat, as a line of the transcript.
         init(_ message: ChatMessage) {
-            self.init(kind: message.role == "user" ? .user : .model, text: message.text, uuid: message.uuid)
+            self.init(kind: message.role == "user" ? .user : .model, text: message.text, uuid: message.uuid, clip: message.clip)
         }
 
         /// The tool now running, or — once the run is over — what it did, collapsed.

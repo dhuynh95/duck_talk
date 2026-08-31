@@ -16,6 +16,10 @@ struct ChatMessage: Codable, Hashable {
     let uuid: String
     let role: String  // "user" or "model"
     let text: String
+    /// The audio it was heard from, when the relay still has it — a week, unless a
+    /// correction was taught from it. Only the id comes down with the chat; the sound
+    /// is fetched if someone presses play.
+    let clip: Double?
 }
 
 /// The chats, over the drawer's left edge.

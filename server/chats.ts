@@ -22,12 +22,16 @@ import { fileURLToPath } from 'node:url';
 import { forkSession, getSessionMessages, listSessions, type SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 // The directory claude.ts runs in, which is what scopes a session to this project.
 import { PROJECT as CWD } from './paths.ts';
+import { clips } from './turns.ts';
 
 /** One exchange, as it would be spoken. `uuid` is where a fork can cut. */
 export interface Message {
   uuid: string;
   role: 'user' | 'model';
   text: string;
+  /** The audio this was heard from, when it was spoken and the clip is still kept.
+   *  Only the id travels — the phone asks for the sound when someone presses play. */
+  clip?: number;
 }
 
 export interface Chat {
@@ -48,16 +52,29 @@ export async function chats(): Promise<Chat[]> {
     .filter((c) => c.title);
 }
 
-/** One chat, whole, in the order it happened. */
+/**
+ * One chat, whole, in the order it happened — with the audio each spoken line was
+ * heard from, where the relay still has it.
+ *
+ * The turn log is what makes that possible and it needed nothing added to it: it
+ * already records the instruction Claude was sent beside the clip it came from, and
+ * the instruction is verbatim what the transcript shows. So a conversation you had
+ * last week can be listened to and corrected, and there is no second index to keep in
+ * step with this one.
+ */
 export async function chat(id: string): Promise<Message[]> {
   const messages = await getSessionMessages(id, { dir: CWD });
+  const heard = clips();
   const all: Message[] = [];
   for (const m of messages) {
     if (m.type !== 'user' && m.type !== 'assistant') continue;
     const said = text(m);
     // An assistant turn that only called tools has no words in it, and a phone shows
     // speech.
-    if (said) all.push({ uuid: m.uuid, role: m.type === 'user' ? 'user' : 'model', text: said });
+    if (!said) continue;
+    const role = m.type === 'user' ? 'user' : 'model';
+    const clip = role === 'user' ? heard.get(said) : undefined;
+    all.push({ uuid: m.uuid, role, text: said, ...(clip ? { clip } : {}) });
   }
   return all;
 }
@@ -98,7 +115,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const messages = await chat(first);
     console.error(`${messages.length} messages`);
     for (const m of messages) {
-      console.log(`${m.uuid}  ${m.role === 'user' ? '›' : ' '} ${m.text.slice(0, 120)}`);
+      console.log(`${m.uuid}  ${m.clip ? '♪' : ' '}${m.role === 'user' ? '›' : ' '} ${m.text.slice(0, 120)}`);
     }
   } else {
     const all = await chats();

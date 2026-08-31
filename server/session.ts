@@ -25,50 +25,16 @@
  * damage and nothing to reopen when one fails.
  */
 
-import { appendFile } from 'node:fs/promises';
 import { GoogleGenAI } from '@google/genai';
 import { openClaude, type Claude } from './claude.ts';
 import { save as saveClip } from './clips.ts';
 import { correct, CORRECT_MODEL } from './correct.ts';
 import { add, load, type Correction } from './corrections.ts';
 import { openEars, keyword, type Ears, type Keyword } from './ears.ts';
-import { state } from './paths.ts';
+import { append, type Mode, type Turn } from './turns.ts';
 import { openVoice, type Voice } from './voice.ts';
 
-export type Mode = 'direct' | 'review';
-
-/** What one turn did and when, on this Mac's clock. Appended to .duck-talk/turns.jsonl. */
-export interface Turn {
-  turn: number;
-  mode: Mode;
-  /** The Claude session this turn belongs to — what groups turns into a chat, and
-   *  what `?resume=` takes to carry one on. Null before Claude's first result. */
-  session_id: string | null;
-  heard: string;
-  /** The audio `heard` was made from, as clips.ts files it. Null for a typed turn —
-   *  nothing was heard. */
-  clip: number | null;
-  proposed: string; // what Gemini's tool call asked for, before any correction
-  corrected: string | null; // what auto-correct made of it, when on
-  instruction: string; // what actually ran — corrected, or edited by the user
-  approval: 'accepted' | 'rejected' | null;
-  said: string;
-  speech_end_at: number | null; // caller marked the moment its audio stopped (probe/app)
-  partial_last_at: number | null; // last interim transcript before the final
-  heard_at: number | null; // the utterance was finished — the instruction exists
-  corrected_at: number | null; // auto-correct came back
-  /** The instruction went to Claude. In review mode everything before this is a
-   *  human deciding, which is not latency; timing Claude from here keeps the two apart. */
-  ran_at: number | null;
-  claude_start_at: number | null; // Claude opened its first block of the turn
-  claude_opens: string | null; // and what it was: text, thinking, tool_use
-  claude_first_at: number | null; // Claude's first token
-  tts_sent_at: number | null; // first sentence handed to the voice model
-  voice_out_at: number | null; // first reply byte written to the phone
-  reply_in_at: number | null; // phone reported that byte arrived
-  voice_ms: number; // reply audio sent, exact (24 kHz Int16 = 48 bytes/ms)
-  cost_usd: number | null;
-}
+export type { Mode, Turn };
 
 /** The phone side of the socket — the only thing this file knows about the network. */
 export interface Phone {
@@ -519,7 +485,7 @@ export class Session {
       `${claude}  buffer ${d(t.claude_first_at, t.tts_sent_at)}  tts ${d(t.tts_sent_at, t.voice_out_at)}  ` +
       `→phone ${d(t.voice_out_at, t.reply_in_at)}  ${(t.voice_ms / 1000).toFixed(1)}s voice`,
     );
-    await appendFile(state('turns.jsonl'), `${JSON.stringify(t)}\n`);
+    await append(t);
   }
 }
 
