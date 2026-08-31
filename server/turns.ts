@@ -26,6 +26,12 @@ export type Mode = 'direct' | 'review';
 export interface Turn {
   turn: number;
   mode: Mode;
+  /** Which model answered this turn, and what it was allowed to do while answering.
+   *  Both can be changed from the phone mid-conversation, so they belong to the turn
+   *  rather than to the session — two turns of one chat can differ. Null for the model
+   *  means whichever one the CLI defaults to. */
+  model: string | null;
+  permission: string;
   /** The Claude session this turn belongs to — what groups turns into a chat, and
    *  what `?resume=` takes to carry one on. Null before Claude's first result. */
   session_id: string | null;
@@ -52,6 +58,10 @@ export interface Turn {
   voice_out_at: number | null; // first reply byte written to the phone
   reply_in_at: number | null; // phone reported that byte arrived
   voice_ms: number; // reply audio sent, exact (24 kHz Int16 = 48 bytes/ms)
+  /** What this turn cost, alone. The SDK reports what the whole session has cost so
+   *  far, so claude.ts subtracts one result's total from the last — which is why a
+   *  session's bill is the sum of its turns here, and why an interrupted turn, whose
+   *  result nothing listens for, leaves its cost in no line at all. */
   cost_usd: number | null;
 }
 

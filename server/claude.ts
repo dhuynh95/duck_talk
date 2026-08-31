@@ -6,6 +6,13 @@
  * current turn without tearing the session down, which is what barge-in needs. That
  * warmth is why the `claude` prompt is read once here and not per turn.
  *
+ * Two things about the session are not fixed that way: which model answers and what it
+ * is allowed to do. Both are control requests the CLI takes mid-session, so `set` puts
+ * them on the running session and they hold from the next turn — which is why they
+ * reach here as a message from the phone rather than as something chosen when the
+ * socket opened. `capabilities()` is the other side of that: the models this Mac can
+ * actually offer, asked of the CLI instead of written down here.
+ *
  * Lifted from the web app's claude-client.ts (the `web-app` tag), but stateful: that
  * backend spawned a fresh subprocess per turn via `resume`, where this keeps one
  * streaming query alive.
@@ -14,12 +21,21 @@
  */
 
 import { fileURLToPath } from 'node:url';
-import { query, type AccountInfo, type Options, type PermissionMode, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type AccountInfo, type ModelInfo, type Options, type PermissionMode, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { PROJECT as CWD } from './paths.ts';
 import { read } from './prompts.ts';
 
 const MODEL = process.env['CLAUDE_MODEL'];
 const PERMISSION_MODE = (process.env['CLAUDE_PERMISSION_MODE'] ?? 'plan') as PermissionMode;
+
+/** What a session is until something asks it to be otherwise — the environment's
+ *  answer, so the phone and the turn log start from the same place the CLI does. */
+export const DEFAULTS: { model: string | null; permission: PermissionMode } = {
+  model: MODEL ?? null,
+  permission: PERMISSION_MODE,
+};
+
+export type { PermissionMode };
 
 export type Block =
   | { type: 'tool_use'; id: string; name: string; input: unknown }
@@ -28,6 +44,14 @@ export type Block =
 export interface Claude {
   /** Start a turn. Only one runs at a time; call after the previous ended or was interrupted. */
   send(instruction: string): void;
+  /**
+   * What Claude is: which model answers, and what it is allowed to do.
+   *
+   * Both take effect on the turn after this one, on the session already running — so
+   * neither is decided when the socket opens, and changing your mind costs no restart.
+   * Repeating a value it is already set to does nothing.
+   */
+  set(model?: string, permission?: PermissionMode): void;
   /** Stop the current turn. The session stays warm for the next `send`. */
   interrupt(): void;
   close(): void;
@@ -49,7 +73,13 @@ export interface ClaudeCallbacks {
   onStart?(kind: string): void;
   onText(text: string): void;
   onBlock(block: Block): void;
-  onResult(r: { sessionId: string; costUsd: number | null; error: string | null }): void;
+  /** `costUsd` is what this turn cost, not what the session has — see the subtraction
+   *  in the result branch below. Null when the result carried no usable total.
+   *  `model` and `permission` are what the session was set to when it answered. */
+  onResult(r: { sessionId: string; costUsd: number | null; error: string | null; model: string | null; permission: PermissionMode }): void;
+  /** Something went wrong between turns, so no `result` will carry it — a refused
+   *  `set`, and nothing else so far. Worth saying on the screen, not just in the log. */
+  onError?(text: string): void;
   log?(m: string): void;
 }
 
@@ -64,20 +94,40 @@ function subprocessEnv(): Record<string, string> {
   return env;
 }
 
+/** What this Mac's Claude Code can do, which only it can say. */
+export interface Capabilities {
+  /** Null when the CLI could not be asked — missing from PATH, or not signed in. */
+  account: AccountInfo | null;
+  /** Every model this account may use, each with the words to show for it. Empty for
+   *  the same reasons `account` is null. */
+  models: ModelInfo[];
+}
+
 /**
- * Which account Claude Code will bill, asked rather than inferred.
+ * Who is signed in, and which models they may use — one question, asked once.
  *
- * `accountInfo` is a control request on a streaming query: it starts the CLI, asks who
- * is authenticated, and never sends a prompt — 716ms and nothing billed, against ~4.4s
- * and a real turn for `claude -p`. The presence of an `ANTHROPIC_API_KEY` was only ever
- * a guess at the answer; this is the CLI's own.
+ * `initializationResult` is a control request on a streaming query: it starts the CLI,
+ * reads what it says about itself, and never sends a prompt — ~1s and nothing billed,
+ * against ~4.4s and a real turn for `claude -p`. It answers both halves at once, which
+ * is why there is no separate call for the account: measured, `supportedModels()` and
+ * `accountInfo()` after it return in 0ms, because the CLI's first answer is the cache.
+ *
+ * Memoized for the life of the relay. The set of models does not change while it runs,
+ * and the phone asks for it on every data connection — including the one `ClipChip`
+ * opens to play a single clip, which must not pay a subprocess.
  *
  * What it proves is that the binary launches and holds credentials, and no more: an
  * account that is rate-limited or whose subscription has lapsed still answers cleanly
  * here. Only a turn proves a turn — which is what CI runs, and what the first real
  * instruction finds out anyway.
  */
-export async function claudeAccount(): Promise<AccountInfo | null> {
+export function capabilities(): Promise<Capabilities> {
+  return (asked ??= ask());
+}
+
+let asked: Promise<Capabilities> | null = null;
+
+async function ask(): Promise<Capabilities> {
   // A prompt that never yields: the query has to be streaming for a control request,
   // and there is nothing to say.
   const q = query({
@@ -85,9 +135,10 @@ export async function claudeAccount(): Promise<AccountInfo | null> {
     options: { cwd: CWD, env: subprocessEnv() },
   });
   try {
-    return await q.accountInfo();
+    const init = await q.initializationResult();
+    return { account: init.account, models: init.models };
   } catch {
-    return null; // no CLI, or one that cannot say who it is — the line below reports it
+    return { account: null, models: [] }; // no CLI, or one that cannot say — reported below
   } finally {
     q.close();
   }
@@ -95,7 +146,7 @@ export async function claudeAccount(): Promise<AccountInfo | null> {
 
 /** That answer as the one line the relay prints at startup. */
 export async function billingMode(): Promise<string> {
-  const account = await claudeAccount();
+  const { account } = await capabilities();
   if (!account) return 'could not ask Claude Code who is signed in — is `claude` on PATH?';
   const who = [account.email, account.organization].filter(Boolean).join(' · ');
   const how = process.env['ANTHROPIC_API_KEY']?.trim()
@@ -106,6 +157,9 @@ export async function billingMode(): Promise<string> {
 
 export function openClaude(cb: ClaudeCallbacks): Claude {
   const log = cb.log ?? (() => {});
+  /** Said in the log and on the phone: this happened between turns, so no result
+   *  will carry it and a silent failure would look like the tap did nothing. */
+  const fail = (text: string) => { log(text); cb.onError?.(text); };
 
   // The input side: `send` drops an instruction in the queue and wakes the generator
   // the SDK is reading. One message per turn — the caller never queues two.
@@ -120,9 +174,28 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
   let finished = 0;
   let cancelledUpTo = 0;
   let opened = false; // this turn's first block has been announced
+  // What the session has cost so far, as the last result reported it. A turn's own
+  // cost is the difference — see the result branch.
+  let spent = 0;
+  // What `set` has put the session on. Kept so a frame repeating itself costs nothing,
+  // and so a turn record can name the model that answered it: `modelUsage` on the
+  // result cannot, because it is cumulative for the session — after a switch it lists
+  // every model the session has ever used, not the one that just spoke.
+  let model = MODEL;
+  let permission = PERMISSION_MODE;
+  // What `set` is still applying, if anything. An instruction waits for it below.
+  let settled: Promise<unknown> = Promise.resolve();
   async function* input(): AsyncGenerator<SDKUserMessage> {
     while (!done) {
       while (queue.length) {
+        // The one place a message leaves for the CLI, and so the one place that can
+        // promise "be this, then do that" happens in that order. A typed turn sends
+        // what Claude should be and the instruction back to back, and a control request
+        // is not instant — without this wait the instruction can reach Claude while it
+        // is still on the old rung, and be refused for a permission that was already
+        // granted. Costs nothing once nothing is pending, which is every turn after the
+        // first.
+        await settled;
         yield { type: 'user', message: { role: 'user', content: queue.shift()! }, parent_tool_use_id: null };
       }
       if (done) break;
@@ -132,14 +205,39 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
 
   const options: Options = {
     cwd: CWD,
+    // Added to Claude Code's own prompt rather than replacing it. A plain string here
+    // replaces the default, and the working directory is one of the sections that
+    // default carries — so Claude did not know where it was standing, resolved a
+    // relative path against the home directory instead of the project, and had the
+    // write refused for being outside the cwd. Invisible while the only mode was
+    // `plan`, because nothing was ever written. What this file holds is a way of
+    // speaking, which is an addition to how Claude Code works and not a substitute
+    // for it.
+    //
     // Read here rather than at module load, so an edit made from the phone reaches
     // the next session. It cannot reach this one: the SDK takes the prompt when the
     // query is built, and rebuilding per turn would throw the warm session away.
-    systemPrompt: read('claude'),
+    systemPrompt: { type: 'preset', preset: 'claude_code', append: read('claude') },
     includePartialMessages: true,
     permissionMode: PERMISSION_MODE,
+    // What the session may become, not what it is. `setPermissionMode` refuses to reach
+    // `bypassPermissions` on a session that was not launched for it — and rejects hard
+    // enough to take the relay down — so without this the top rung would need a
+    // reconnect. The session still starts at PERMISSION_MODE, which is `plan`.
+    allowDangerouslySkipPermissions: true,
+    // The project's settings and its CLAUDE.md — and deliberately not the user's own
+    // ~/.claude/settings.json, whose pre-approved commands (rm, git push, bash) would
+    // widen every rung without saying so, and make the phone's description of what
+    // Claude may do untrue.
+    settingSources: ['project'],
+    // Not a restriction — this is the list that runs without asking. Nothing is
+    // withheld by leaving a tool off it; `disallowedTools` below is what withholds.
     allowedTools: ['Read', 'WebSearch'],
-    disallowedTools: ['AskUserQuestion', 'Skill'],
+    // ExitPlanMode joins these now that Claude Code's own prompt is in play and tells
+    // Claude the tool exists. The way out of Plan is the capsule on the phone, not
+    // something Claude asks for: offered the tool it cannot use, it spends the reply
+    // explaining that the exit is disabled instead of saying it cannot write.
+    disallowedTools: ['AskUserQuestion', 'Skill', 'ExitPlanMode'],
     env: subprocessEnv(),
     stderr: (line: string) => { if (process.env['DEBUG']) console.debug('sdk:', line.trimEnd()); },
   };
@@ -179,10 +277,27 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
         } else if (msg.type === 'result') {
           finished++; // this turn is over, wanted or not
           opened = false; // the next turn opens its own first block
+          // What the turn cost, which is not what the result says it cost. On a warm
+          // streaming session `total_cost_usd` is the running total for the whole
+          // query — measured across four turns: 0.017, 0.027, 0.035, 0.118 — so a turn
+          // is the difference between two of them. The same subtraction as every timing
+          // in this project, for the same reason: two exact readings beat a measurement.
+          //
+          // A result that cannot be a running total — the zeroed one a crash carries —
+          // reports null rather than a number, and leaves `spent` where it was, so one
+          // bad result costs that turn's figure and not every figure after it.
+          let cost: number | null = null;
+          if (typeof msg.total_cost_usd === 'number' && msg.total_cost_usd >= spent) {
+            cost = msg.total_cost_usd - spent;
+            spent = msg.total_cost_usd;
+          }
+          // Booked above the fence, so an interrupted turn still moves the running
+          // total: nobody is listening for what it cost, but it must not be billed to
+          // the turn that comes next.
           if (!alive) continue; // an interrupted turn's result is swallowed with its output
           let error: string | null = null;
           if (msg.is_error) error = 'errors' in msg && Array.isArray(msg.errors) ? msg.errors.join('; ') : 'result' in msg ? String(msg.result) : 'unknown error';
-          cb.onResult({ sessionId: msg.session_id, costUsd: msg.total_cost_usd, error });
+          cb.onResult({ sessionId: msg.session_id, costUsd: cost, error, model: model ?? null, permission });
         }
       }
     } catch (e) {
@@ -196,6 +311,30 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
       queue.push(instruction);
       wake?.();
       wake = null;
+    },
+    set(wantModel, wantPermission) {
+      // Recorded before the answer arrives, so repeating a value costs nothing — and
+      // put back if the request is refused, so the next frame tries again instead of
+      // believing a change that never happened.
+      const applying: Promise<unknown>[] = [];
+      if (wantModel && wantModel !== model) {
+        const was = model;
+        model = wantModel;
+        applying.push(q.setModel(wantModel)
+          .then(() => log(`model ${wantModel}`))
+          .catch((e) => { model = was; fail(`could not switch to ${wantModel}: ${e}`); }));
+      }
+      if (wantPermission && wantPermission !== permission) {
+        const was = permission;
+        permission = wantPermission;
+        applying.push(q.setPermissionMode(wantPermission)
+          .then(() => log(`permission ${wantPermission}`))
+          .catch((e) => { permission = was; fail(`could not switch to ${wantPermission}: ${e}`); }));
+      }
+      // Held so the next instruction waits for it — see `input`. Every rejection is
+      // already caught above, so this settles whatever happens and can never strand a
+      // turn behind a failed switch.
+      if (applying.length) settled = Promise.all(applying);
     },
     interrupt() {
       // Turn-level: stops the running turn, session stays alive for the next send.
@@ -223,7 +362,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     onText: (t) => { if (!first) first = Math.round(performance.now() - t0); process.stdout.write(t); },
     onBlock: (b) => process.stderr.write(`\n[${b.type === 'tool_use' ? b.name : 'result'}]\n`),
     onResult: (r) => {
-      console.log(`\n\nfirst token ${first}ms, $${r.costUsd}, session ${r.sessionId}${r.error ? `, error: ${r.error}` : ''}`);
+      console.log(`\n\nfirst token ${first}ms, $${r.costUsd}, ${r.model ?? 'default model'}, session ${r.sessionId}${r.error ? `, error: ${r.error}` : ''}`);
       claude.close();
       process.exit(0);
     },

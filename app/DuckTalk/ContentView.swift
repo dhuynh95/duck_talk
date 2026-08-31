@@ -20,7 +20,14 @@ import SwiftUI
 /// behind the gear.
 struct ContentView: View {
     @AppStorage("serverURL") private var serverURL = "ws://localhost:8765"
-    @AppStorage("mode") private var mode = Mode.direct
+    /// The three choices, each stored as the string the relay speaks in and read back as
+    /// its own type below. The phone decides all three and the relay obeys — but `mode`
+    /// travels in the URL and the other two as a message, because the relay can put
+    /// those on the session it already has running and so they can change
+    /// mid-conversation.
+    @AppStorage("mode") private var modeName = Mode.direct.rawValue
+    @AppStorage("model") private var model = "default"
+    @AppStorage("permission") private var permissionName = Permission.plan.rawValue
     @AppStorage("autocorrect") private var autocorrect = false
     private let session = VoiceSession.shared
     @State private var draft = ""
@@ -41,6 +48,10 @@ struct ContentView: View {
     @State private var composerHeight: CGFloat = 0
 
     private var live: Bool { session.status != .idle }
+    /// The stored strings as what they mean. A value from a version that named things
+    /// differently falls back rather than crashing.
+    private var mode: Mode { Mode(rawValue: modeName) ?? .direct }
+    private var permission: Permission { Permission(rawValue: permissionName) ?? .plan }
 
     /// One exclusive mode, plus auto-correct as an independent axis. Which chat is
     /// being carried on is the session's own business — it appends `resume` itself, so
@@ -90,7 +101,17 @@ struct ContentView: View {
                 case .prompts: PromptsView(serverURL: serverURL)
                 case .corrections(let seed): CorrectionsView(serverURL: serverURL, seed: seed)
                 case .server: ServerView(serverURL: $serverURL)
-                case .mode: ModeSheet(mode: $mode)
+                case .mode: ChoiceSheet(title: "Mode", choices: Mode.choices, picked: $modeName)
+                case .permission: ChoiceSheet(title: "What Claude may do", choices: Permission.choices, picked: $permissionName)
+                // The only list the phone does not know by heart: which models this Mac
+                // can offer is the relay's to say, so the rows come down the socket.
+                case .model:
+                    ChoiceSheet(
+                        title: "Model",
+                        choices: relay.models.map { Choice(id: $0.value, title: $0.displayName, detail: $0.description) },
+                        picked: $model,
+                        loading: relay.models.isEmpty,
+                    )
                 }
             }
             .presentationBackground(Brand.background)
@@ -101,6 +122,14 @@ struct ContentView: View {
         // How far the transcript has to stop short of the composer. Measured rather
         // than guessed, because the composer grows with what you type.
         .onPreferenceChange(ComposerHeight.self) { composerHeight = $0 }
+        // The one place that tells the session what Claude should be — on arrival, and
+        // again on every change. The session carries it to the socket it has open and to
+        // every socket it opens after, so talking and typing never disagree about it.
+        .task(id: "\(model)|\(permissionName)") { session.use(model: model, permission: permissionName) }
+        // Which models exist is the relay's to say, and the capsule needs the answer
+        // before any sheet is opened. Connecting twice is a no-op — forking shares this
+        // store.
+        .onAppear { relay.connect(to: serverURL) }
     }
 
     /// What the app is. Full bleed, and the only thing under the chrome.
@@ -146,13 +175,15 @@ struct ContentView: View {
     /// fixed and the Corrections menu item land on the same screen — one editor, two
     /// doors, and nothing to keep in step.
     private enum Sheet: Identifiable {
-        case prompts, corrections(Correction?), server, mode
+        case prompts, corrections(Correction?), server, mode, model, permission
         var id: String {
             switch self {
             case .prompts: return "prompts"
             case .corrections: return "corrections"
             case .server: return "server"
             case .mode: return "mode"
+            case .model: return "model"
+            case .permission: return "permission"
             }
         }
     }
@@ -329,8 +360,22 @@ struct ContentView: View {
                     if let url { session.connect(url: url) }
                 }
             }
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
+                // Left of the microphone is what Claude is, and it stays through a live
+                // session: the relay puts both on the session already running, so they
+                // are things you can change mid-conversation rather than things you
+                // settle beforehand.
+                capsule(modelLabel) { sheet = .model }
+                    .accessibilityIdentifier("model")
+                    .accessibilityLabel("Model")
+                    .accessibilityValue(modelLabel)
+                capsule(permission.short) { sheet = .permission }
+                    .accessibilityIdentifier("permission")
+                    .accessibilityLabel("What Claude may do")
+                    .accessibilityValue(permission.title)
                 Spacer()
+                // Right of it is the session: how it will run, until it is running, and
+                // then how to quieten it or end it.
                 if live {
                     // Mute lit on the accent when it is on: the orange has left the
                     // border and the bars, and this is where it went. Same order as the
@@ -343,26 +388,40 @@ struct ContentView: View {
                         .accessibilityLabel("Stop listening")
                 } else {
                     // Bound at connect time on the relay, so it is settled before a
-                    // session starts and cannot change under one. It opens a sheet
-                    // rather than toggling silently: which mode you are in decides
-                    // whether what you say runs immediately, so it is worth naming —
-                    // and a name is all it is, because an icon for it would be one
-                    // nobody could read without being told.
-                    Button { sheet = .mode } label: {
-                        Text(mode.title)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(Brand.secondaryText)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Brand.fill, in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("mode")
-                    .accessibilityLabel("Mode")
-                    .accessibilityValue(mode.title)
+                    // session starts and cannot change under one — which is why this one
+                    // goes away while live and the two on the left do not. It opens a
+                    // sheet rather than toggling silently: which mode you are in decides
+                    // whether what you say runs immediately, so it is worth naming.
+                    capsule(mode.title) { sheet = .mode }
+                        .accessibilityIdentifier("mode")
+                        .accessibilityLabel("Mode")
+                        .accessibilityValue(mode.title)
                 }
             }
         }
+    }
+
+    /// What the model capsule says: the model that will actually answer, in one word —
+    /// so choosing "Default (recommended)" reads as "Opus" rather than as "Default",
+    /// which names an alias and not a model. The stored value until the list arrives,
+    /// because the capsule has to say something before the first data connection answers.
+    private var modelLabel: String {
+        relay.models.first { $0.value == model }?.shortName ?? (model.isEmpty ? "Model" : model)
+    }
+
+    /// A word you can press. Every choice in the bar wears this one face, so which of
+    /// them you are looking at is the word rather than the shape.
+    private func capsule(_ text: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Brand.secondaryText)
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Brand.fill, in: Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     /// One of the control's other faces — the same circle the microphone wears, with a
@@ -556,102 +615,6 @@ extension ContentView {
 private struct ComposerHeight: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
-
-/// What happens to what you say. Two answers, and the difference matters enough to
-/// spell out — one of them runs your words the moment you stop talking.
-enum Mode: String, CaseIterable, Identifiable {
-    case direct, review
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .direct: return "Direct"
-        case .review: return "Review"
-        }
-    }
-
-    var detail: String {
-        switch self {
-        case .direct: return "Runs as soon as you stop talking"
-        case .review: return "Shows you the text first, so you can fix it"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .direct: return "bolt.circle"
-        case .review: return "checkmark.circle"
-        }
-    }
-}
-
-/// Picked from a sheet rather than flipped by a button, so the mode you are about to
-/// speak into is named on screen before you commit to it.
-struct ModeSheet: View {
-    @Binding var mode: Mode
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                Text("Select mode").font(.headline)
-                HStack {
-                    Button { dismiss() } label: {
-                        Image(systemName: "xmark")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Brand.secondaryText)
-                            .frame(width: 34, height: 34)
-                            .background(Brand.fill, in: Circle())
-                    }
-                    .accessibilityLabel("Close")
-                    Spacer()
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 18)
-            .padding(.bottom, 20)
-
-            VStack(spacing: 0) {
-                ForEach(Array(Mode.allCases.enumerated()), id: \.element.id) { index, option in
-                    Button {
-                        mode = option
-                        dismiss()
-                    } label: {
-                        HStack(spacing: 14) {
-                            Image(systemName: option.icon)
-                                .font(.title3)
-                                .foregroundStyle(.tint)
-                                .frame(width: 26)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(option.title).font(.body).foregroundStyle(Brand.text)
-                                Text(option.detail).font(.subheadline).foregroundStyle(Brand.secondaryText)
-                            }
-                            Spacer()
-                            if mode == option {
-                                Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(.tint)
-                            }
-                        }
-                        .padding(.vertical, 14)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("mode-\(option.rawValue)")
-                    .accessibilityLabel(option.title)
-                    .accessibilityAddTraits(mode == option ? [.isSelected] : [])
-
-                    if index < Mode.allCases.count - 1 { Divider().padding(.leading, 40) }
-                }
-            }
-            .padding(.horizontal, 16)
-            .background(Brand.surface, in: RoundedRectangle(cornerRadius: 16))
-            .padding(.horizontal, 16)
-
-            Spacer(minLength: 0)
-        }
-        .presentationDetents([.height(260)])
-        .presentationDragIndicator(.hidden)
-    }
 }
 
 /// Where the relay is, and whether it answers — the two facts that explain a session

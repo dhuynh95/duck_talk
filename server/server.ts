@@ -9,6 +9,7 @@
  *   ↑ text    {"type":"text","text"}                  an instruction, typed
  *             {"type":"mark","name","at"}             a moment only the phone can see
  *             {"type":"approve","text"?}              run a held instruction, as edited
+ *             {"type":"claude","model"?,"permission"?} which model answers, and what it may do
  *   ↓ binary  raw PCM Int16 LE, 24 kHz, mono          (Claude's voice)
  *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"interrupted"|"turn_end"|"error","text"?}
  *             a `user` event also carries `partial`: true replaces the line, false ends it
@@ -27,9 +28,14 @@
  * instead of starting one — any session Claude Code has in this project, including
  * the ones you started in a terminal.
  *
+ * Which model answers and what it is allowed to do are deliberately not in the URL: the
+ * CLI takes both mid-session, so they arrive as a `claude` frame whenever the phone
+ * opens a socket or changes its mind, and hold from the next turn. Nothing reconnects
+ * to think differently.
+ *
  * `?data=1` is a connection that reads and edits what the relay can see and nothing
- * else — the corrections, the prompts it says to each model, and the chats — so the
- * phone can show those screens with no voice session running. Every message is answered
+ * else — the corrections, the prompts it says to each model, the models themselves, and
+ * the chats — so the phone can show those screens with no voice session running. Every message is answered
  * with all of it, so the phone never has to ask twice or guess what the files now
  * say. The exceptions are the two parts that are not small: one chat's messages, sent
  * when asked for by `chat_open`, and one utterance's audio, sent as a binary frame
@@ -45,7 +51,7 @@
 import { WebSocketServer } from 'ws';
 import { GoogleGenAI } from '@google/genai';
 import { Session, type Mode, type Phone } from './session.ts';
-import { billingMode } from './claude.ts';
+import { billingMode, capabilities } from './claude.ts';
 import { chat, chats, fork } from './chats.ts';
 import { read as readClip } from './clips.ts';
 import { load, remove, save } from './corrections.ts';
@@ -118,6 +124,13 @@ wss.on('connection', (ws, req) => {
       // Every prompt with its text, and with when it takes effect — so the phone can
       // grey out one it cannot usefully change without knowing what any of them are.
       ws.send(JSON.stringify({ type: 'prompts', prompts: prompts() }));
+      // Which models this account may use, with the words to show for each — asked of
+      // the CLI rather than written down here, the same rule the startup addresses
+      // follow: the one process that knows, says. Remembered after the first ask, so
+      // only the first data connection of a relay's life waits for it.
+      const { models } = await capabilities();
+      if (ws.readyState !== ws.OPEN) return;
+      ws.send(JSON.stringify({ type: 'models', models }));
       // Branching a chat has to happen before the list is sent, or the new one is
       // missing from the answer that reports it.
       let forked: string | null = null;

@@ -26,7 +26,7 @@
  */
 
 import { GoogleGenAI } from '@google/genai';
-import { openClaude, type Claude } from './claude.ts';
+import { DEFAULTS, openClaude, type Claude, type PermissionMode } from './claude.ts';
 import { save as saveClip } from './clips.ts';
 import { correct, CORRECT_MODEL } from './correct.ts';
 import { add, load, type Correction } from './corrections.ts';
@@ -76,6 +76,11 @@ export class Session {
   private gap: ReturnType<typeof setTimeout> | null = null;
 
   private corrections: Correction[] = [];
+
+  // What Claude has been asked to be. Kept here as well as in claude.ts so a turn that
+  // never reaches a result — interrupted, or stopped — still records what it ran as.
+  private model = DEFAULTS.model;
+  private permission: string = DEFAULTS.permission;
 
   private readonly phone: Phone;
   private readonly ai: GoogleGenAI;
@@ -159,11 +164,16 @@ export class Session {
       // finished. Only the running name is worth showing, so the phone needs no
       // history and no magic word to compare against.
       onBlock: (block) => this.phone.event(block.type === 'tool_use' ? { type: 'tool', text: block.name } : { type: 'tool' }),
-      onResult: ({ sessionId, costUsd, error }) => {
+      onError: (text) => this.phone.event({ type: 'error', text }),
+      onResult: ({ sessionId, costUsd, error, model, permission }) => {
         // Stable for the life of the session, resumed or fresh — so once the first
         // result lands, every turn on this connection knows which chat it is in.
         this.sessionId = sessionId;
         this.turn.cost_usd = costUsd;
+        // From claude.ts rather than from the frame that asked: what answered, not what
+        // was requested — a `set` that was refused leaves this on the old value.
+        this.turn.model = this.model = model;
+        this.turn.permission = this.permission = permission;
         if (error) { this.phone.event({ type: 'error', text: error }); this.cancel(`claude error: ${error}`); return; }
         // With a voice, the turn ends when the audio has been heard; without one,
         // Claude finishing is the whole of it.
@@ -271,11 +281,26 @@ export class Session {
    * it — say "no", or hang up — so the only refusal that needs a message is the
    * spoken one, and that arrives as a transcript like any other.
    */
-  frame(msg: { type?: string; name?: string; at?: number; text?: string }): void {
+  frame(msg: { type?: string; name?: string; at?: number; text?: string; model?: string; permission?: string }): void {
     if (msg.type === 'mark' && msg.name === 'reply_in' && typeof msg.at === 'number') this.turn.reply_in_at = msg.at;
     else if (msg.type === 'mark' && msg.name === 'speech_end' && typeof msg.at === 'number') this.turn.speech_end_at = msg.at;
     else if (msg.type === 'text' && typeof msg.text === 'string') this.typed(msg.text);
     else if (msg.type === 'approve') this.decide(true, msg.text);
+    else if (msg.type === 'claude') this.be(msg.model, msg.permission);
+  }
+
+  /**
+   * What Claude is: which model answers, and what it may do.
+   *
+   * Sent when a socket opens and again whenever it is changed on the phone, so there is
+   * one path rather than an initial setting and a separate way to change it. Both hold
+   * from the next turn — see `Claude.set` — so this never has to wait for anything, and
+   * repeating a value already set does nothing.
+   */
+  private be(model?: string, permission?: string): void {
+    if (model) this.turn.model = this.model = model;
+    if (permission) this.turn.permission = this.permission = permission;
+    this.claude.set(model, permission as PermissionMode | undefined);
   }
 
   async close(): Promise<void> {
@@ -454,7 +479,8 @@ export class Session {
 
   private blank(): Turn {
     return {
-      turn: ++this.turns, mode: this.mode, session_id: null, heard: '', clip: null, proposed: '', corrected: null, instruction: '',
+      turn: ++this.turns, mode: this.mode, model: this.model, permission: this.permission,
+      session_id: null, heard: '', clip: null, proposed: '', corrected: null, instruction: '',
       approval: null, said: '', speech_end_at: null, partial_last_at: null, heard_at: null, corrected_at: null,
       ran_at: null, claude_start_at: null, claude_opens: null, claude_first_at: null, tts_sent_at: null,
       voice_out_at: null, reply_in_at: null, voice_ms: 0, cost_usd: null,
@@ -480,10 +506,14 @@ export class Session {
     const claude = t.claude_start_at
       ? `claude ${d(t.ran_at, t.claude_start_at)}+${d(t.claude_start_at, t.claude_first_at)} (${t.claude_opens})`
       : `claude ${d(t.ran_at, t.claude_first_at)}`;
+    // What the turn cost, beside what it took — the two numbers a model or a prompt
+    // change moves, and the reason this one is a turn's own cost rather than the
+    // session's running total (see claude.ts).
+    const cost = t.cost_usd === null ? '' : `  $${t.cost_usd.toFixed(4)}`;
     this.log(
       `turn ${t.turn} end  stt ${d(t.speech_end_at, t.heard_at)}  final ${d(t.partial_last_at, t.heard_at)}  ${corrected}${held}` +
       `${claude}  buffer ${d(t.claude_first_at, t.tts_sent_at)}  tts ${d(t.tts_sent_at, t.voice_out_at)}  ` +
-      `→phone ${d(t.voice_out_at, t.reply_in_at)}  ${(t.voice_ms / 1000).toFixed(1)}s voice`,
+      `→phone ${d(t.voice_out_at, t.reply_in_at)}  ${(t.voice_ms / 1000).toFixed(1)}s voice${cost}`,
     );
     await append(t);
   }

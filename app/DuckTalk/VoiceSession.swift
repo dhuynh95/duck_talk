@@ -17,6 +17,11 @@ import Observation
 /// `chatId` is what makes them one conversation: the relay names the chat at every
 /// `turn_end`, and every connection opened after that resumes it.
 ///
+/// What Claude *is* — which model answers, and what it is allowed to do — travels the
+/// same way but as a frame rather than in the URL, because the relay puts both on the
+/// session it already has running. So it is sent whenever a socket opens and whenever
+/// the choice changes, and it holds from the next turn either way.
+///
 /// What you are saying and what has been said are kept apart, because the screen
 /// keeps them apart: `utterance` is the sentence being transcribed right now, and
 /// `lines` is everything already sent. An utterance joins `lines` at the moment the
@@ -101,6 +106,12 @@ final class VoiceSession {
     private var task: URLSessionWebSocketTask?
     /// The socket of a typed turn, which lives exactly as long as that turn.
     private var askTask: URLSessionWebSocketTask?
+    /// What Claude should be: which model answers, and what it is allowed to do. Held
+    /// here rather than taken as an argument at connect, because the relay puts both on
+    /// the session already running — so they are sent on every socket this class opens,
+    /// and again the moment either changes.
+    private var model = ""
+    private var permission = ""
     private var pipe: AudioPipe?
     private var turnEnded = false
     private var replied = false  // a reply byte has been marked for this turn
@@ -169,6 +180,7 @@ final class VoiceSession {
             // The mic feeds whichever socket is current, so a reconnect rebinds it.
             pipe.onChunk = { data in task.send(.data(data)) { _ in } }
             task.resume()
+            sendClaude(to: task) // before anything is said on it
             status = .live
             error = nil
             publish()
@@ -222,6 +234,29 @@ final class VoiceSession {
         endActivity()
     }
 
+    /// Say what Claude should be. Reaches whatever socket is open now, and every socket
+    /// opened after it — so a choice made while typing still holds when you start
+    /// talking, and one made mid-conversation holds from the next turn.
+    func use(model: String, permission: String) {
+        self.model = model
+        self.permission = permission
+        sendClaude(to: task)
+        sendClaude(to: askTask)
+    }
+
+    /// The one frame that carries it — the same message whether a socket has just opened
+    /// or the choice has just changed, so there is no separate first-time path to keep in
+    /// step with this one.
+    private func sendClaude(to task: URLSessionWebSocketTask?) {
+        // Empty only before `use` has been called at all, which is a socket opening
+        // during launch — the relay's own defaults hold until the next one is sent.
+        guard let task, !model.isEmpty, !permission.isEmpty else { return }
+        let msg = ["type": "claude", "model": model, "permission": permission]
+        guard let data = try? JSONSerialization.data(withJSONObject: msg),
+              let json = String(data: data, encoding: .utf8) else { return }
+        task.send(.string(json)) { _ in }
+    }
+
     // MARK: - Typing
     //
     // One turn, one socket. There is no microphone to keep alive between turns and
@@ -247,6 +282,7 @@ final class VoiceSession {
         let task = URLSession.shared.webSocketTask(with: url)
         askTask = task
         task.resume()
+        sendClaude(to: task) // ahead of the instruction, so the turn runs as asked
         defer {
             task.cancel(with: .normalClosure, reason: nil)
             askTask = nil
