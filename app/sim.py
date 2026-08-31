@@ -283,18 +283,22 @@ async def _device(kind: str) -> str:
     return out.strip()
 
 
-async def _av_index(name: str) -> str:
-    """avfoundation renumbers devices between runs — always resolve by name."""
-    out, err, _ = await _sh('ffmpeg -f avfoundation -list_devices true -i ""')
-    in_audio = False
+async def _at_index(name: str) -> str:
+    """The index audiotoolbox itself gives this device, asked of audiotoolbox.
+
+    It numbers CoreAudio's device list, which shares nothing with avfoundation's
+    input list — resolving there once played the question into a pair of AirPods
+    with a clean exit code, and the relay heard a silent room. Only the muxer that
+    will do the playing can say what it calls the device."""
+    out, err, _ = await _sh(
+        'ffmpeg -v info -f lavfi -i anullsrc=d=0.01 -f audiotoolbox '
+        "-list_devices true - >/dev/null"
+    )
     for line in (out + err).splitlines():
-        if "audio devices" in line:
-            in_audio = True
-            continue
-        m = re.search(r"\[(\d+)\] (.+)$", line)
-        if in_audio and m and m.group(2).strip() == name:
+        m = re.search(r"\[(\d+)\]\s+(.+?),", line)
+        if m and m.group(2).strip() == name:
             return m.group(1)
-    raise RuntimeError(f"no audio device named {name!r} — is BlackHole installed?")
+    raise RuntimeError(f"no audiotoolbox device named {name!r} — is BlackHole installed?")
 
 
 async def _ensure_route() -> bool:
@@ -429,8 +433,8 @@ async def play_audio(
 
     before = len(_turns())
     if file:
-        # audiotoolbox plays to a named device, so the default output stays put.
-        index = await _av_index(VOICE_IN)
+        # audiotoolbox plays to one device by index, so the default output stays put.
+        index = await _at_index(VOICE_IN)
         _ = await _sh(
             f"ffmpeg -v error -i {shlex.quote(file)} -f audiotoolbox "
             + f"-audio_device_index {index} -"

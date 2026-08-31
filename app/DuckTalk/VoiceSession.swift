@@ -114,6 +114,9 @@ final class VoiceSession {
     private var permission = ""
     private var pipe: AudioPipe?
     private var turnEnded = false
+    /// This turn has already put lines in the history — what a retract has to undo,
+    /// and all it may undo. See the `interrupted` case.
+    private var committed = false
     private var replied = false  // a reply byte has been marked for this turn
     private var wantLive = false // the user's intent, which outlives any one socket
     private var url: URL?
@@ -363,6 +366,7 @@ final class VoiceSession {
         heardClip = nil
         guard let said, !said.isEmpty else { return }
         lines.append(Line(kind: .user, text: said, clip: clip))
+        committed = true
     }
 
     private func send(_ msg: [String: String]) {
@@ -412,6 +416,13 @@ final class VoiceSession {
         let partial: Bool?
         /// On `turn_end`: which chat this connection turned out to be in.
         let session: String?
+        /// On `tool`: the Agent call this tool ran inside, nil for Claude's own. A
+        /// subagent finishing a tool must not end the Agent's run, and this is what
+        /// tells the two apart.
+        let parent: String?
+        /// On `interrupted`: the turn was taken back because you are still speaking
+        /// the instruction — what it put in the history comes off.
+        let retract: Bool?
     }
 
     private func handle(_ json: String) {
@@ -442,7 +453,8 @@ final class VoiceSession {
             publish()
         case "tool":
             // A name starts a tool, no name ends it. Consecutive tools join one line,
-            // so a burst of them reads as a single step and speech breaks the group.
+            // so a burst of them reads as a single step and speech breaks the group —
+            // and a subagent's tools join the Agent's line, which is where they belong.
             if let name = event.text {
                 commit() // a tool running is proof too, and it can come before any text
                 turnEnded = false
@@ -452,13 +464,17 @@ final class VoiceSession {
                 } else {
                     lines.append(Line(kind: .tools, tools: [name], running: true))
                 }
-            } else {
+            } else if event.parent == nil {
+                // A subagent finishing a tool says nothing about the Agent that started
+                // it, which is usually still working — often for minutes. Ending the run
+                // here stopped the spinner on the first subagent's first result.
                 endToolRun()
             }
         case "turn_end":
             // A turn that answered nothing still ran, so whatever is still uncommitted
             // belongs in the history now.
             commit()
+            committed = false // history now, not this turn's to take back
             turnEnded = true
             replied = false
             pending = nil
@@ -472,6 +488,17 @@ final class VoiceSession {
             // so the card goes away however the decision was made. What is being said
             // now is the barge-in, and it stays in the box.
             pending = nil
+            // A retract: you are still speaking the instruction, and a warm Claude can
+            // answer the fragment inside the pause that made it. That answer must not
+            // sit beside the real one, so the turn's lines come off — back to the last
+            // user line inclusive — and the composer, still receiving partials, is the
+            // only trace. Only what this turn committed may come off; a retract before
+            // any reply has nothing to undo.
+            if event.retract == true, committed {
+                while let last = lines.last, last.kind != .user { lines.removeLast() }
+                if !lines.isEmpty { lines.removeLast() }
+                committed = false
+            }
             endToolRun()
             pipe?.flush()
         case "error":

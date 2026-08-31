@@ -17,6 +17,10 @@
  * backend spawned a fresh subprocess per turn via `resume`, where this keeps one
  * streaming query alive.
  *
+ * Subagents need nothing of their own here. The SDK runs them inside the turn and
+ * stamps every frame they produce with `parent_tool_use_id`, so they arrive as blocks
+ * like any other and the only question is whose they are — see `Block.parent`.
+ *
  *   node claude.ts "what is the latest commit"     one turn, streamed to stdout
  */
 
@@ -38,9 +42,23 @@ export const DEFAULTS: { model: string | null; permission: PermissionMode } = {
 
 export type { PermissionMode };
 
-export type Block =
-  | { type: 'tool_use'; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; tool_use_id: string; content: string };
+/**
+ * A tool starting or finishing, which is the whole of what anyone has ever read here.
+ *
+ * `parent` is the Agent call it happened inside, null for Claude's own — the SDK stamps
+ * it on every frame a subagent produces, and it is the only way to tell a subagent's
+ * Bash from Claude's. Without it a fan-out looks like one agent doing everything, and a
+ * subagent finishing a tool reads as the Agent finishing.
+ *
+ * The tool's id, its arguments and the result's text travelled here too and no consumer
+ * ever took them — the last of those stringified every tool result, file contents
+ * included, to be dropped one frame later.
+ */
+export interface Block {
+  /** The tool that started, or null when one finished. */
+  name: string | null;
+  parent: string | null;
+}
 
 export interface Claude {
   /** Start a turn. Only one runs at a time; call after the previous ended or was interrupted. */
@@ -276,17 +294,15 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
           if (typeof event.delta?.text === 'string' && event.delta.text) cb.onText(event.delta.text);
         } else if (msg.type === 'assistant') {
           if (!alive) continue;
-          for (const b of msg.message.content as { type: string; id?: string; name?: string; input?: unknown }[]) {
-            if (b.type === 'tool_use') cb.onBlock({ type: 'tool_use', id: b.id!, name: b.name!, input: b.input });
+          for (const b of msg.message.content as { type: string; name?: string }[]) {
+            if (b.type === 'tool_use') cb.onBlock({ name: b.name!, parent: msg.parent_tool_use_id });
           }
         } else if (msg.type === 'user') {
           if (!alive) continue;
           const content = msg.message.content;
           if (!Array.isArray(content)) continue;
-          for (const b of content as { type: string; tool_use_id?: string; content?: unknown }[]) {
-            if (b.type === 'tool_result') {
-              cb.onBlock({ type: 'tool_result', tool_use_id: b.tool_use_id!, content: typeof b.content === 'string' ? b.content : b.content ? String(b.content) : '' });
-            }
+          for (const b of content as { type: string }[]) {
+            if (b.type === 'tool_result') cb.onBlock({ name: null, parent: msg.parent_tool_use_id });
           }
         } else if (msg.type === 'result') {
           // What the turn cost, which is not what the result says it cost. On a warm
@@ -381,7 +397,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const claude = openClaude({
     log: console.error,
     onText: (t) => { if (!first) first = Math.round(performance.now() - t0); process.stdout.write(t); },
-    onBlock: (b) => process.stderr.write(`\n[${b.type === 'tool_use' ? b.name : 'result'}]\n`),
+    // A subagent's tools are indented under the Agent call that started them, so a
+    // fan-out reads as a fan-out rather than as one agent doing everything.
+    onBlock: (b) => process.stderr.write(`\n${b.parent ? '  ↳ ' : ''}[${b.name ?? 'result'}]\n`),
     onResult: (r) => {
       console.log(`\n\nfirst token ${first}ms, $${r.costUsd}, ${r.model ?? 'default model'}, session ${r.sessionId}${r.error ? `, error: ${r.error}` : ''}`);
       claude.close();

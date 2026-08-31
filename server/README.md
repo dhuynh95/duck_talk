@@ -32,9 +32,12 @@ line says which account will actually pay, asked of the CLI rather than guessed 
 the environment. `--port` and `--cwd` are the flags; `PORT` and `PROJECT_CWD` are the
 same two as environment variables. `STT_MODEL`, `VOICE_MODEL`, `CLAUDE_MODEL`,
 `CLAUDE_PERMISSION_MODE` (default `plan`) override the rest — the last two say only
-where a session starts, since the phone moves either one on the session already running. `TURN_TIMEOUT_MS`
-(default 180000, `0` disables) caps one turn — a turn that never finishes is
-interrupted and the session recovers.
+where a session starts, since the phone moves either one on the session already running. `TURN_QUIET_MS`
+(default 300000, `0` disables) is how long Claude may produce nothing at all before the
+turn is interrupted and the session recovers. Silence, not length: every word and every
+tool block re-arms it, so a fan-out of subagents can work for as long as it needs to,
+and what has to fit inside it is one tool running — a build or a test suite says
+nothing from the moment it starts to the moment it finishes.
 
 No build step in the repo: Node ≥ 22.6 runs the `.ts`. `npm run build` exists for the
 published package, which cannot assume that of a stranger's Node.
@@ -56,7 +59,18 @@ replaces what came before, because the guess is revised while you speak; its `pa
 is false on the last one. `model` is Claude's answer as it is spoken and does join up,
 `tool` names a tool Claude used, `approval` (review mode) offers a held instruction
 for a yes/no, `turn_end` says the reply is finished — the only such signal — and
-carries `session`, the chat this connection turned out to be in.
+carries `session`, the chat this connection turned out to be in. `interrupted` flushes
+what is playing; with `retract` it also takes the turn off the screen, because the
+instruction is still being spoken and Claude may already have answered the front half
+of it.
+
+A `tool` with no name means that tool finished, and one carries `parent`: the Agent
+call it ran inside, null when Claude ran it itself. Subagents need nothing else — the
+SDK runs them inside the turn and stamps every frame they produce — but a subagent
+finishing a tool is not the Agent finishing, so a phone that ignores `parent` stops
+showing a fan-out as running the moment the first subagent's first tool returns.
+`Thinking` arrives as a `tool` too: a model that thinks before it speaks says nothing
+for as long as it thinks, and that is the one opening with no other sign of itself.
 
 Audio is what buys audio. The ears open on the first microphone buffer and the voice
 speaks only where there are ears, so a connection that only ever sends `text` frames

@@ -45,14 +45,30 @@ export interface Phone {
   /** `partial` marks text that replaces the current line instead of extending it.
    *  `session` rides on `turn_end`: the chat this connection turned out to be in, so
    *  the next one the phone opens can carry it on. `clip` rides on the final `user`
-   *  event: the audio that utterance was heard from, playable and correctable. */
-  event(msg: { type: string; text?: string; partial?: boolean; session?: string | null; clip?: number | null }): void;
+   *  event: the audio that utterance was heard from, playable and correctable.
+   *  `parent` rides on `tool`: the Agent call it happened inside, null for Claude's
+   *  own — so a subagent's tools are shown as its own and its finishing one does not
+   *  read as the Agent finishing. `retract` rides on `interrupted`: the turn was
+   *  taken back, so what it already put on the screen comes off — a warm Claude can
+   *  answer a fragment inside the pause that made it, and that answer must not sit
+   *  in the transcript beside the real one. */
+  event(msg: { type: string; text?: string; partial?: boolean; session?: string | null; clip?: number | null; parent?: string | null; retract?: boolean }): void;
 }
 
 // A turn that never returns to `listening` — Claude died, the voice stalled, or a
-// task ran away — would hang the session forever. One ceiling on the whole turn
-// catches every cause, since they all look the same: stuck off `listening`. 0 disables.
-const TURN_TIMEOUT_MS = Number(process.env['TURN_TIMEOUT_MS'] ?? 180_000);
+// task ran away — would hang the session forever. What catches every cause is that
+// they all look the same: nothing arrives, ever again.
+//
+// So this is silence, not length. Anything Claude produces re-arms it, and what trips
+// it is producing nothing at all for this long. A ceiling on the whole turn was the
+// wrong question: a fan-out of subagents legitimately works for many minutes, and the
+// ceiling interrupted it mid-work and threw the turn away.
+//
+// Longer than the 180s that ceiling used, because it is now a different measurement
+// and the old number does not carry over. What has to fit inside it is the longest
+// gap between two signs of life, and the longest is one tool running — a test suite
+// or a build says nothing between its `tool_use` and its `tool_result`. 0 disables.
+const QUIET_MS = Number(process.env['TURN_QUIET_MS'] ?? 300_000);
 
 // The phone holds the mic open and sends every buffer, silence included, so a pause
 // this long is not a quiet user — it is a phone that stopped sending. Well past the
@@ -154,8 +170,14 @@ export class Session {
       onStart: (kind) => {
         this.turn.claude_start_at ??= Date.now();
         this.turn.claude_opens ??= kind;
+        // The one opening that would otherwise show nothing: text is the answer
+        // arriving and a tool announces itself by name, but a model that thinks first
+        // says nothing for as long as it thinks — 22 seconds on turn 15 of this
+        // project's own log. Sent as a tool so it draws with the chip that exists.
+        if (kind === 'thinking') this.phone.event({ type: 'tool', text: 'Thinking' });
       },
       onText: (text) => {
+        this.arm(); // words are proof of life
         this.turn.claude_first_at ??= Date.now();
         this.turn.said += text;
         this.phone.event({ type: 'model', text });
@@ -165,8 +187,13 @@ export class Session {
       },
       // A `tool` event with a name means Claude started that tool; without one, it
       // finished. Only the running name is worth showing, so the phone needs no
-      // history and no magic word to compare against.
-      onBlock: (block) => this.phone.event(block.type === 'tool_use' ? { type: 'tool', text: block.name } : { type: 'tool' }),
+      // history and no magic word to compare against. `parent` says whose it is.
+      onBlock: (block) => {
+        this.arm(); // a fan-out works for minutes without a word, and is not stuck
+        // One event either way: an absent `text` is JSON's own way of saying no name,
+        // so a tool starting and a tool finishing take the same line rather than two.
+        this.phone.event({ type: 'tool', text: block.name ?? undefined, parent: block.parent });
+      },
       onError: (text) => this.phone.event({ type: 'error', text }),
       onResult: ({ sessionId, costUsd, error, model, permission }) => {
         // Stable for the life of the session, resumed or fresh — so once the first
@@ -460,11 +487,13 @@ export class Session {
     this.claude.send(instruction); // the callbacks wired in open() carry the reply
   }
 
-  // --- Watchdog: one ceiling on the whole turn -------------------------------
+  // --- Watchdog: the turn is alive, or nothing is arriving --------------------
 
+  /** The turn is alive as of now. Called to start it and again on every sign of life,
+   *  so one method means one thing and there is no second timer to keep in step. */
   private arm(): void {
     this.disarm();
-    if (TURN_TIMEOUT_MS > 0) this.watchdog = setTimeout(() => this.cancel('timeout'), TURN_TIMEOUT_MS);
+    if (QUIET_MS > 0) this.watchdog = setTimeout(() => this.cancel('gone quiet'), QUIET_MS);
   }
 
   private disarm(): void {
@@ -486,7 +515,7 @@ export class Session {
     this.log('retract (still talking)');
     this.claude.interrupt();
     this.voice.interrupt();
-    this.phone.event({ type: 'interrupted' });
+    this.phone.event({ type: 'interrupted', retract: true });
     this.disarm();
     const t = this.turn;
     t.said = ''; // a reply this fast is to the fragment, and the fragment is gone

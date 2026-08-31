@@ -67,13 +67,17 @@ export interface EarsCallbacks {
 // `endOfSpeechSensitivity` is deliberately not set: alongside 200 it measured slower.
 const SILENCE_MS = 200;
 
-// A final arriving this soon after the last one continues it rather than starting
-// something new. Derived, not chosen: the reply's first sound reaches the listener
-// about two seconds after a final (Claude ~0.9s, sentence buffer ~0.5s, voice
-// ~0.75s, from the turn log), so speech inside that window cannot be an answer to
-// anything heard — it is the rest of the same thought. A longer pause is not joined;
-// the tail reaches Claude on its own, and Claude's own transcript holds the head.
-const JOIN_MS = 2000;
+// A new utterance starting this soon after the last final continues it rather than
+// answering it. Derived, not chosen, from both ends of the window: the reply's first
+// sound reaches the listener no sooner than ~2.4s after a final (Claude ≥1s warm,
+// sentence buffer, voice ~0.75s, from the turn log), so speech heard to *start*
+// before then cannot be an answer to anything — and "heard to start" runs late,
+// because the first partial commits 0.2–1.8s after speech resumes (the same spread
+// MAX_LEAD_MS exists for). At 2000 that lag pushed real continuations over the line;
+// 3000 covers the lag and still ends before a reply can have been heard and reacted
+// to. A longer pause is not joined; the tail reaches Claude on its own, and Claude's
+// own transcript holds the head.
+const JOIN_MS = 3000;
 
 // 16 kHz Int16 mono. The one conversion between "how many bytes have gone out" and
 // "where are we in the stream", and the reason a clip is a subtraction.
