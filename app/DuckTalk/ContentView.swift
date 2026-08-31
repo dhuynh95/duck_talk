@@ -498,14 +498,14 @@ struct ContentView: View {
     /// word belongs in `accessibilityLabel`, where it is said only to someone who
     /// asked. This is the rule for every icon under a message, not just these three.
     ///
-    /// One row for both kinds of line, because which icons appear follows from what
-    /// the line has rather than from what it is: fix on a line that was heard, fork on
-    /// one that is in the stored conversation, copy on all of them.
+    /// One row, and what is in it follows from the line: the only thing to do with
+    /// what you said is fix what was misheard, and the things to do with an answer are
+    /// branch from it or take its text.
     private func actions(_ line: VoiceSession.Line) -> some View {
         HStack(spacing: 18) {
-            // Direct mode runs what it heard before you can stop it, so the fix is
-            // after the fact: this is the only door to a correction that does not need
-            // Review to have been on.
+            // Only a line that was heard has audio, so this is also what says the line
+            // is yours. Direct mode runs what it heard before you can stop it, which
+            // makes this the only door to a correction that Review was not on for.
             if let clip = line.clip {
                 Button {
                     sheet = .corrections(Correction(at: Date().timeIntervalSince1970 * 1000,
@@ -516,19 +516,21 @@ struct ContentView: View {
                 .accessibilityIdentifier("fix")
                 .accessibilityLabel("Fix what was heard")
             }
-            // A reply just spoken is not on disk yet, so there is nothing to branch
-            // from — which is why this is not the same condition as copy.
-            if line.uuid != nil, line.kind == .model {
-                Button { forkFrom(line) } label: {
-                    Image(systemName: "arrow.branch")
+            if line.kind == .model {
+                // A reply just spoken is not on disk yet, so there is nothing to
+                // branch from — which is why this is not the same condition as copy.
+                if line.uuid != nil {
+                    Button { forkFrom(line) } label: {
+                        Image(systemName: "arrow.branch")
+                    }
+                    .accessibilityIdentifier("fork")
+                    .accessibilityLabel("Fork from here")
                 }
-                .accessibilityIdentifier("fork")
-                .accessibilityLabel("Fork from here")
+                Button { UIPasteboard.general.string = line.text } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .accessibilityLabel("Copy")
             }
-            Button { UIPasteboard.general.string = line.text } label: {
-                Image(systemName: "doc.on.doc")
-            }
-            .accessibilityLabel("Copy")
         }
         .font(.footnote)
         .foregroundStyle(Brand.tertiaryText)
