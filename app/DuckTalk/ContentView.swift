@@ -468,25 +468,17 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .user:
             VStack(alignment: .trailing, spacing: 6) {
+                // What you said wears a surface; what Claude said does not. That
+                // alternation is what makes a long transcript scannable — the eye finds
+                // the turns without reading them, so neither side needs a name on it.
+                // The bubble hugs its own text, which is why the width comes after it.
                 Text(line.text)
+                    .foregroundStyle(Brand.text)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Brand.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                     .frame(maxWidth: .infinity, alignment: .trailing)
-                    .foregroundStyle(Brand.secondaryText)
-                // Direct mode runs what it heard before you can stop it, so the fix is
-                // after the fact: this is the only door to a correction that does not
-                // need Review to have been on.
-                if let clip = line.clip {
-                    Button {
-                        sheet = .corrections(Correction(at: Date().timeIntervalSince1970 * 1000,
-                                                        heard: line.text, meant: line.text, clip: clip))
-                    } label: {
-                        Label("fix", systemImage: "pencil")
-                            .font(.caption)
-                            .foregroundStyle(Brand.tertiaryText)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("fix")
-                    .accessibilityLabel("Fix what was heard")
-                }
+                actions(line)
             }
         case .model:
             VStack(alignment: .leading, spacing: 6) {
@@ -497,15 +489,36 @@ struct ContentView: View {
         }
     }
 
-    /// The two things you can do to an answer, under every one of them. Small and
-    /// tertiary: they are always there, so they must never compete with the words.
+    /// What you can do to a message, under every one of them. Small and tertiary: they
+    /// are always there, so they must never compete with the words.
     ///
-    /// Fork only appears on a line that exists in the stored conversation — a reply
-    /// just spoken is not on disk yet, so there is nothing to branch from. Copy always
-    /// works, which is why they are not the same condition.
+    /// **Never label these with words.** A glyph in a transcript is read every time the
+    /// eye passes the row, and a word beside it earns its width once and costs it
+    /// forever — the row stops being a margin and becomes a second thing to read. The
+    /// word belongs in `accessibilityLabel`, where it is said only to someone who
+    /// asked. This is the rule for every icon under a message, not just these three.
+    ///
+    /// One row for both kinds of line, because which icons appear follows from what
+    /// the line has rather than from what it is: fix on a line that was heard, fork on
+    /// one that is in the stored conversation, copy on all of them.
     private func actions(_ line: VoiceSession.Line) -> some View {
         HStack(spacing: 18) {
-            if line.uuid != nil {
+            // Direct mode runs what it heard before you can stop it, so the fix is
+            // after the fact: this is the only door to a correction that does not need
+            // Review to have been on.
+            if let clip = line.clip {
+                Button {
+                    sheet = .corrections(Correction(at: Date().timeIntervalSince1970 * 1000,
+                                                    heard: line.text, meant: line.text, clip: clip))
+                } label: {
+                    Image(systemName: "pencil")
+                }
+                .accessibilityIdentifier("fix")
+                .accessibilityLabel("Fix what was heard")
+            }
+            // A reply just spoken is not on disk yet, so there is nothing to branch
+            // from — which is why this is not the same condition as copy.
+            if line.uuid != nil, line.kind == .model {
                 Button { forkFrom(line) } label: {
                     Image(systemName: "arrow.branch")
                 }
