@@ -2,9 +2,10 @@
  * What the speech-to-text keeps getting wrong, and what was meant instead.
  *
  * A pair is born when the user edits a held instruction in review mode: that edit
- * is the only evidence of what they actually said. Two things read them back —
- * `ears.ts` puts them in Gemini's system prompt, `correct.ts` uses them as few-shot
- * for a text model — so this file is the one store and the one wording.
+ * is the only evidence of what they actually said. Two things read them back, and
+ * both renderings live here so a correction has one meaning: `terms` is the words
+ * `ears.ts` biases the recogniser towards, `render` is the block `correct.ts` shows a
+ * text model.
  *
  * `heard` is what the ears produced, `meant` is what the user actually said, and
  * `proposed` is the wording that was on screen when they corrected it — the same as
@@ -108,6 +109,21 @@ export function render(corrections: Correction[]): string {
   if (!corrections.length) return '';
   const lines = corrections.slice(-MAX).map((c) => `- "${c.heard.trim()}" → "${c.meant.trim()}"`);
   return `\n\n<STT_CORRECTIONS>\nThe speech-to-text often mishears this user. When you hear the left, they mean the right:\n${lines.join('\n')}\n</STT_CORRECTIONS>\n`;
+}
+
+/**
+ * What to bias the recogniser towards: each sentence as the user said it was.
+ *
+ * Whole sentences, not the words inside them. Sending only the words that differ from
+ * `heard` is the obvious refinement and it measured worse — 83% against 100% — because
+ * a term the ears happened to get right in the utterance that taught the correction
+ * never enters the list, and is then missed everywhere else. The extra words cost
+ * nothing: a hundred phrases bias just as well when only a few are relevant.
+ */
+export function terms(corrections: Correction[]): string[] {
+  const out = new Set<string>();
+  for (const c of corrections) if (c.meant.trim()) out.add(c.meant.trim());
+  return [...out].slice(-100); // the docs put the useful ceiling around here
 }
 
 function key(heard: string): string {

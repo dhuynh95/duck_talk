@@ -35,7 +35,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, Modality, type LiveServerMessage, type Session } from '@google/genai';
 import { wav } from './clips.ts';
-import type { Correction } from './corrections.ts';
+import { terms, type Correction } from './corrections.ts';
 
 export interface Ears {
   send(pcm: Buffer): void;
@@ -94,6 +94,12 @@ const MAX_LEAD_MS = 4_000;
 // word without reaching it.
 const TAIL_TRIM_MS = 350;
 
+/** A vocabulary as one readable line — seeing what is in it is the whole point. */
+function oneLine(vocab: string[]): string {
+  const line = vocab.join(', ');
+  return line.length <= 160 ? line : `${line.slice(0, 159)}…`;
+}
+
 /**
  * `b` continuing `a`: the sentence rejoined. Each fragment was punctuated as a
  * sentence of its own — a full stop on the head, a capital on the tail — and both
@@ -101,17 +107,6 @@ const TAIL_TRIM_MS = 350;
  */
 function join(a: string, b: string): string {
   return a ? `${a.replace(/[.?!]+$/, '')} ${b.charAt(0).toLowerCase()}${b.slice(1)}` : b;
-}
-
-/**
- * What this user is usually misheard saying, handed to the recogniser as vocabulary
- * to favour. The same corrections the routing ears get as prompt text, except here
- * they bias the acoustic model directly, which is what they were always trying to do.
- */
-function vocabulary(corrections: Correction[]): string[] {
-  const terms = new Set<string>();
-  for (const c of corrections) if (c.meant.trim()) terms.add(c.meant.trim());
-  return [...terms].slice(-100); // the docs put the useful ceiling around here
 }
 
 export async function openEars(
@@ -152,6 +147,10 @@ export async function openEars(
   // must not lose its head.
   let utteranceAt: number | null = null;
   let lastEndMs = 0;
+  // What the session made of everything it was sent, reported when it closes. Both
+  // numbers are byte counts on the one clock, so the difference is exact.
+  let coveredMs = 0;
+  let transcripts = 0;
 
   function keep(pcm: Buffer): void {
     kept.push(pcm);
@@ -172,7 +171,7 @@ export async function openEars(
     return Buffer.concat(kept).subarray(from, to);
   }
 
-  const vocab = vocabulary(corrections);
+  const vocab = terms(corrections);
   const t0 = performance.now();
   session = await ai.live.connect({
     model,
@@ -182,7 +181,10 @@ export async function openEars(
       realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: SILENCE_MS } },
     },
     callbacks: {
-      onopen: () => log(`ears connected (${Math.round(performance.now() - t0)}ms)${vocab.length ? `, ${vocab.length} phrases biased` : ''}`),
+      // The terms themselves, not how many of them: biasing is the one thing that
+      // changes what comes back, and a count says nothing about whether the right
+      // words are in the list.
+      onopen: () => log(`ears connected (${Math.round(performance.now() - t0)}ms)${vocab.length ? `, biasing ${vocab.length}: ${oneLine(vocab)}` : ''}`),
       onmessage: (msg: LiveServerMessage) => {
         if (process.env['DEBUG']) log(`raw: ${JSON.stringify(msg).slice(0, 300)}`);
         const sc = msg.serverContent;
@@ -217,6 +219,10 @@ export async function openEars(
           const endMs = sentMs - TAIL_TRIM_MS;
           const clip = startMs === null ? null : slice(startMs, endMs);
           if (clip) log(`clip ${Math.round(startMs!)}–${Math.round(endMs)}ms of stream`);
+          // Only the audio this final added. A joined fragment's clip reaches back to
+          // the start of the whole sentence, so adding the spans up counts the head
+          // once per fragment and can claim more audio than was ever sent.
+          if (startMs !== null) { coveredMs += endMs - Math.max(startMs, lastEndMs); transcripts++; }
           lastEndMs = endMs;
           cb.onFinal(text, clip);
         }
@@ -236,6 +242,13 @@ export async function openEars(
     close() {
       if (closed) return;
       closed = true;
+      // Audio in against audio the ears turned into utterances. The gap is the quiet
+      // between sentences, and that is the point: it is a subtraction of two exact
+      // counts rather than a detector, so a session where it goes badly wrong is
+      // visible without anything having to decide what counts as speech.
+      if (sentMs) {
+        log(`ears heard ${(sentMs / 1000).toFixed(0)}s of audio, ${(coveredMs / 1000).toFixed(0)}s of it in ${transcripts} transcript${transcripts === 1 ? '' : 's'}`);
+      }
       session?.close();
       session = null;
     },
