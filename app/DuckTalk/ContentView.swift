@@ -46,6 +46,11 @@ struct ContentView: View {
     @State private var chat: Chat?
     /// How tall the composer is right now — see `ComposerHeight`.
     @State private var composerHeight: CGFloat = 0
+    /// The two things the title menu asks about before doing: a new name, and whether
+    /// you meant it. Alerts rather than sheets, because both are one question.
+    @State private var renaming = false
+    @State private var newTitle = ""
+    @State private var deleting = false
 
     private var live: Bool { session.status != .idle }
     /// The stored strings as what they mean. A value from a version that named things
@@ -115,6 +120,26 @@ struct ContentView: View {
                 }
             }
             .presentationBackground(Brand.background)
+        }
+        .alert("Rename chat", isPresented: $renaming) {
+            TextField("Title", text: $newTitle)
+            Button("Cancel", role: .cancel) {}
+            Button("Rename") {
+                if let chat, !newTitle.trimmingCharacters(in: .whitespaces).isEmpty {
+                    relay.rename(chat.id, to: newTitle)
+                }
+            }
+        }
+        // Irreversible, and the transcript goes with it — so it is the one thing on this
+        // screen that asks twice.
+        .alert("Delete this chat?", isPresented: $deleting) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                if let chat { relay.delete(chat.id) }
+                clear()
+            }
+        } message: {
+            Text("The conversation and everything in it go for good.")
         }
         // The keyboard belongs to the composer, so whatever takes over from it takes
         // the keyboard too. One rule, rather than a dismissal at every door.
@@ -200,6 +225,23 @@ struct ContentView: View {
         relay.fork(source.id, at: at)
     }
 
+    /// The conversation on screen as the relay last described it — the title it has now,
+    /// and whether it is starred. `chat` is the copy taken when it was opened, so
+    /// anything changed since would be stale there; the relay answers every change with
+    /// the whole list, so it is never stale here.
+    private var current: Chat? {
+        guard let chat else { return nil }
+        return relay.chats.first { $0.id == chat.id } ?? chat
+    }
+
+    /// Forget the conversation on screen. Deleting is the relay's half; this is the
+    /// screen's, and it is the same clearing "New chat" does.
+    private func clear() {
+        if live { session.stop() }
+        chat = nil
+        session.show([], id: nil)
+    }
+
     // MARK: - Header
 
     /// The chats on the left, what configures the app on the right, and between them
@@ -211,15 +253,42 @@ struct ContentView: View {
     /// the room the conversation is using.
     private var header: some View {
         ZStack {
-            if let chat {
-                Text(chat.title)
+            if let chat = current {
+                Menu {
+                    Button { relay.star(chat.id, !chat.isStarred) } label: {
+                        Label(chat.isStarred ? "Unstar" : "Star", systemImage: chat.isStarred ? "star.slash" : "star")
+                    }
+                    Button { newTitle = chat.title; renaming = true } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    // Branching at the last message is a copy of the whole
+                    // conversation, which is what forking one from its title means —
+                    // and it is the fork the transcript already knows how to do.
+                    if let last = session.lines.last(where: { $0.uuid != nil }) {
+                        Button { forkFrom(last) } label: {
+                            Label("Fork conversation", systemImage: "arrow.branch")
+                        }
+                    }
+                    Button(role: .destructive) { deleting = true } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(chat.title)
+                            .lineLimit(1)
+                            .foregroundStyle(Brand.text)
+                        Image(systemName: "chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Brand.tertiaryText)
+                    }
                     .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .floating(in: Capsule())
-                    .padding(.horizontal, 52) // clear of the two circles, either side
-                    .accessibilityIdentifier("chat-title")
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 52) // clear of the two circles, either side
+                .accessibilityIdentifier("chat-title")
             }
             HStack {
                 Button { drawer = true } label: {

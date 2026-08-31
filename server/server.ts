@@ -41,7 +41,8 @@
  * when asked for by `chat_open`, and one utterance's audio, sent as a binary frame
  * when asked for by `clip_get` — the only binary a data connection ever carries, so
  * there is nothing to tell apart. `fork` branches a chat at one message and answers
- * with the new one, which is `chat_open` on it.
+ * with the new one, which is `chat_open` on it; `chat_star`, `chat_rename` and
+ * `chat_delete` answer with nothing of their own, because the list already says.
  *
  * Every finished turn is appended to `.duck-talk/turns.jsonl`. The phone, this relay and the
  * test harness all run on one Mac, so those timestamps share one clock and any
@@ -52,7 +53,7 @@ import { WebSocketServer } from 'ws';
 import { GoogleGenAI } from '@google/genai';
 import { Session, type Mode, type Phone } from './session.ts';
 import { billingMode, capabilities } from './claude.ts';
-import { chat, chats, fork } from './chats.ts';
+import { chat, chats, fork, remove as removeChat, rename, star } from './chats.ts';
 import { read as readClip } from './clips.ts';
 import { load, remove, save } from './corrections.ts';
 import { all as prompts, isName, write as writePrompt } from './prompts.ts';
@@ -106,6 +107,16 @@ wss.on('connection', (ws, req) => {
       } else if (f?.['type'] === 'prompt_save' && isName(f['name'])) {
         writePrompt(f['name'], String(f['text'] ?? ''));
         log(`prompt saved: ${f['name']}`);
+      } else if (f?.['type'] === 'chat_star' && typeof f['id'] === 'string') {
+        const on = f['starred'] !== false;
+        await star(f['id'], on);
+        log(`${on ? 'starred' : 'unstarred'} ${f['id']}`);
+      } else if (f?.['type'] === 'chat_rename' && typeof f['id'] === 'string' && typeof f['text'] === 'string') {
+        await rename(f['id'], f['text']);
+        log(`renamed ${f['id']}: ${f['text']}`);
+      } else if (f?.['type'] === 'chat_delete' && typeof f['id'] === 'string') {
+        await removeChat(f['id']);
+        log(`deleted ${f['id']}`);
       }
       if (ws.readyState !== ws.OPEN) return;
       // The one thing here that is not text. Sent as the file, so the phone hands it

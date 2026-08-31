@@ -7,6 +7,14 @@ struct Chat: Identifiable, Codable, Hashable {
     /// When it was last written to, in milliseconds.
     let at: Double
     let title: String
+    /// Kept at the top of the drawer. The relay owns this — see `RelayStore.star` — so
+    /// a chat starred here is starred everywhere, this Mac's terminal included.
+    ///
+    /// Optional on the wire and not in the app, because the relay is a package with its
+    /// own version: one that predates starring sends no such field, and a required key
+    /// would fail the whole message and empty the drawer rather than lose one star.
+    private let starred: Bool?
+    var isStarred: Bool { starred ?? false }
 }
 
 /// One exchange from a past chat, as it would have been spoken. `uuid` is where a
@@ -123,6 +131,14 @@ struct ChatsDrawer: View {
                                         row(chat).padding(.horizontal, 20).padding(.vertical, 11)
                                     }
                                     .buttonStyle(.plain)
+                                    // The only thing you can do to a chat without
+                                    // opening it — and starring a run of old ones is
+                                    // exactly when you would rather not open each.
+                                    .contextMenu {
+                                        Button { store.star(chat.id, !chat.isStarred) } label: {
+                                            Label(chat.isStarred ? "Unstar" : "Star", systemImage: chat.isStarred ? "star.slash" : "star")
+                                        }
+                                    }
                                     Divider().overlay(Brand.fill).padding(.leading, 20)
                                 }
                             }
@@ -138,6 +154,11 @@ struct ChatsDrawer: View {
 
     /// The one thing in the drawer that is not a chat, so it is the one thing floating
     /// over them.
+    ///
+    /// Low, and on ground of its own. The list scrolls underneath, and glass alone
+    /// leaves a chat title legible straight through the pill — so what sits behind it is
+    /// the panel's own colour, faded in above rather than butted against an edge: rows
+    /// dim as they reach it instead of being cut off half-drawn.
     private var newChat: some View {
         Button {
             onNew()
@@ -150,7 +171,21 @@ struct ChatsDrawer: View {
                 .floating(in: Capsule())
         }
         .buttonStyle(.plain)
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+        .padding(.bottom, 2)
+        .background {
+            LinearGradient(
+                stops: [
+                    .init(color: Brand.background.opacity(0), location: 0),
+                    .init(color: Brand.background, location: 0.5),
+                ],
+                startPoint: .top,
+                endPoint: .bottom,
+            )
+            .padding(.top, -28) // where the fade starts, above the pill
+            .ignoresSafeArea(edges: .bottom)
+        }
         .accessibilityIdentifier("new-chat")
     }
 
@@ -221,20 +256,16 @@ struct ChatsDrawer: View {
         .frame(maxHeight: .infinity)
     }
 
-    /// Today, Yesterday, then the rest — the only grouping worth the width — of
-    /// whatever the search left. Empty sections drop out, so a search that matches only
-    /// last week shows only Earlier.
+    /// Starred, then Recents — of whatever the search left, and an empty one drops out.
+    ///
+    /// Two groups is the whole grouping. Every row already says how long ago it was, so
+    /// splitting the rest into Today and Yesterday named something the eye could read
+    /// off the row anyway. A starred chat leaves Recents rather than appearing twice:
+    /// the point of starring is that there is one place to look.
     private var sections: [(name: String, chats: [Chat])] {
-        let calendar = Calendar.current
         let asked = query.trimmingCharacters(in: .whitespaces)
-        var today: [Chat] = [], yesterday: [Chat] = [], earlier: [Chat] = []
-        for chat in store.chats where asked.isEmpty || chat.title.localizedCaseInsensitiveContains(asked) {
-            let date = Date(timeIntervalSince1970: chat.at / 1000)
-            if calendar.isDateInToday(date) { today.append(chat) }
-            else if calendar.isDateInYesterday(date) { yesterday.append(chat) }
-            else { earlier.append(chat) }
-        }
-        return [("Today", today), ("Yesterday", yesterday), ("Earlier", earlier)]
+        let matching = store.chats.filter { asked.isEmpty || $0.title.localizedCaseInsensitiveContains(asked) }
+        return [("Starred", matching.filter(\.isStarred)), ("Recents", matching.filter { !$0.isStarred })]
             .filter { !$0.1.isEmpty }
             .map { (name: $0.0, chats: $0.1) }
     }

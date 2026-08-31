@@ -88,6 +88,21 @@ final class RelayStore {
         send(["type": "fork", "id": id, "at": uuid])
     }
 
+    /// The three things you can do to a chat without opening it. Each is answered with
+    /// the whole list again, in its new order — so nothing here has to remember what it
+    /// just did, or undo it when the relay disagrees.
+    func star(_ id: String, _ on: Bool) {
+        send(["type": "chat_star", "id": id, "starred": on])
+    }
+
+    func rename(_ id: String, to title: String) {
+        send(["type": "chat_rename", "id": id, "text": title])
+    }
+
+    func delete(_ id: String) {
+        send(["type": "chat_delete", "id": id])
+    }
+
     private struct State: Decodable {
         let type: String
         let items: [Correction]?

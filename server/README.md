@@ -9,7 +9,7 @@ duck_talk` runs. Each primitive runs alone:
 - `claude.ts` — Claude Code via the Agent SDK: one instruction → streamed text + tool calls + a session id to resume.
 - `voice.ts`  — Gemini text-to-speech, one request per sentence: Claude's text in → 24 kHz PCM out.
 - `session.ts`— the turn state machine wiring the three together, per phone connection.
-- `chats.ts`  — the conversations Claude Code has in this project: list, read, fork. The SDK's own session store, which is what `?resume=` replays.
+- `chats.ts`  — the conversations Claude Code has in this project: list, read, fork, star, rename, delete. All of it the SDK's own session store, which is what `?resume=` replays.
 - `cli.ts`    — the entry point: the flags, the `.env`, and which folder to serve.
 - `paths.ts`  — where that folder puts everything, now that it is a choice.
 - `reach.ts`  — every address a phone can reach the relay at, printed at startup: simulator, same Wi-Fi, and Tailscale's `wss://` when it is set up.
@@ -89,6 +89,9 @@ voice session, no Gemini, no Claude:
 | `{"type":"prompt_save","name","text"}` | … |
 | `{"type":"chat_open","id"}` | that chat's messages |
 | `{"type":"fork","id","at"}` | a new chat ending at message `at`, then opened |
+| `{"type":"chat_star","id","starred"}` | … — a session tag, so it lists first |
+| `{"type":"chat_rename","id","text"}` | … |
+| `{"type":"chat_delete","id"}` | … |
 
 Every message is answered with `{"type":"corrections","items":[…]}`,
 `{"type":"prompts","prompts":[…]}`, `{"type":"models","models":[…]}` and

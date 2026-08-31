@@ -1,25 +1,34 @@
 /**
- * The conversations you have had with Claude Code in this project: list them, read
- * one back, and branch off any answer in one.
+ * The conversations you have had with Claude Code in this project: list them, read one
+ * back, branch off any answer, and — star, rename, delete.
  *
- * All three are the SDK's own session management, pointed at the same directory the
- * relay runs Claude in. Nothing here parses a transcript. That matters beyond tidiness
- * — the store these read is the store `?resume=` replays, so a chat in the list is a
- * chat that can be resumed, and a fork is resumable the moment it exists. It also
- * means every session you started in a terminal is here: begin at the desk, carry on
- * from your pocket.
+ * Every one of those is the SDK's own session management, pointed at the same directory
+ * the relay runs Claude in. Nothing here parses a transcript and nothing here keeps a
+ * file of its own; `dir` is the whole address, and where the sessions actually sit on
+ * disk is the SDK's business, not ours. That matters beyond tidiness — the store these
+ * read is the store `?resume=` replays, so a chat in the list is a chat that can be
+ * resumed, and a fork is resumable the moment it exists. It also means every session you
+ * started in a terminal is here, with the title you gave it there: begin at the desk,
+ * carry on from your pocket.
+ *
+ * A star is that store's own session tag, for the same reason. A list of starred ids
+ * kept beside it would be a second index to keep in step — one that outlives a deleted
+ * chat and can disagree with the terminal about what is flagged.
  *
  * Forking is what makes a mishearing recoverable. A voice session can talk itself into
  * a corner — the mic hears the reply, the reply becomes the next instruction — and
  * cutting back to the last good answer beats arguing with the echo.
  *
- *   node chats.ts                    list them
- *   node chats.ts <id>               print it, with the uuid of each message
- *   node chats.ts fork <id> <uuid>   branch at that message, print the new id
+ *   node chats.ts                      list them
+ *   node chats.ts <id>                 print it, with the uuid of each message
+ *   node chats.ts fork <id> <uuid>     branch at that message, print the new id
+ *   node chats.ts star <id> [off]      keep it at the top of the list
+ *   node chats.ts rename <id> <title>  give it a name of your own
+ *   node chats.ts delete <id>          for good, transcript included
  */
 
 import { fileURLToPath } from 'node:url';
-import { forkSession, getSessionMessages, listSessions, type SessionMessage } from '@anthropic-ai/claude-agent-sdk';
+import { deleteSession, forkSession, getSessionMessages, listSessions, renameSession, tagSession, type SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 // The directory claude.ts runs in, which is what scopes a session to this project.
 import { PROJECT as CWD } from './paths.ts';
 import { clips } from './turns.ts';
@@ -40,16 +49,22 @@ export interface Chat {
   /** Last written, which is what "when did I last talk about this" means. */
   at: number;
   title: string;
+  /** Tagged, which is what the phone draws as a star and lists first. */
+  starred: boolean;
 }
 
-const LIST = 50; // a phone list, not an archive
+// Long enough that a chat starred last week is still in it. A star has to keep a chat
+// reachable, and a morning of talking is enough to push one past fifty.
+const LIST = 200;
 
-/** Every chat in this project, most recently touched first. */
+/** Every chat in this project: starred first, then most recently touched. */
 export async function chats(): Promise<Chat[]> {
   const sessions = await listSessions({ dir: CWD, limit: LIST });
   return sessions
-    .map((s) => ({ id: s.sessionId, at: s.lastModified, title: s.summary.slice(0, 120) }))
-    .filter((c) => c.title);
+    .map((s) => ({ id: s.sessionId, at: s.lastModified, title: s.summary.slice(0, 120), starred: Boolean(s.tag) }))
+    .filter((c) => c.title)
+    // Stable, so recency survives inside each group and there is one sort, not two.
+    .sort((a, b) => Number(b.starred) - Number(a.starred));
 }
 
 /**
@@ -91,6 +106,21 @@ export async function fork(id: string, uuid: string): Promise<string> {
   return sessionId;
 }
 
+/** Keep a chat at the top of the list, or stop. The tag is the star — see above. */
+export async function star(id: string, on: boolean): Promise<void> {
+  await tagSession(id, on ? 'starred' : null, { dir: CWD });
+}
+
+/** A title of your own, in place of the summary Claude Code wrote. */
+export async function rename(id: string, title: string): Promise<void> {
+  await renameSession(id, title, { dir: CWD });
+}
+
+/** For good, transcript included — so `?resume=` on it will fail from here on. */
+export async function remove(id: string): Promise<void> {
+  await deleteSession(id, { dir: CWD });
+}
+
 /** The words in a message, without the tool calls and the thinking. */
 function text(m: SessionMessage): string {
   const content = (m.message as { content?: unknown } | undefined)?.content;
@@ -106,11 +136,16 @@ function text(m: SessionMessage): string {
 // --- CLI: run alone ---------------------------------------------------------
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const [first, ...rest] = process.argv.slice(2);
+  const [first, id, ...words] = process.argv.slice(2);
   if (first === 'fork') {
-    const [id, uuid] = rest;
-    if (!id || !uuid) { console.error('usage: node chats.ts fork <id> <uuid>'); process.exit(1); }
-    console.log(await fork(id, uuid));
+    if (!id || !words[0]) { console.error('usage: node chats.ts fork <id> <uuid>'); process.exit(1); }
+    console.log(await fork(id, words[0]));
+  } else if (first === 'star' && id) {
+    await star(id, words[0] !== 'off');
+  } else if (first === 'rename' && id && words.length) {
+    await rename(id, words.join(' '));
+  } else if (first === 'delete' && id) {
+    await remove(id);
   } else if (first) {
     const messages = await chat(first);
     console.error(`${messages.length} messages`);
@@ -120,6 +155,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   } else {
     const all = await chats();
     console.log(`${all.length} chats in ${CWD}`);
-    for (const c of all) console.log(`${new Date(c.at).toISOString().slice(0, 16)}  ${c.id.slice(0, 8)}  ${c.title}`);
+    // The whole id, because the verbs above take one.
+    for (const c of all) console.log(`${new Date(c.at).toISOString().slice(0, 16)}  ${c.id} ${c.starred ? '★' : ' '} ${c.title}`);
   }
 }
