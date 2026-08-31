@@ -71,6 +71,7 @@ The request path end to end (phone → relay → Gemini + Claude), the prompts t
 - `scripts/install-elsewhere.sh` — packs the package, installs it in a folder that is not this repo, and starts it there. The only test of the thing users actually get; CI and the release both run it.
 - `.github/workflows/{ci,release}.yml` — verify on every push; publish from one button, which is the only thing that publishes.
 - **`web-app` tag** — the browser client and its Express backend, which this replaced. `git show web-app` for the ancestors of `ears.ts`, `voice.ts` and `claude.ts`, and for the one piece never ported: audio calibration.
+- `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts` — what the Agent SDK actually does, at the version installed. The one to read when an option or a frame is in question; the `docs/claude_code_*_sdk.md` snapshots are older than the package and shorter than the types.
 - `docs/gemini-live-api-swift-reference.md` — raw WebSocket protocol for Gemini Live; the SDK in `server/` hides it, useful when a field name drifts.
 - `docs/ios-codebase-guide.md` — describes the parked `ios/wired-mvp` chat client (under its old name, Reduck), not the current app.
 - `todos/` — web-app-era problems, most now solved in `server/` or `app/`: muting, stop words, voice approval, tool streaming, STT corrections. Worth reading for the dead ends they record, especially `correction_gemini_live.md` on the audio calibration loop.
