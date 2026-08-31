@@ -8,9 +8,10 @@ behind the drawer on the left.
 The bar under the composer splits at the microphone: what Claude *is* on the left (which
 model answers, and what it may do), the session itself on the right (Direct/Review until
 it starts, then mute and stop). The left two stay usable while live, because the relay
-puts both on the session already running. `Choices.swift` holds all three and the one
+puts both on the session already running. `Choices.swift` holds the choices and the one
 sheet that shows them; the model list comes down the socket rather than being written
-into the app.
+into the app, and effort — how hard the model thinks — is a row inside the model sheet,
+its levels read off each model's own row in that list.
 
 You can also type. A typed instruction is a socket of its own that lives for one turn,
 and the relay opens ears only for a connection that sends audio, so typing costs no

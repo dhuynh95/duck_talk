@@ -17,10 +17,11 @@ import Observation
 /// `chatId` is what makes them one conversation: the relay names the chat at every
 /// `turn_end`, and every connection opened after that resumes it.
 ///
-/// What Claude *is* — which model answers, and what it is allowed to do — travels the
-/// same way but as a frame rather than in the URL, because the relay puts both on the
-/// session it already has running. So it is sent whenever a socket opens and whenever
-/// the choice changes, and it holds from the next turn either way.
+/// What Claude *is* — which model answers, what it is allowed to do, and how hard it
+/// thinks — travels the same way but as a frame rather than in the URL, because the
+/// relay puts all three on the session it already has running. So it is sent whenever a
+/// socket opens and whenever the choice changes, and it holds from the next turn either
+/// way.
 ///
 /// What you are saying and what has been said are kept apart, because the screen
 /// keeps them apart: `utterance` is the sentence being transcribed right now, and
@@ -106,12 +107,13 @@ final class VoiceSession {
     private var task: URLSessionWebSocketTask?
     /// The socket of a typed turn, which lives exactly as long as that turn.
     private var askTask: URLSessionWebSocketTask?
-    /// What Claude should be: which model answers, and what it is allowed to do. Held
-    /// here rather than taken as an argument at connect, because the relay puts both on
-    /// the session already running — so they are sent on every socket this class opens,
-    /// and again the moment either changes.
+    /// What Claude should be: which model answers, what it is allowed to do, and how
+    /// hard it thinks. Held here rather than taken as arguments at connect, because the
+    /// relay puts all three on the session already running — so they are sent on every
+    /// socket this class opens, and again the moment any of them changes.
     private var model = ""
     private var permission = ""
+    private var effort = ""
     private var pipe: AudioPipe?
     private var turnEnded = false
     /// This turn has already put lines in the history — what a retract has to undo,
@@ -240,9 +242,10 @@ final class VoiceSession {
     /// Say what Claude should be. Reaches whatever socket is open now, and every socket
     /// opened after it — so a choice made while typing still holds when you start
     /// talking, and one made mid-conversation holds from the next turn.
-    func use(model: String, permission: String) {
+    func use(model: String, permission: String, effort: String) {
         self.model = model
         self.permission = permission
+        self.effort = effort
         sendClaude(to: task)
         sendClaude(to: askTask)
     }
@@ -254,7 +257,8 @@ final class VoiceSession {
         // Empty only before `use` has been called at all, which is a socket opening
         // during launch — the relay's own defaults hold until the next one is sent.
         guard let task, !model.isEmpty, !permission.isEmpty else { return }
-        let msg = ["type": "claude", "model": model, "permission": permission]
+        var msg = ["type": "claude", "model": model, "permission": permission]
+        if !effort.isEmpty { msg["effort"] = effort }
         guard let data = try? JSONSerialization.data(withJSONObject: msg),
               let json = String(data: data, encoding: .utf8) else { return }
         task.send(.string(json)) { _ in }

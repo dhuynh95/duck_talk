@@ -20,14 +20,17 @@ import SwiftUI
 /// behind the gear.
 struct ContentView: View {
     @AppStorage("serverURL") private var serverURL = "ws://localhost:8765"
-    /// The three choices, each stored as the string the relay speaks in and read back as
-    /// its own type below. The phone decides all three and the relay obeys — but `mode`
-    /// travels in the URL and the other two as a message, because the relay can put
+    /// The choices, each stored as the string the relay speaks in and read back as
+    /// its own type below. The phone decides them and the relay obeys — but `mode`
+    /// travels in the URL and the rest as a message, because the relay can put
     /// those on the session it already has running and so they can change
     /// mid-conversation.
     @AppStorage("mode") private var modeName = Mode.direct.rawValue
     @AppStorage("model") private var model = "default"
     @AppStorage("permission") private var permissionName = Permission.plan.rawValue
+    /// How hard the model thinks. "default" means the choice stays Claude Code's own;
+    /// the levels a model actually takes come down the socket with the model list.
+    @AppStorage("effort") private var effort = "default"
     @AppStorage("autocorrect") private var autocorrect = false
     /// A quiet chime loop while Claude works and nothing is being said — see
     /// `AudioPipe.waiting`. Client-only, so unlike the three above it never travels.
@@ -113,13 +116,11 @@ struct ContentView: View {
                 case .permission: ChoiceSheet(title: "What Claude may do", choices: Permission.choices, picked: $permissionName)
                 // The only list the phone does not know by heart: which models this Mac
                 // can offer is the relay's to say, so the rows come down the socket.
-                case .model:
-                    ChoiceSheet(
-                        title: "Model",
-                        choices: relay.models.map { Choice(id: $0.value, title: $0.displayName, detail: $0.description) },
-                        picked: $model,
-                        loading: relay.models.isEmpty,
-                    )
+                // Effort rides along as a row under the models rather than a fourth
+                // capsule in the bar: it is a property of the model choice — which
+                // levels exist is the model's own ModelInfo — and the sheet is where
+                // that choice is being made.
+                case .model: ModelSheet(models: relay.models, model: $model, effort: $effort)
                 }
             }
             .presentationBackground(Brand.background)
@@ -153,7 +154,7 @@ struct ContentView: View {
         // The one place that tells the session what Claude should be — on arrival, and
         // again on every change. The session carries it to the socket it has open and to
         // every socket it opens after, so talking and typing never disagree about it.
-        .task(id: "\(model)|\(permissionName)") { session.use(model: model, permission: permissionName) }
+        .task(id: "\(model)|\(permissionName)|\(effort)") { session.use(model: model, permission: permissionName, effort: effort) }
         // Client-only, so it reaches the session directly rather than riding a frame —
         // and mid-wait, so switching it off silences a loop already playing.
         .task(id: filler) { session.fillerEnabled = filler }
@@ -481,7 +482,13 @@ struct ContentView: View {
     /// which names an alias and not a model. The stored value until the list arrives,
     /// because the capsule has to say something before the first data connection answers.
     private var modelLabel: String {
-        relay.models.first { $0.value == model }?.shortName ?? (model.isEmpty ? "Model" : model)
+        selectedModel?.shortName ?? (model.isEmpty ? "Model" : model)
+    }
+
+    /// The model the capsule names, as the relay described it — where the effort
+    /// levels it takes, and whether it takes any, are read from.
+    private var selectedModel: ClaudeModel? {
+        relay.models.first { $0.value == model }
     }
 
     /// A word you can press. Every choice in the bar wears this one face, so which of
@@ -676,6 +683,37 @@ struct ContentView: View {
 extension ContentView {
     /// The room the floating header needs. Fixed, because it is one row of circles.
     static let headerHeight: CGFloat = 46
+}
+
+/// The model sheet, with the effort list behind its trailing row.
+///
+/// One presentation wearing two faces, swapped from the inside: re-presenting a second
+/// sheet from within the first races its own dismissal and lands on no sheet at all,
+/// while swapping the content of the one that is up dismisses nothing. Picking an
+/// effort closes the sheet, exactly as picking a model does.
+private struct ModelSheet: View {
+    let models: [ClaudeModel]
+    @Binding var model: String
+    @Binding var effort: String
+    @State private var choosingEffort = false
+
+    private var selected: ClaudeModel? { models.first { $0.value == model } }
+
+    var body: some View {
+        if choosingEffort {
+            ChoiceSheet(title: "Effort", choices: selected?.effortChoices ?? [], picked: $effort)
+        } else {
+            ChoiceSheet(
+                title: "Model",
+                choices: models.map { Choice(id: $0.value, title: $0.displayName, detail: $0.description) },
+                picked: $model,
+                loading: models.isEmpty,
+                trailing: selected?.supportsEffort == true
+                    ? (title: "Effort", value: ClaudeModel.effortTitle(effort), open: { choosingEffort = true })
+                    : nil,
+            )
+        }
+    }
 }
 
 /// How tall the composer is, from the composer itself.

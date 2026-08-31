@@ -9,7 +9,7 @@
  *   ↑ text    {"type":"text","text"}                  an instruction, typed
  *             {"type":"mark","name","at"}             a moment only the phone can see
  *             {"type":"approve","text"?}              run a held instruction, as edited
- *             {"type":"claude","model"?,"permission"?} which model answers, and what it may do
+ *             {"type":"claude","model"?,"permission"?,"effort"?} which model answers, what it may do, how hard it thinks
  *   ↓ binary  raw PCM Int16 LE, 24 kHz, mono          (Claude's voice)
  *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"interrupted"|"turn_end"|"error","text"?}
  *             a `user` event also carries `partial`: true replaces the line, false ends it
@@ -30,10 +30,10 @@
  * instead of starting one — any session Claude Code has in this project, including
  * the ones you started in a terminal.
  *
- * Which model answers and what it is allowed to do are deliberately not in the URL: the
- * CLI takes both mid-session, so they arrive as a `claude` frame whenever the phone
- * opens a socket or changes its mind, and hold from the next turn. Nothing reconnects
- * to think differently.
+ * Which model answers, what it is allowed to do and how hard it thinks are deliberately
+ * not in the URL: the CLI takes all three mid-session, so they arrive as a `claude`
+ * frame whenever the phone opens a socket or changes its mind, and hold from the next
+ * turn. Nothing reconnects to think differently.
  *
  * `?data=1` is a connection that reads and edits what the relay can see and nothing
  * else — the corrections, the prompts it says to each model, the models themselves, and

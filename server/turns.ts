@@ -32,6 +32,9 @@ export interface Turn {
    *  means whichever one the CLI defaults to. */
   model: string | null;
   permission: string;
+  /** How hard the model thought while answering — one of the levels its ModelInfo
+   *  offers. Null means the CLI's own default, same convention as `model`. */
+  effort: string | null;
   /** The Claude session this turn belongs to — what groups turns into a chat, and
    *  what `?resume=` takes to carry one on. Null before Claude's first result. */
   session_id: string | null;

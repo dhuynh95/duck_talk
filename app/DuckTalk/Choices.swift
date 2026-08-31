@@ -31,6 +31,11 @@ struct ClaudeModel: Codable, Hashable {
     /// The model this row actually runs — "default" resolves to "claude-opus-5[1m]".
     /// Absent on a row that is already a real model id.
     var resolvedModel: String?
+    /// Whether this model takes an effort level, and which — Claude Code's own
+    /// description of the model, like everything else in this row. Absent from a relay
+    /// that predates effort, which reads the same as a model that takes none.
+    var supportsEffort: Bool?
+    var supportedEffortLevels: [String]?
 
     /// The one word the capsule shows.
     ///
@@ -43,6 +48,36 @@ struct ClaudeModel: Codable, Hashable {
         let family = id.replacingOccurrences(of: "claude-", with: "").split(separator: "-").first ?? ""
         guard let initial = family.first else { return displayName }
         return initial.uppercased() + family.dropFirst()
+    }
+
+    /// How hard this model can think, as rows to pick from. Built from the levels the
+    /// relay says this model takes — never a list written into the app — with "Default"
+    /// first, because not choosing is itself the ordinary choice.
+    var effortChoices: [Choice] {
+        let rows = (supportedEffortLevels ?? []).map {
+            Choice(id: $0, title: Self.effortTitle($0), detail: Self.effortDetail($0))
+        }
+        return [Choice(id: "default", title: "Default", detail: "Let Claude Code decide")] + rows
+    }
+
+    /// The word a level wears on screen. The wire says "xhigh"; nobody should read that.
+    static func effortTitle(_ raw: String) -> String {
+        switch raw {
+        case "default": return "Default"
+        case "xhigh": return "Extra"
+        default: return raw.prefix(1).uppercased() + raw.dropFirst()
+        }
+    }
+
+    private static func effortDetail(_ raw: String) -> String {
+        switch raw {
+        case "low": return "Fastest, minimal thinking"
+        case "medium": return "Moderate thinking"
+        case "high": return "Deep reasoning \u{2014} what Default usually means"
+        case "xhigh": return "Deeper than High, slower"
+        case "max": return "The most thorough, and the slowest"
+        default: return ""
+        }
     }
 }
 
@@ -154,6 +189,10 @@ struct ChoiceSheet: View {
     @Binding var picked: String
     /// The list is still coming down the socket. Only the model list ever is.
     var loading = false
+    /// A row under the list that is not one of the choices but belongs with them — the
+    /// model sheet's "Effort" row, showing what is set and opening the sheet to change
+    /// it. On its own surface, so it cannot be mistaken for a fifth model.
+    var trailing: (title: String, value: String, open: () -> Void)?
 
     @Environment(\.dismiss) private var dismiss
 
@@ -203,6 +242,29 @@ struct ChoiceSheet: View {
                 .padding(.horizontal, 16)
                 .background(Brand.surface, in: RoundedRectangle(cornerRadius: 16))
                 .padding(.horizontal, 16)
+
+                if let trailing {
+                    Button(action: trailing.open) {
+                        HStack(spacing: 8) {
+                            Text(trailing.title).font(.body).foregroundStyle(Brand.text)
+                            Spacer()
+                            Text(trailing.value).font(.body).foregroundStyle(Brand.secondaryText)
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(Brand.tertiaryText)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 16)
+                        .background(Brand.surface, in: RoundedRectangle(cornerRadius: 16))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .accessibilityIdentifier("choice-trailing")
+                    .accessibilityLabel(trailing.title)
+                    .accessibilityValue(trailing.value)
+                }
             }
 
             Spacer(minLength: 0)
@@ -245,7 +307,7 @@ struct ChoiceSheet: View {
     /// Tall enough for the rows it has, and never taller than the screen. Dragging up is
     /// still allowed, for a model whose description runs long.
     private var height: CGFloat {
-        min(CGFloat(max(choices.count, 1)) * 74 + 104, 620)
+        min(CGFloat(max(choices.count, 1)) * 74 + 104 + (trailing == nil ? 0 : 66), 620)
     }
 }
 

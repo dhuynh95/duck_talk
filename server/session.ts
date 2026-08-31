@@ -100,6 +100,7 @@ export class Session {
   // never reaches a result — interrupted, or stopped — still records what it ran as.
   private model = DEFAULTS.model;
   private permission: string = DEFAULTS.permission;
+  private effort: string | null = DEFAULTS.effort;
 
   private readonly phone: Phone;
   private readonly ai: GoogleGenAI;
@@ -195,7 +196,7 @@ export class Session {
         this.phone.event({ type: 'tool', text: block.name ?? undefined, parent: block.parent });
       },
       onError: (text) => this.phone.event({ type: 'error', text }),
-      onResult: ({ sessionId, costUsd, error, model, permission }) => {
+      onResult: ({ sessionId, costUsd, error, model, permission, effort }) => {
         // Stable for the life of the session, resumed or fresh — so once the first
         // result lands, every turn on this connection knows which chat it is in.
         this.sessionId = sessionId;
@@ -204,6 +205,7 @@ export class Session {
         // was requested — a `set` that was refused leaves this on the old value.
         this.turn.model = this.model = model;
         this.turn.permission = this.permission = permission;
+        this.turn.effort = this.effort = effort;
         if (error) { this.phone.event({ type: 'error', text: error }); this.cancel(`claude error: ${error}`); return; }
         // With a voice, the turn ends when the audio has been heard; without one,
         // Claude finishing is the whole of it.
@@ -328,7 +330,7 @@ export class Session {
    * it — say "no", or hang up — so the only refusal that needs a message is the
    * spoken one, and that arrives as a transcript like any other.
    */
-  frame(msg: { type?: string; name?: string; at?: number; text?: string; model?: string; permission?: string }): void {
+  frame(msg: { type?: string; name?: string; at?: number; text?: string; model?: string; permission?: string; effort?: string }): void {
     if (msg.type === 'mark' && msg.name === 'reply_in' && typeof msg.at === 'number') this.turn.reply_in_at = msg.at;
     // Only while a turn is in flight: the mark trails its final by a beat, so after a
     // final that itself ended things — a bare "no", a "stop" said to a quiet room —
@@ -337,21 +339,24 @@ export class Session {
     else if (msg.type === 'mark' && msg.name === 'speech_end' && typeof msg.at === 'number') { if (this.state !== 'user') this.turn.speech_end_at = msg.at; }
     else if (msg.type === 'text' && typeof msg.text === 'string') this.typed(msg.text);
     else if (msg.type === 'approve') this.decide(true, msg.text);
-    else if (msg.type === 'claude') this.be(msg.model, msg.permission);
+    else if (msg.type === 'claude') this.be(msg.model, msg.permission, msg.effort);
   }
 
   /**
-   * What Claude is: which model answers, and what it may do.
+   * What Claude is: which model answers, what it may do, and how hard it thinks.
    *
    * Sent when a socket opens and again whenever it is changed on the phone, so there is
-   * one path rather than an initial setting and a separate way to change it. Both hold
+   * one path rather than an initial setting and a separate way to change it. All hold
    * from the next turn — see `Claude.set` — so this never has to wait for anything, and
    * repeating a value already set does nothing.
    */
-  private be(model?: string, permission?: string): void {
+  private be(model?: string, permission?: string, effort?: string): void {
     if (model) this.turn.model = this.model = model;
     if (permission) this.turn.permission = this.permission = permission;
-    this.claude.set(model, permission as PermissionMode | undefined);
+    // 'default' means the CLI's own choice, which the record writes as null — the same
+    // convention the model follows.
+    if (effort) this.turn.effort = this.effort = effort === 'default' ? null : effort;
+    this.claude.set(model, permission as PermissionMode | undefined, effort);
   }
 
   async close(): Promise<void> {
@@ -556,7 +561,7 @@ export class Session {
 
   private blank(): Turn {
     return {
-      turn: ++this.turns, mode: this.mode, model: this.model, permission: this.permission,
+      turn: ++this.turns, mode: this.mode, model: this.model, permission: this.permission, effort: this.effort,
       session_id: null, heard: '', clip: null, proposed: '', corrected: null, instruction: '',
       approval: null, said: '', speech_end_at: null, partial_first_at: null, partial_last_at: null, heard_at: null, corrected_at: null,
       ran_at: null, claude_start_at: null, claude_opens: null, claude_first_at: null, tts_sent_at: null,

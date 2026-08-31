@@ -31,8 +31,9 @@ in — or `ANTHROPIC_API_KEY`, which bills the API instead. The relay's third st
 line says which account will actually pay, asked of the CLI rather than guessed from
 the environment. `--port` and `--cwd` are the flags; `PORT` and `PROJECT_CWD` are the
 same two as environment variables. `STT_MODEL`, `VOICE_MODEL`, `CLAUDE_MODEL`,
-`CLAUDE_PERMISSION_MODE` (default `plan`) override the rest — the last two say only
-where a session starts, since the phone moves either one on the session already running. `TURN_QUIET_MS`
+`CLAUDE_PERMISSION_MODE` (default `plan`) and `CLAUDE_EFFORT` override the rest — the
+last three say only where a session starts, since the phone moves any of them on the
+session already running. `TURN_QUIET_MS`
 (default 300000, `0` disables) is how long Claude may produce nothing at all before the
 turn is interrupted and the session recovers. Silence, not length: every word and every
 tool block re-arms it, so a fan-out of subagents can work for as long as it needs to,
@@ -50,7 +51,7 @@ published package, which cannot assume that of a stranger's Node.
 | phone → server | text | `{"type":"text","text"}` — an instruction, typed |
 | phone → server | text | `{"type":"mark","name","at"}` — a moment only the phone can see |
 | phone → server | text | `{"type":"approve","text"?}` — run a held instruction, as edited |
-| phone → server | text | `{"type":"claude","model"?,"permission"?}` — which model answers, and what it may do |
+| phone → server | text | `{"type":"claude","model"?,"permission"?,"effort"?}` — which model answers, what it may do, how hard it thinks |
 | server → phone | binary | raw PCM Int16 LE, 24 kHz, mono (Claude's voice) |
 | server → phone | text | `{"type":"user"\|"model"\|"tool"\|"approval"\|"interrupted"\|"turn_end"\|"error","text"?}` |
 
@@ -85,12 +86,14 @@ at once, `review` holds it until it is approved — by an `approve` frame, or by
 on a past conversation instead of starting one — any session Claude Code has in this
 project, including the ones you started in a terminal.
 
-Which model answers and what it may do are deliberately not URL parameters. The CLI
-takes both mid-session, so they arrive as a `claude` frame — sent when a socket opens
-and again whenever they change — and hold from the next turn. `plan` reads and thinks,
-`acceptEdits` writes and deletes files, `bypassPermissions` runs anything. The other
-three the SDK offers wait for someone to answer "can I run this?", which nothing here
-can, so every action under them is denied.
+Which model answers, what it may do and how hard it thinks are deliberately not URL
+parameters. The CLI takes all three mid-session, so they arrive as a `claude` frame —
+sent when a socket opens and again whenever they change — and hold from the next turn.
+`plan` reads and thinks, `acceptEdits` writes and deletes files, `bypassPermissions`
+runs anything. The other three modes the SDK offers wait for someone to answer "can I
+run this?", which nothing here can, so every action under them is denied. `effort` is
+one of the levels the model's own row in the `models` list offers, or `default` to
+hand the choice back to the CLI.
 
 `?data=1` opens a connection that edits what the relay owns and nothing else — no
 voice session, no Gemini, no Claude:

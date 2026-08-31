@@ -6,12 +6,13 @@
  * current turn without tearing the session down, which is what barge-in needs. That
  * warmth is why the `claude` prompt is read once here and not per turn.
  *
- * Two things about the session are not fixed that way: which model answers and what it
- * is allowed to do. Both are control requests the CLI takes mid-session, so `set` puts
- * them on the running session and they hold from the next turn — which is why they
- * reach here as a message from the phone rather than as something chosen when the
- * socket opened. `capabilities()` is the other side of that: the models this Mac can
- * actually offer, asked of the CLI instead of written down here.
+ * Three things about the session are not fixed that way: which model answers, what it
+ * is allowed to do, and how hard it thinks. All are requests the CLI takes mid-session,
+ * so `set` puts them on the running session and they hold from the next turn — which is
+ * why they reach here as a message from the phone rather than as something chosen when
+ * the socket opened. `capabilities()` is the other side of that: the models this Mac can
+ * actually offer — each with the effort levels it takes — asked of the CLI instead of
+ * written down here.
  *
  * Lifted from the web app's claude-client.ts (the `web-app` tag), but stateful: that
  * backend spawned a fresh subprocess per turn via `resume`, where this keeps one
@@ -26,18 +27,21 @@
 
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { query, type AccountInfo, type ModelInfo, type Options, type PermissionMode, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type AccountInfo, type EffortLevel, type ModelInfo, type Options, type PermissionMode, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { PROJECT as CWD } from './paths.ts';
 import { read } from './prompts.ts';
 
 const MODEL = process.env['CLAUDE_MODEL'];
 const PERMISSION_MODE = (process.env['CLAUDE_PERMISSION_MODE'] ?? 'plan') as PermissionMode;
+const EFFORT = (process.env['CLAUDE_EFFORT'] as EffortLevel | undefined) ?? null;
 
 /** What a session is until something asks it to be otherwise — the environment's
- *  answer, so the phone and the turn log start from the same place the CLI does. */
-export const DEFAULTS: { model: string | null; permission: PermissionMode } = {
+ *  answer, so the phone and the turn log start from the same place the CLI does.
+ *  A null effort, like a null model, means whatever the CLI itself defaults to. */
+export const DEFAULTS: { model: string | null; permission: PermissionMode; effort: EffortLevel | null } = {
   model: MODEL ?? null,
   permission: PERMISSION_MODE,
+  effort: EFFORT,
 };
 
 export type { PermissionMode };
@@ -64,13 +68,15 @@ export interface Claude {
   /** Start a turn. Only one runs at a time; call after the previous ended or was interrupted. */
   send(instruction: string): void;
   /**
-   * What Claude is: which model answers, and what it is allowed to do.
+   * What Claude is: which model answers, what it is allowed to do, and how hard it
+   * thinks. `effort` is one of the levels the model's own ModelInfo lists, or
+   * `'default'` to hand the choice back to the CLI.
    *
-   * Both take effect on the turn after this one, on the session already running — so
-   * neither is decided when the socket opens, and changing your mind costs no restart.
+   * All three take effect on the turn after this one, on the session already running —
+   * so none is decided when the socket opens, and changing your mind costs no restart.
    * Repeating a value it is already set to does nothing.
    */
-  set(model?: string, permission?: PermissionMode): void;
+  set(model?: string, permission?: PermissionMode, effort?: string): void;
   /** Stop the current turn. The session stays warm for the next `send`. */
   interrupt(): void;
   close(): void;
@@ -94,8 +100,9 @@ export interface ClaudeCallbacks {
   onBlock(block: Block): void;
   /** `costUsd` is what this turn cost, not what the session has — see the subtraction
    *  in the result branch below. Null when the result carried no usable total.
-   *  `model` and `permission` are what the session was set to when it answered. */
-  onResult(r: { sessionId: string; costUsd: number | null; error: string | null; model: string | null; permission: PermissionMode }): void;
+   *  `model`, `permission` and `effort` are what the session was set to when it
+   *  answered — a null effort is the CLI's own default. */
+  onResult(r: { sessionId: string; costUsd: number | null; error: string | null; model: string | null; permission: PermissionMode; effort: EffortLevel | null }): void;
   /** Something went wrong between turns, so no `result` will carry it — a refused
    *  `set`, and nothing else so far. Worth saying on the screen, not just in the log. */
   onError?(text: string): void;
@@ -208,6 +215,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
   // every model the session has ever used, not the one that just spoke.
   let model = MODEL;
   let permission = PERMISSION_MODE;
+  let effort = EFFORT;
   // What `set` is still applying, if anything. An instruction waits for it below.
   let settled: Promise<unknown> = Promise.resolve();
   async function* input(): AsyncGenerator<SDKUserMessage> {
@@ -332,7 +340,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
           wanted = null; // answered; nothing is owed until the next send
           let error: string | null = null;
           if (msg.is_error) error = 'errors' in msg && Array.isArray(msg.errors) ? msg.errors.join('; ') : 'result' in msg ? String(msg.result) : 'unknown error';
-          cb.onResult({ sessionId: msg.session_id, costUsd: cost, error, model: model ?? null, permission });
+          cb.onResult({ sessionId: msg.session_id, costUsd: cost, error, model: model ?? null, permission, effort });
         }
       }
     } catch (e) {
@@ -348,7 +356,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
       wake?.();
       wake = null;
     },
-    set(wantModel, wantPermission) {
+    set(wantModel, wantPermission, wantEffort) {
       // Recorded before the answer arrives, so repeating a value costs nothing — and
       // put back if the request is refused, so the next frame tries again instead of
       // believing a change that never happened.
@@ -366,6 +374,20 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
         applying.push(q.setPermissionMode(wantPermission)
           .then(() => log(`permission ${wantPermission}`))
           .catch((e) => { permission = was; fail(`could not switch to ${wantPermission}: ${e}`); }));
+      }
+      // 'default' clears the level and hands the choice back to the CLI, the same
+      // sentinel the model uses. applyFlagSettings rather than a dedicated control
+      // request, because effort is a settings key: the flag layer sits on the running
+      // session and holds from the next turn, exactly like the two calls above.
+      if (wantEffort !== undefined) {
+        const want = wantEffort === 'default' ? null : (wantEffort as EffortLevel);
+        if (want !== effort) {
+          const was = effort;
+          effort = want;
+          applying.push(q.applyFlagSettings({ effortLevel: want })
+            .then(() => log(`effort ${wantEffort}`))
+            .catch((e) => { effort = was; fail(`could not switch effort to ${wantEffort}: ${e}`); }));
+        }
       }
       // Held so the next instruction waits for it — see `input`. Every rejection is
       // already caught above, so this settles whatever happens and can never strand a
@@ -401,7 +423,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     // fan-out reads as a fan-out rather than as one agent doing everything.
     onBlock: (b) => process.stderr.write(`\n${b.parent ? '  ↳ ' : ''}[${b.name ?? 'result'}]\n`),
     onResult: (r) => {
-      console.log(`\n\nfirst token ${first}ms, $${r.costUsd}, ${r.model ?? 'default model'}, session ${r.sessionId}${r.error ? `, error: ${r.error}` : ''}`);
+      console.log(`\n\nfirst token ${first}ms, $${r.costUsd}, ${r.model ?? 'default model'} at ${r.effort ?? 'default'} effort, session ${r.sessionId}${r.error ? `, error: ${r.error}` : ''}`);
       claude.close();
       process.exit(0);
     },
