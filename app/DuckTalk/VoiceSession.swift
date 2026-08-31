@@ -401,20 +401,22 @@ final class VoiceSession {
     private func markFirstReply() {
         guard !replied else { return }
         replied = true
-        waiting(false) // the reply's own sound takes over from the chimes
         mark("reply_in", at: Date().timeIntervalSince1970 * 1000)
     }
 
-    /// The wait for a reply is on, or over — the filler chimes are its sound.
+    /// A turn is in flight, or over — and while one is, the filler chimes cover
+    /// whatever the speaker has nothing to play for: the head of the turn, and the
+    /// lulls where the voice runs out because Claude went back to its tools.
     ///
     /// On means proof, never prediction: it is asserted only by a silent sign of
-    /// work arriving — a tool, or words with no voice yet — because a turn that
-    /// provably runs is guaranteed a closer (the first reply byte, `turn_end`, or
-    /// `interrupted`), where an utterance the relay shrugs off (a bare "stop" said
-    /// to an idle session) would start a loop nothing ever stops. `replied` keeps
-    /// mid-reply tool runs from chiming under the voice, and a typed turn has no
-    /// pipe, so audio keeps buying audio without being told to.
-    private func waiting(_ on: Bool) { pipe?.waiting = on && fillerEnabled && !replied }
+    /// work arriving — a tool, or reply text — because a turn that provably runs is
+    /// guaranteed a closer (`turn_end`, or `interrupted`), where an utterance the
+    /// relay shrugs off (a bare "stop" said to an idle session) would start a loop
+    /// nothing ever stops. Whether the wait *sounds* right now is not decided here:
+    /// AudioPipe owns the speaker, so only it knows dry from playing — see
+    /// `AudioPipe.waiting`. A typed turn has no pipe, so audio keeps buying audio
+    /// without being told to.
+    private func waiting(_ on: Bool) { pipe?.waiting = on && fillerEnabled }
 
     /// The gear menu's "Filler sound", handed in like the model choice so this class
     /// reads no settings. Off takes effect mid-wait: a loop already playing stops.

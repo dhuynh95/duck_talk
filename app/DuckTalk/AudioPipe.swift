@@ -17,26 +17,57 @@ final class AudioPipe {
     /// ears stay open and hear a quiet room; the speaker is untouched.
     var muted = false
 
-    /// The speaker's sound for a reply that is owed but has not arrived: a quiet
-    /// chime loop, faded in and out so neither edge is a click. One bit, the same
-    /// shape as `muted` — VoiceSession says when the wait is on, this says what a
-    /// wait sounds like. The same echo cancellation that keeps the reply's voice
-    /// out of the microphone keeps the chimes out of it.
+    /// A reply is owed: a turn is provably running and not yet over. VoiceSession
+    /// flips this for the life of the turn — one bit, the same shape as `muted` —
+    /// and this file decides what the wait *sounds* like: the chime loop, but only
+    /// while the speaker is dry. The speaker is the one thing that truly knows
+    /// whether anything is playing, so the chimes cover the head of the turn, fall
+    /// silent the instant reply audio exists, and come back when the voice runs out
+    /// mid-turn because Claude went back to its tools — the long quiet the filler
+    /// exists for. The same echo cancellation that keeps the reply's voice out of
+    /// the microphone keeps the chimes out of it.
     var waiting = false {
-        didSet {
-            guard waiting != oldValue, let chime else { return }
-            if waiting {
-                chime.currentTime = 0
-                chime.volume = 0
-                chime.play()
-                chime.setVolume(Self.chimeVolume, fadeDuration: 0.4)
-            } else {
-                chime.setVolume(0, fadeDuration: 0.15)
-                // Paused only once the fade has played out — and not at all if a
-                // new wait began during it, which the volume ramp then serves.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                    if self?.waiting != true { chime.pause() }
-                }
+        didSet { settle() }
+    }
+
+    /// Reply buffers scheduled and not yet heard — the speaker is dry at zero.
+    /// `.dataPlayedBack` in `play` is the native event for "this buffer has been
+    /// played to the speaker", so dryness is the hardware's own bookkeeping, never
+    /// an inference from timing.
+    private var queued = 0
+    /// When the speaker last ran dry. A lull has to last before it chimes: the
+    /// serial voice can starve for tens of milliseconds between sentences, and a
+    /// chime in a seam that short would sound inside the reply's own breath.
+    private var dryAt = Date.distantPast
+    private static let lull: TimeInterval = 2
+
+    /// Chime if the wait is on and the speaker has been dry long enough; otherwise
+    /// stop. Re-checked, not scheduled once: every path that changes the answer —
+    /// the bit flipping, a buffer arriving, a buffer playing out — lands here, and a
+    /// timer that fires into a changed world just falls through the same guards.
+    private func settle() {
+        guard waiting, queued == 0 else { return chime(false) }
+        let dry = Date().timeIntervalSince(dryAt)
+        if dry >= Self.lull { return chime(true) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.lull - dry) { [weak self] in self?.settle() }
+    }
+
+    /// The loop itself, faded at both edges so neither is a click.
+    private var chiming = false
+    private func chime(_ on: Bool) {
+        guard on != chiming, let chimes else { return }
+        chiming = on
+        if on {
+            chimes.currentTime = 0
+            chimes.volume = 0
+            chimes.play()
+            chimes.setVolume(Self.chimeVolume, fadeDuration: 0.4)
+        } else {
+            chimes.setVolume(0, fadeDuration: 0.15)
+            // Paused only once the fade has played out — and not at all if a new
+            // lull began during it, which the volume ramp then serves.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                if self?.chiming != true { chimes.pause() }
             }
         }
     }
@@ -47,7 +78,7 @@ final class AudioPipe {
 
     /// The loop, from the bundle — written by scripts/filler-sound.py, never by hand.
     /// Nil only if the resource is missing, and then a wait is simply silent.
-    private lazy var chime: AVAudioPlayer? = {
+    private lazy var chimes: AVAudioPlayer? = {
         guard let url = Bundle.main.url(forResource: "chimes", withExtension: "wav"),
               let player = try? AVAudioPlayer(contentsOf: url) else { return nil }
         player.numberOfLoops = -1
@@ -130,13 +161,27 @@ final class AudioPipe {
             let samples = raw.bindMemory(to: Int16.self)
             for i in 0..<Int(frames) { out[i] = Float(samples[i]) / 32768 }
         }
-        player.scheduleBuffer(buffer)
+        queued += 1
+        settle() // the reply owns the speaker from the moment audio exists to play
+        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.queued = max(0, self.queued - 1) // clamped: flush also zeroes it
+                if self.queued == 0 { self.dryAt = Date() }
+                self.settle()
+            }
+        }
         if !player.isPlaying { player.play() }
     }
 
     func flush() {
         player.stop()
         player.play()
+        // Stopping fires the completion of every unplayed buffer, but the flush is
+        // the truth right now: the speaker is dry because the turn was taken away.
+        queued = 0
+        dryAt = Date()
+        settle()
     }
 
     /// How loud this buffer was, 0…1 — the same thing the input level meter in macOS
