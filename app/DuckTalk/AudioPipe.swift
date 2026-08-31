@@ -91,17 +91,28 @@ final class AudioPipe {
     private let micFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)!
     private let speakerFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24_000, channels: 1, interleaved: false)!
 
-    func start() async throws {
+    /// The microphone, or a thrown refusal — asked before the call is placed, so the
+    /// call UI never appears for a mic that was denied.
+    static func requestMic() async throws {
         guard await AVAudioApplication.requestRecordPermission() else {
             throw AudioError.microphoneDenied
         }
+    }
 
-        // .voiceChat turns on the system's echo cancellation; without it the mic
-        // hears the model's own voice and Gemini interrupts itself.
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
-        try session.setActive(true)
+    /// What the session is, without taking it. Called by `Call` inside the CallKit
+    /// handshake — activation is the system's under CallKit, and the stub's in the
+    /// simulator — so this file never says `setActive` in either direction.
+    ///
+    /// .voiceChat turns on the system's echo cancellation; without it the mic
+    /// hears the model's own voice and Gemini interrupts itself.
+    static func configure() throws {
+        try AVAudioSession.sharedInstance()
+            .setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+    }
 
+    /// Engine only. The audio session is already configured and active — `Call.begin`
+    /// returned, which is what says so.
+    func start() throws {
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: speakerFormat)
 
@@ -247,12 +258,26 @@ final class AudioPipe {
             + "  \(Int(session.sampleRate)) Hz, \(choices) input\(choices == 1 ? "" : "s")"
     }
 
+    /// The system took the audio session for a real call. The engine pauses; the
+    /// socket above stays up, and the relay reads the quiet as the phone not sending.
+    func suspend() {
+        engine.pause()
+    }
+
+    /// The session came back. The engine picks up where it paused, and the next
+    /// microphone buffer reopens the ears on the relay by itself.
+    func resume() {
+        try? engine.start()
+        if !player.isPlaying { player.play() }
+    }
+
     func stop() {
         waiting = false // fades the chimes out with the session, if they were playing
         engine.inputNode.removeTap(onBus: 0)
         player.stop()
         engine.stop()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        // No setActive(false): deactivation belongs to whoever activated — the
+        // system on a device (as the call ends), the Call stub in the simulator.
     }
 
     enum AudioError: LocalizedError {

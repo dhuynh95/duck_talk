@@ -20,8 +20,6 @@ targets:
     sources:
       - path: DuckTalk
       - path: Shared
-    dependencies:
-      - target: DuckTalkWidget
     # XcodeGen writes Resources/Info.plist from these on every `./dt gen`,
     # filling in CFBundleIdentifier and friends. Don't hand-edit that file.
     info:
@@ -44,11 +42,14 @@ targets:
         # the socket together; with it, an app already recording keeps recording.
         # iOS will not let a suspended app *start* recording, so a session still has
         # to be started in the foreground — the listen button — and only then locked.
+        # `voip` is what lets a session be a call: callservicesd checks this exact
+        # flag before it will register a CXProvider (seen denying in the device log,
+        # "hasVoIPBackgroundMode: 0"), and without the provider every CallKit
+        # transaction fails as unentitled. The call is how AirPods stem presses
+        # reach the app — see Call.swift.
         UIBackgroundModes:
           - audio
-        # Lets the app put the running session on the lock screen. The card itself
-        # lives in the DuckTalkWidget target; this key is what permits asking for one.
-        NSSupportsLiveActivities: true
+          - voip
         # The simulator reaches the relay at ws://localhost:8765, which is cleartext
         # and never leaves the Mac; App Transport Security allows that much only if
         # asked. A real phone gets no such exemption and uses wss:// — see `dt phone`,
@@ -69,26 +70,3 @@ targets:
         # only way to reach them. Brand.accent is the same orange for what we draw.
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
 
-  # The lock-screen card, which has to be its own process: a Live Activity is drawn
-  # by WidgetKit, not by the app. What it shares with the app is Shared/ — the shape
-  # of what gets drawn, the palette, and the mark.
-  DuckTalkWidget:
-    type: app-extension
-    platform: iOS
-    sources:
-      - path: DuckTalkWidget
-      - path: Shared
-    info:
-      path: DuckTalkWidget/Info.plist
-      properties:
-        CFBundleDisplayName: Duck Talk
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.widgetkit-extension
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.conception.ducktalk.widget
-        TARGETED_DEVICE_FAMILY: "1"
-        SKIP_INSTALL: YES
-        # The same orange, for the same reason as the app: the system tints the card's
-        # own controls, and this is what it tints them with.
-        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor

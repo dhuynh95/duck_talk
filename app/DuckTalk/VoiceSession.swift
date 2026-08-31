@@ -1,4 +1,3 @@
-import ActivityKit
 import Foundation
 import Observation
 
@@ -115,6 +114,9 @@ final class VoiceSession {
     private var permission = ""
     private var effort = ""
     private var pipe: AudioPipe?
+    /// The session as the system sees it. What buys the AirPods stem: a single press
+    /// arrives through `call.onMute`, a double press through `call.onEnded`.
+    private let call = Call()
     private var turnEnded = false
     /// This turn has already put lines in the history — what a retract has to undo,
     /// and all it may undo. See the `interrupted` case.
@@ -122,7 +124,20 @@ final class VoiceSession {
     private var replied = false  // a reply byte has been marked for this turn
     private var wantLive = false // the user's intent, which outlives any one socket
     private var url: URL?
-    private var activity: Activity<LiveSession>?
+
+    init() {
+        // The three things the system can say about the call, wired once. Every mute
+        // — stem, call UI, or our own button coming back around — lands in the first.
+        call.onMute = { [weak self] on in
+            Task { @MainActor in self?.applyMute(on) }
+        }
+        call.onEnded = { [weak self] in
+            Task { @MainActor in self?.stop() }
+        }
+        call.onAudioSession = { [weak self] active in
+            Task { @MainActor in active ? self?.pipe?.resume() : self?.pipe?.suspend() }
+        }
+    }
 
     func connect(url: URL) {
         guard status == .idle, !asking else { return }
@@ -130,7 +145,6 @@ final class VoiceSession {
         wantLive = true
         error = nil
         utterance = nil
-        startActivity() // while the app is in the foreground, which is the only time allowed
         Task { await run() }
     }
 
@@ -168,7 +182,11 @@ final class VoiceSession {
         }
         status = .connecting
         do {
-            try await pipe.start()
+            // In this order: the mic, or no call UI; the call, which is the system
+            // configuring and activating the audio session; then the engine on it.
+            try await AudioPipe.requestMic()
+            try await call.begin()
+            try pipe.start()
         } catch {
             self.error = error.localizedDescription
             stop()
@@ -188,7 +206,7 @@ final class VoiceSession {
             sendClaude(to: task) // before anything is said on it
             status = .live
             error = nil
-            publish()
+            call.reportConnected() // the lock screen stops saying "connecting"; once only
 
             let openedAt = ContinuousClock.now
             do {
@@ -208,24 +226,34 @@ final class VoiceSession {
             // A connection that lasted is not a failing one; only a fast drop backs off.
             if openedAt.duration(to: .now) > .seconds(5) { backoff = .milliseconds(250) }
             status = .reconnecting
-            publish() // a session that lost the relay must not still read "Listening"
             try? await Task.sleep(for: backoff)
             backoff = min(backoff * 2, .seconds(5))
         }
         stop()
     }
 
-    /// Stop being heard, or start again. Reached from the composer and, through
-    /// `MuteListening`, from the lock screen — one bit either way.
+    /// Stop being heard, or start again. A request, not a flip: it goes up through
+    /// the call and comes back through `applyMute` — the same road an AirPods stem
+    /// press takes — so the call UI, the stem and this button can never disagree.
     func toggleMute() {
-        guard let pipe else { return }
-        muted.toggle()
-        pipe.muted = muted
-        publish() // the card draws the button in its new state, and says "Muted"
+        guard pipe != nil else { return }
+        call.setMuted(!muted)
+    }
+
+    /// The mute bit actually flipping, wherever the request came from: the stem, the
+    /// call UI, or `toggleMute` above.
+    private func applyMute(_ on: Bool) {
+        guard let pipe, muted != on else { return }
+        muted = on
+        pipe.muted = on
+        // Stamped into the relay's log on the one clock, so a stem press is visible
+        // from the Mac — the same channel the device test used.
+        mark(on ? "stem_mute" : "stem_unmute", at: Date().timeIntervalSince1970 * 1000)
     }
 
     func stop() {
         wantLive = false
+        call.end() // hang up however we got here; a no-op if the call already ended
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         pipe?.stop()
@@ -236,7 +264,6 @@ final class VoiceSession {
         utterance = nil
         heardClip = nil
         status = .idle
-        endActivity()
     }
 
     /// Say what Claude should be. Reaches whatever socket is open now, and every socket
@@ -309,43 +336,6 @@ final class VoiceSession {
         } catch {
             if asking, !Task.isCancelled { self.error = error.localizedDescription }
         }
-    }
-
-    // MARK: - Lock screen
-    //
-    // The same session, shown where you can see it once the screen is off. It is a
-    // second view of the state above, never a second copy: `publish` reads what is
-    // already published and sends that. Called at turn boundaries only — the system
-    // budgets how often a Live Activity may change, and there is nothing legible to
-    // show between one word and the next anyway.
-
-    private func startActivity() {
-        guard ActivityAuthorizationInfo().areActivitiesEnabled, activity == nil else { return }
-        activity = try? Activity.request(
-            attributes: LiveSession(startedAt: .now),
-            content: ActivityContent(state: snapshot(), staleDate: nil),
-        )
-    }
-
-    private func publish() {
-        guard let activity else { return }
-        let state = snapshot()
-        Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
-    }
-
-    private func endActivity() {
-        guard let activity else { return }
-        self.activity = nil
-        Task { await activity.end(nil, dismissalPolicy: .immediate) }
-    }
-
-    private func snapshot() -> LiveSession.ContentState {
-        LiveSession.ContentState(
-            status: status.rawValue,
-            muted: muted,
-            heard: pending ?? utterance ?? "",
-            said: lines.last(where: { $0.kind == .model })?.text ?? "",
-        )
     }
 
     /// Run the held instruction, as edited on screen. An edit teaches the server what
@@ -475,7 +465,6 @@ final class VoiceSession {
                 // utterance that just finished was the decision being spoken, and the
                 // instruction it decides about already marked its own end.
                 if pending == nil, let at = pipe?.lastLoudAt, at > 0 { mark("speech_end", at: at) }
-                publish()
             }
         case "model":
             commit() // Claude answering is proof the instruction went
@@ -491,7 +480,6 @@ final class VoiceSession {
             // question, so only one of the two is ever on screen.
             utterance = nil
             pending = event.text
-            publish()
         case "tool":
             // A name starts a tool, no name ends it. Consecutive tools join one line,
             // so a burst of them reads as a single step and speech breaks the group —
@@ -525,7 +513,6 @@ final class VoiceSession {
             if let session = event.session { chatId = session }
             asking = false // a typed turn is its socket, and this closes it
             endToolRun()
-            publish() // the reply is complete; this is the readable moment
         case "interrupted":
             // Sent whenever a held instruction is decided — by voice or by the buttons —
             // so the card goes away however the decision was made. What is being said
