@@ -13,6 +13,7 @@
  *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"interrupted"|"turn_end"|"error","text"?}
  *             a `user` event also carries `partial`: true replaces the line, false ends it
  *             a `turn_end` carries `session`: which chat this connection is in
+ *             `approval` and `turn_end` carry `clip`: the utterance's audio, by id
  *
  * Audio is what buys audio: the ears open on the first microphone buffer and the voice
  * speaks only where there are ears, so a connection that is only typed to reaches
@@ -30,9 +31,11 @@
  * else — the corrections, the prompts it says to each model, and the chats — so the
  * phone can show those screens with no voice session running. Every message is answered
  * with all of it, so the phone never has to ask twice or guess what the files now
- * say. The exception is one chat's messages, which are only sent when asked for by
- * `chat_open`, because they are the one part that is not small. `fork` branches a
- * chat at one message and answers with the new one, which is `chat_open` on it.
+ * say. The exceptions are the two parts that are not small: one chat's messages, sent
+ * when asked for by `chat_open`, and one utterance's audio, sent as a binary frame
+ * when asked for by `clip_get` — the only binary a data connection ever carries, so
+ * there is nothing to tell apart. `fork` branches a chat at one message and answers
+ * with the new one, which is `chat_open` on it.
  *
  * Every finished turn is appended to `.duck-talk/turns.jsonl`. The phone, this relay and the
  * test harness all run on one Mac, so those timestamps share one clock and any
@@ -44,6 +47,7 @@ import { GoogleGenAI } from '@google/genai';
 import { Session, type Mode, type Phone } from './session.ts';
 import { billingMode } from './claude.ts';
 import { chat, chats, fork } from './chats.ts';
+import { read as readClip } from './clips.ts';
 import { load, remove, save } from './corrections.ts';
 import { all as prompts, isName, write as writePrompt } from './prompts.ts';
 import { reach } from './reach.ts';
@@ -88,7 +92,8 @@ wss.on('connection', (ws, req) => {
         const at = typeof f['at'] === 'number' ? f['at'] : Date.now();
         const heard = String(f['heard'] ?? '').trim();
         const meant = String(f['meant'] ?? '').trim();
-        if (heard && meant) { save({ at, heard, proposed: String(f['proposed'] ?? heard), meant }); log(`correction saved: ${heard} → ${meant}`); }
+        const clip = typeof f['clip'] === 'number' ? f['clip'] : undefined;
+        if (heard && meant) { save({ at, heard, proposed: String(f['proposed'] ?? heard), meant, ...(clip ? { clip } : {}) }); log(`correction saved: ${heard} → ${meant}`); }
       } else if (f?.['type'] === 'correction_delete' && typeof f['at'] === 'number') {
         remove(f['at']);
         log(`correction deleted`);
@@ -97,6 +102,18 @@ wss.on('connection', (ws, req) => {
         log(`prompt saved: ${f['name']}`);
       }
       if (ws.readyState !== ws.OPEN) return;
+      // The one thing here that is not text. Sent as the file, so the phone hands it
+      // to a player rather than decoding anything — and asked for by id, so the list
+      // stays small whether there are two clips or fifty.
+      //
+      // Before the state frames below, which is the whole answer to "was there one":
+      // the first frame back is the audio, or it is text and there was none. Nothing
+      // to count, nothing to wait out.
+      if (f?.['type'] === 'clip_get' && typeof f['id'] === 'number') {
+        const wav = readClip(f['id']);
+        if (wav) ws.send(wav);
+        else log(`clip ${f['id']} is gone`);
+      }
       ws.send(JSON.stringify({ type: 'corrections', items: load() }));
       // Every prompt with its text, and with when it takes effect — so the phone can
       // grey out one it cannot usefully change without knowing what any of them are.

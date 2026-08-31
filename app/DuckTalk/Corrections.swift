@@ -1,10 +1,15 @@
 import SwiftUI
 
 /// One thing the ears keep getting wrong, and what was actually said.
+///
+/// `clip` is the utterance it was taught from, which the relay keeps as a file and
+/// `ClipChip` plays. One made by hand has none, and so does one whose audio has aged
+/// out — the pair is the correction, the sound is the evidence for it.
 struct Correction: Identifiable, Codable, Hashable {
     let at: Double
     var heard: String
     var meant: String
+    var clip: Double?
 
     var id: Double { at }
 }
@@ -58,7 +63,9 @@ final class RelayStore {
     }
 
     func save(_ correction: Correction) {
-        send(["type": "correction_save", "at": correction.at, "heard": correction.heard, "meant": correction.meant])
+        var msg: [String: Any] = ["type": "correction_save", "at": correction.at, "heard": correction.heard, "meant": correction.meant]
+        if let clip = correction.clip { msg["clip"] = clip }
+        send(msg)
     }
 
     func delete(_ correction: Correction) {
@@ -113,6 +120,10 @@ final class RelayStore {
 /// edit, `+` to add one by hand.
 struct CorrectionsView: View {
     let serverURL: String
+    /// A correction to open straight into, rather than the list — how "fix" on a
+    /// misheard line in the transcript arrives here. The same screen either way: a
+    /// correction is a correction, wherever you noticed you needed one.
+    var seed: Correction?
     @State private var store = RelayStore()
     @State private var path: [Correction] = []
     @Environment(\.dismiss) private var dismiss
@@ -138,13 +149,17 @@ struct CorrectionsView: View {
             .navigationDestination(for: Correction.self) { correction in
                 CorrectionDetail(
                     correction: correction,
+                    serverURL: serverURL,
                     isNew: !store.items.contains { $0.id == correction.id },
                     onSave: { edited in store.save(edited); path.removeLast() },
                     onDelete: { store.delete(correction); path.removeLast() },
                 )
             }
         }
-        .onAppear { store.connect(to: serverURL) }
+        .onAppear {
+            store.connect(to: serverURL)
+            if let seed, path.isEmpty { path.append(seed) }
+        }
         .onDisappear { store.disconnect() }
     }
 
@@ -164,9 +179,18 @@ struct CorrectionsView: View {
 
     private func row(_ correction: Correction) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(correction.heard)
-                .font(.callout)
-                .foregroundStyle(Brand.secondaryText)
+            HStack(spacing: 6) {
+                // Only a mark that there is something to hear — playing it is what
+                // opening the row is for.
+                if correction.clip != nil {
+                    Image(systemName: "waveform")
+                        .font(.caption2)
+                        .foregroundStyle(Brand.tertiaryText)
+                }
+                Text(correction.heard)
+                    .font(.callout)
+                    .foregroundStyle(Brand.secondaryText)
+            }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: "arrow.turn.down.right").font(.caption2).foregroundStyle(Brand.tertiaryText)
                 Text(correction.meant).font(.callout)
@@ -196,7 +220,7 @@ struct CorrectionsView: View {
     /// A correction that does not exist yet. `at` is its id from the moment it is made,
     /// so saving it once creates it and saving it again edits the same row.
     private func blank() -> Correction {
-        Correction(at: Date().timeIntervalSince1970 * 1000, heard: "", meant: "")
+        Correction(at: Date().timeIntervalSince1970 * 1000, heard: "", meant: "", clip: nil)
     }
 }
 
@@ -204,6 +228,7 @@ struct CorrectionsView: View {
 /// one can be deleted. Going back leaves it as it was — Save is what writes.
 private struct CorrectionDetail: View {
     @State var correction: Correction
+    let serverURL: String
     let isNew: Bool
     let onSave: (Correction) -> Void
     let onDelete: () -> Void
@@ -215,6 +240,15 @@ private struct CorrectionDetail: View {
 
     var body: some View {
         Form {
+            // Above the pair, because it is what the pair is about: play it and the
+            // two fields stop being a memory test.
+            if let clip = correction.clip {
+                Section {
+                    ClipChip(clip: clip, serverURL: serverURL)
+                } footer: {
+                    Text("What the ears were given, exactly as they got it.")
+                }
+            }
                 // Never "corrected" — iOS autocorrect rewrites the very words you are
                 // here to fix.
             Section("What it heard") {

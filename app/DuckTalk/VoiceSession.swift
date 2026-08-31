@@ -46,9 +46,13 @@ final class VoiceSession {
         /// cut. Only lines loaded from a past chat have one — a line just spoken is
         /// not in the transcript on disk yet, so there is nothing to branch from.
         var uuid: String?
+        /// The audio this line was heard from, when it was spoken rather than typed.
+        /// It is what makes a mishearing fixable after the fact — see `fix` on the
+        /// home screen.
+        var clip: Double?
 
-        init(kind: Kind, text: String = "", tools: [String] = [], running: Bool = false, uuid: String? = nil) {
-            self.kind = kind; self.text = text; self.tools = tools; self.running = running; self.uuid = uuid
+        init(kind: Kind, text: String = "", tools: [String] = [], running: Bool = false, uuid: String? = nil, clip: Double? = nil) {
+            self.kind = kind; self.text = text; self.tools = tools; self.running = running; self.uuid = uuid; self.clip = clip
         }
 
         /// One message of a stored chat, as a line of the transcript.
@@ -82,6 +86,8 @@ final class VoiceSession {
     private(set) var utterance: String?
     /// The instruction the server is holding for a yes/no/edit, in review mode.
     private(set) var pending: String?
+    /// The audio behind it, so you can hear what was said before deciding on it.
+    private(set) var pendingClip: Double?
     /// A typed instruction is running: sent, and the reply has not finished arriving.
     private(set) var asking = false
     /// The conversation this screen is in, named by the relay and carried into every
@@ -174,6 +180,7 @@ final class VoiceSession {
             task.cancel(with: .normalClosure, reason: nil)
             self.task = nil
             pending = nil
+            pendingClip = nil
             utterance = nil
             replied = false
             guard wantLive else { break }
@@ -206,6 +213,7 @@ final class VoiceSession {
         level = 0
         muted = false // a new session starts hearing
         pending = nil
+        pendingClip = nil
         utterance = nil
         status = .idle
         endActivity()
@@ -303,6 +311,7 @@ final class VoiceSession {
     func approve(_ text: String) {
         guard pending != nil else { return }
         pending = nil
+        pendingClip = nil
         commit(text) // accepting is what sends it, so that is when it becomes history
         send(["type": "approve", "text": text])
     }
@@ -355,6 +364,8 @@ final class VoiceSession {
     private struct Event: Decodable {
         let type: String
         let text: String?
+        /// On `approval` and `turn_end`: the utterance this turn was heard from.
+        let clip: Double?
         /// Live transcription revises its guess as you speak, so each update carries the
         /// whole utterance and replaces the last one instead of extending it.
         let partial: Bool?
@@ -386,6 +397,7 @@ final class VoiceSession {
             // question, so only one of the two is ever on screen.
             utterance = nil
             pending = event.text
+            pendingClip = event.clip
             publish()
         case "tool":
             // A name starts a tool, no name ends it. Consecutive tools join one line,
@@ -409,6 +421,11 @@ final class VoiceSession {
             turnEnded = true
             replied = false
             pending = nil
+            pendingClip = nil
+            // The turn is over, so the relay has named the audio it was heard from.
+            // It goes on the line that was heard — the last thing you said — which is
+            // where "fix" will look for it.
+            if let clip = event.clip, let i = lines.lastIndex(where: { $0.kind == .user }) { lines[i].clip = clip }
             // Now the conversation has a name, so the next connection can carry it on.
             if let session = event.session { chatId = session }
             asking = false // a typed turn is its socket, and this closes it
@@ -419,6 +436,7 @@ final class VoiceSession {
             // so the card goes away however the decision was made. What is being said
             // now is the barge-in, and it stays in the box.
             pending = nil
+            pendingClip = nil
             endToolRun()
             pipe?.flush()
         case "error":

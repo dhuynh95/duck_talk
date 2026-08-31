@@ -88,7 +88,7 @@ struct ContentView: View {
             Group {
                 switch which {
                 case .prompts: PromptsView(serverURL: serverURL)
-                case .corrections: CorrectionsView(serverURL: serverURL)
+                case .corrections(let seed): CorrectionsView(serverURL: serverURL, seed: seed)
                 case .server: ServerView(serverURL: $serverURL)
                 case .mode: ModeSheet(mode: $mode)
                 }
@@ -142,7 +142,20 @@ struct ContentView: View {
     /// session that is listening.
     private var elsewhere: Bool { drawer || sheet != nil || live }
 
-    private enum Sheet: String, Identifiable { case prompts, corrections, server, mode; var id: String { rawValue } }
+    /// Which sheet is up. `corrections` carries the one to open on, so a line you want
+    /// fixed and the Corrections menu item land on the same screen — one editor, two
+    /// doors, and nothing to keep in step.
+    private enum Sheet: Identifiable {
+        case prompts, corrections(Correction?), server, mode
+        var id: String {
+            switch self {
+            case .prompts: return "prompts"
+            case .corrections: return "corrections"
+            case .server: return "server"
+            case .mode: return "mode"
+            }
+        }
+    }
 
     /// Branch the conversation at this answer and land on the result.
     ///
@@ -203,6 +216,19 @@ struct ContentView: View {
             // One field, three writers: you, the ears, and the relay when it holds an
             // instruction back for you to look at. What is being said is not history
             // until it has been sent, so this is where it lives until then.
+            // Held for review, and the audio it was heard from: play it and the text
+            // below stops being a guess. Inline rather than a sheet — mid-hold you are
+            // deciding whether to *run* something, and nothing modal belongs between
+            // you and that.
+            if held != nil, let clip = session.pendingClip {
+                // The spacer, not a frame on the chip: a capsule you can miss by
+                // aiming at it is worse than a small one, and a full-width button
+                // around a small glyph is exactly that.
+                HStack {
+                    ClipChip(clip: clip, serverURL: serverURL)
+                    Spacer()
+                }
+            }
             ZStack(alignment: .topLeading) {
                 TextField("Message", text: text, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -356,7 +382,7 @@ struct ContentView: View {
     private var settings: some View {
         Menu {
             Button { sheet = .prompts } label: { Label("Prompts", systemImage: "text.bubble") }
-            Button { sheet = .corrections } label: { Label("Corrections", systemImage: "text.badge.checkmark") }
+            Button { sheet = .corrections(nil) } label: { Label("Corrections", systemImage: "text.badge.checkmark") }
             Toggle(isOn: $autocorrect) { Label("Auto-correct", systemImage: "wand.and.stars") }
                 .disabled(live)
             Divider()
@@ -441,9 +467,27 @@ struct ContentView: View {
                 .foregroundStyle(Brand.tertiaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .user:
-            Text(line.text)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .foregroundStyle(Brand.secondaryText)
+            VStack(alignment: .trailing, spacing: 6) {
+                Text(line.text)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .foregroundStyle(Brand.secondaryText)
+                // Direct mode runs what it heard before you can stop it, so the fix is
+                // after the fact: this is the only door to a correction that does not
+                // need Review to have been on.
+                if let clip = line.clip {
+                    Button {
+                        sheet = .corrections(Correction(at: Date().timeIntervalSince1970 * 1000,
+                                                        heard: line.text, meant: line.text, clip: clip))
+                    } label: {
+                        Label("fix", systemImage: "pencil")
+                            .font(.caption)
+                            .foregroundStyle(Brand.tertiaryText)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("fix")
+                    .accessibilityLabel("Fix what was heard")
+                }
+            }
         case .model:
             VStack(alignment: .leading, spacing: 6) {
                 Text(line.text)

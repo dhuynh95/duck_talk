@@ -10,6 +10,11 @@
  * `proposed` is the wording that was on screen when they corrected it — the same as
  * `heard` for one added by hand. `at` is when it was learned, and doubles as its id.
  *
+ * `clip` points at the audio it was taught from — see clips.ts, which keeps the file
+ * and decides when one may go. A correction made by hand has none, and one whose clip
+ * has been pruned reads the same way: the pair is the correction, the sound is
+ * evidence for it.
+ *
  * The file is the only copy. The phone edits it over a socket rather than keeping a
  * list of its own, so there is nothing to drift.
  */
@@ -22,6 +27,8 @@ export interface Correction {
   heard: string;
   proposed: string;
   meant: string;
+  /** The utterance this was taught from, as clips.ts files it: `Turn.heard_at`. */
+  clip?: number;
 }
 
 /** One file per project, under the folder the relay was started in — see paths.ts. */

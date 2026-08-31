@@ -28,6 +28,12 @@ const FIXTURES: Record<string, string> = {
     'Read this as someone thinking aloud. Pause naturally where the ellipsis is, about one second, and keep the same sentence going afterwards.\n\nwhat is the latest commit ... in this repository',
   hesitate_long:
     'Read this as someone thinking aloud, unsure of themselves. Take a long pause at the ellipsis, two full seconds of silence, then continue the same sentence.\n\nso what is the latest commit ... umm ... in this repository',
+  // The one recording that reliably defeats the ears: it comes back as "Just come in
+  // and" / "hazelnut tree" — a mishearing and a split utterance at once, which is
+  // exactly the pair the corrections and the clips exist for. Accents do not do this;
+  // measured, a thick French accent transcribed perfectly. Poor articulation does.
+  mumble:
+    'Read this in a low mumble, trailing off at the end of words, poor articulation, as if half asleep.\n\nwhat is the latest commit in this repository',
 };
 
 const ai = new GoogleGenAI({ apiKey: process.env['GEMINI_API_KEY'] });

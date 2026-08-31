@@ -21,12 +21,20 @@
  * the last one is therefore the rest of that sentence, and is stitched back onto it
  * here: a final is always a whole utterance, and the caller never sees the seam.
  *
+ * A final also carries the audio it was made from. Every byte went out through this
+ * file, and 16 kHz Int16 is 32 bytes per millisecond, so where an utterance began and
+ * ended in the stream is a subtraction rather than a measurement — the same trick the
+ * turn timings use. The model has no word timestamps to offer here (asked for, and
+ * `gemini-3.5-transcribe-live` returns none), so the two transcript signals are the
+ * clock: the first partial says speech had started, the final says it has stopped.
+ *
  *   node ears.ts --file turn.wav      feed a 16 kHz mono recording, print events
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, Modality, type LiveServerMessage, type Session } from '@google/genai';
+import { wav } from './clips.ts';
 import type { Correction } from './corrections.ts';
 
 export interface Ears {
@@ -36,7 +44,9 @@ export interface Ears {
 
 export interface EarsCallbacks {
   onPartial(text: string): void;
-  onFinal(text: string): void;
+  /** The finished utterance, and the audio it was made from — null only if the stream
+   *  buffer no longer reaches back that far, which takes a minute of speech. */
+  onFinal(text: string, clip: Buffer | null): void;
   log?(m: string): void;
 }
 
@@ -55,6 +65,34 @@ const SILENCE_MS = 200;
 // anything heard — it is the rest of the same thought. A longer pause is not joined;
 // the tail reaches Claude on its own, and Claude's own transcript holds the head.
 const JOIN_MS = 2000;
+
+// 16 kHz Int16 mono. The one conversion between "how many bytes have gone out" and
+// "where are we in the stream", and the reason a clip is a subtraction.
+const BYTES_PER_MS = 32;
+
+// How far back the stream can be sliced. An utterance is seconds; this is a minute,
+// which covers the longest thing anyone says in one breath plus every pause a JOIN
+// stitches across, and costs about 2 MB.
+const BUFFER_MS = 60_000;
+
+// Where an utterance starts is not something the partials can tell us. The first one
+// arrives when the model has committed a hypothesis, and how long that takes is the
+// thing the clip exists to investigate: measured, 220ms after speech on fixtures/
+// fluent.wav and 1780ms on fixtures/mumble.wav — the same sentence, badly articulated.
+// A pad tuned to one clips the first word off the other.
+//
+// So the start is the boundary that needs no tuning: the end of the utterance before
+// it. Between two finals, everything is this utterance by definition — including the
+// quiet before it, which costs a moment of room tone and never costs a word.
+//
+// Capped, because a clip is an utterance and not the wait before one: someone silent
+// for a minute and then speaking gets a few seconds of lead-in, not the minute.
+const MAX_LEAD_MS = 4_000;
+
+// The tail needs no such care: the final arrives about 650ms after speech stops, 200ms
+// of which is SILENCE_MS, so trimming a little brings the end back towards the last
+// word without reaching it.
+const TAIL_TRIM_MS = 350;
 
 /**
  * `b` continuing `a`: the sentence rejoined. Each fragment was punctuated as a
@@ -87,13 +125,52 @@ export async function openEars(
   let closed = false;
   // Connecting takes ~1s; audio that arrives meanwhile is held, not dropped.
   const backlog: Buffer[] = [];
-  const forward = (pcm: Buffer) =>
+  // Kept as it is sent, so the buffer holds exactly what Gemini was given — the whole
+  // claim a clip makes.
+  const forward = (pcm: Buffer) => {
+    keep(pcm);
     session?.sendRealtimeInput({ audio: { data: pcm.toString('base64'), mimeType: 'audio/pcm;rate=16000' } });
+  };
 
   // The utterance before this one, kept in case this one turns out to continue it.
   let prefix = '';
   let finalAt = 0;
   let speaking = false;
+
+  // --- The stream as something that can be sliced --------------------------
+  //
+  // Everything sent is kept for a minute, with `baseMs` saying where the kept part
+  // starts — the position itself grows for the life of the session, so an offset into
+  // the buffer is never an offset into the stream.
+  const kept: Buffer[] = [];
+  let keptBytes = 0;
+  let baseMs = 0;
+  let sentMs = 0;
+  // Where the utterance now being spoken began, and where the one before it ended.
+  // `utteranceAt` is set on the first partial and held for the whole utterance, JOIN
+  // included — the same decision, and the same reason, as `prefix` above: a long tail
+  // must not lose its head.
+  let utteranceAt: number | null = null;
+  let lastEndMs = 0;
+
+  function keep(pcm: Buffer): void {
+    kept.push(pcm);
+    keptBytes += pcm.length;
+    sentMs += pcm.length / BYTES_PER_MS;
+    while (keptBytes - kept[0]!.length > BUFFER_MS * BYTES_PER_MS) {
+      const dropped = kept.shift()!;
+      keptBytes -= dropped.length;
+      baseMs += dropped.length / BYTES_PER_MS;
+    }
+  }
+
+  /** The audio between two stream positions, or null if it has already scrolled off. */
+  function slice(fromMs: number, toMs: number): Buffer | null {
+    if (fromMs < baseMs || toMs <= fromMs) return null;
+    const from = Math.round((fromMs - baseMs) * BYTES_PER_MS);
+    const to = Math.round((toMs - baseMs) * BYTES_PER_MS);
+    return Buffer.concat(kept).subarray(from, to);
+  }
 
   const vocab = vocabulary(corrections);
   const t0 = performance.now();
@@ -116,7 +193,12 @@ export async function openEars(
           // and held for its whole length, so a long tail cannot lose its head midway.
           if (!speaking) {
             speaking = true;
-            if (Date.now() - finalAt > JOIN_MS) prefix = '';
+            const joining = Date.now() - finalAt <= JOIN_MS;
+            if (!joining) prefix = '';
+            // A joined utterance keeps the head fragment's start, so the clip grows
+            // with the text: each final's audio is the audio of the whole sentence so
+            // far, exactly as `prefix` makes each final the whole sentence so far.
+            if (!joining || utteranceAt === null) utteranceAt = Math.max(lastEndMs, sentMs - MAX_LEAD_MS, baseMs);
           }
           cb.onPartial(join(prefix, partial));
         }
@@ -129,7 +211,14 @@ export async function openEars(
           finalAt = Date.now();
           prefix = text;
           speaking = false;
-          cb.onFinal(text);
+          // The audio this transcript was made from, before the start is forgotten:
+          // a join keeps `utteranceAt`, so the next fragment extends the same clip.
+          const startMs = utteranceAt;
+          const endMs = sentMs - TAIL_TRIM_MS;
+          const clip = startMs === null ? null : slice(startMs, endMs);
+          if (clip) log(`clip ${Math.round(startMs!)}–${Math.round(endMs)}ms of stream`);
+          lastEndMs = endMs;
+          cb.onFinal(text, clip);
         }
       },
       onerror: (e) => log(`ears error: ${e.message}`),
@@ -175,8 +264,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const at = process.argv.indexOf('--file');
   const file = at >= 0 ? process.argv[at + 1] : undefined;
   if (!file) { console.error('usage: node ears.ts --file turn.wav   (16 kHz Int16 mono)'); process.exit(1); }
-  const wav = readFileSync(file);
-  const pcm = wav.subarray(wav.indexOf('data') + 8);
+  const recording = readFileSync(file);
+  const pcm = recording.subarray(recording.indexOf('data') + 8);
   const ai = new GoogleGenAI({ apiKey: process.env['GEMINI_API_KEY'] });
   const model = process.env['LISTEN_MODEL'] ?? 'gemini-3.5-transcribe-live';
   // Times are from the end of the recording, so "how long after I stopped talking"
@@ -189,7 +278,16 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     onPartial: (t) => console.log(`${ms()}  partial: ${t}`),
     // Every final, not just the first: a sentence split by a pause is two, and
     // exiting on the first is exactly how that would go unseen.
-    onFinal: (t) => { finals++; console.log(`${ms()}  FINAL:   ${t}`); },
+    // Every final, and the audio behind it: the clip is the thing worth checking by
+    // ear, so it is written where `afplay` can reach it rather than described.
+    onFinal: (t, clip) => {
+      finals++;
+      console.log(`${ms()}  FINAL:   ${t}`);
+      if (!clip) return void console.log('         (no clip)');
+      const out = `/tmp/ears-clip${finals}.wav`;
+      writeFileSync(out, wav(clip));
+      console.log(`         clip ${(clip.length / 32 / 1000).toFixed(1)}s → ${out}`);
+    },
   });
   const FRAME = 640;
   for (let i = 0; i < pcm.length; i += FRAME) {

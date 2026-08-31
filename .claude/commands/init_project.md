@@ -39,6 +39,7 @@ The request path end to end (phone → relay → Gemini + Claude), the prompts t
 - @server/server.ts
 - @server/session.ts
 - @server/ears.ts
+- @server/clips.ts
 - @server/voice.ts
 - @server/claude.ts
 - @server/correct.ts
@@ -54,6 +55,7 @@ The request path end to end (phone → relay → Gemini + Claude), the prompts t
 - @app/DuckTalk/AudioPipe.swift
 - @app/DuckTalk/ContentView.swift
 - @app/DuckTalk/Chats.swift
+- @app/DuckTalk/Clip.swift
 - @app/sim.py
 - @app/dt
 - @app/project.yml
