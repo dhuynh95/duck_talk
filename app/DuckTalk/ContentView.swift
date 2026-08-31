@@ -220,7 +220,7 @@ struct ContentView: View {
             // below stops being a guess. Inline rather than a sheet — mid-hold you are
             // deciding whether to *run* something, and nothing modal belongs between
             // you and that.
-            if held != nil, let clip = session.pendingClip {
+            if held != nil, let clip = session.heardClip {
                 // The spacer, not a frame on the chip: a capsule you can miss by
                 // aiming at it is worse than a small one, and a full-width button
                 // around a small glyph is exactly that.

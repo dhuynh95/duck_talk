@@ -45,8 +45,8 @@ export interface Turn {
    *  what `?resume=` takes to carry one on. Null before Claude's first result. */
   session_id: string | null;
   heard: string;
-  /** The audio `heard` was made from, filed by clips.ts under this same number
-   *  (which is `heard_at`). Null for a typed turn — nothing was heard. */
+  /** The audio `heard` was made from, as clips.ts files it. Null for a typed turn —
+   *  nothing was heard. */
   clip: number | null;
   proposed: string; // what Gemini's tool call asked for, before any correction
   corrected: string | null; // what auto-correct made of it, when on
@@ -75,8 +75,8 @@ export interface Phone {
   pcm(buf: Buffer): void;
   /** `partial` marks text that replaces the current line instead of extending it.
    *  `session` rides on `turn_end`: the chat this connection turned out to be in, so
-   *  the next one the phone opens can carry it on. `clip` rides on `approval` and on
-   *  `turn_end`: the utterance this turn was made from, playable and correctable. */
+   *  the next one the phone opens can carry it on. `clip` rides on the final `user`
+   *  event: the audio that utterance was heard from, playable and correctable. */
   event(msg: { type: string; text?: string; partial?: boolean; session?: string | null; clip?: number | null }): void;
 }
 
@@ -252,10 +252,15 @@ export class Session {
       },
       onFinal: (text, clip) => {
         this.turn.heard = text;
+        // The clip belongs to the utterance, not to the turn, so it is kept and
+        // announced here — with the text it is the sound of, and before anything is
+        // decided about it. A turn is stopped as often as it is finished, and a phone
+        // that only learned of the clip at the end would miss every one of those.
+        if (clip) this.keep(clip);
         // Still the whole utterance, so still a replacement — `false` only says no
         // further revision is coming.
-        this.phone.event({ type: 'user', text, partial: false });
-        this.heard(text, clip); // the transcript is the instruction
+        this.phone.event({ type: 'user', text, partial: false, clip: this.turn.clip });
+        this.heard(text); // the transcript is the instruction
       },
     }, this.corrections);
   }
@@ -320,7 +325,7 @@ export class Session {
   // --- Routing ---------------------------------------------------------------
 
   /** A finished utterance: a decision if it is only a control word, else an instruction. */
-  private heard(said: string, clip: Buffer | null): void {
+  private heard(said: string): void {
     // "yes" / "no" / "stop" answer a question rather than asking one. A bare word
     // only — "yes, delete it" is a real instruction and falls through.
     const control = bareKeyword(said);
@@ -332,16 +337,25 @@ export class Session {
     this.turn.proposed = said;
     this.turn.instruction = said;
     this.turn.heard_at = Date.now();
-    // The moment the utterance finished is both the turn's stamp and the clip's name,
-    // so the audio is filed by the number that already identifies it. Only for speech
-    // that became an instruction: a keyword or a mid-hold noise has nothing to correct.
-    if (clip) {
-      this.turn.clip = this.turn.heard_at;
-      try { saveClip(clip, this.turn.clip); } catch (e) { this.log(`clip failed: ${e}`); this.turn.clip = null; }
-    }
     this.log(`heard: ${said}`);
     // Runs on its own because auto-correct may need a moment first.
     void this.propose(said).catch((e) => this.log(`propose failed: ${e}`));
+  }
+
+  /**
+   * File this utterance's audio, named by the moment it finished. Every utterance gets
+   * one, keywords included: "yes" can be misheard as readily as anything else, and one
+   * rule with no exception in it is cheaper than the exception. clips.ts bounds what
+   * that costs.
+   */
+  private keep(clip: Buffer): void {
+    const id = Date.now();
+    try {
+      saveClip(clip, id);
+      this.turn.clip = id;
+    } catch (e) {
+      this.log(`clip failed: ${e}`);
+    }
   }
 
   /**
@@ -398,8 +412,7 @@ export class Session {
         this.voice.say(instruction);
         this.voice.finish();
       }
-      // With the clip, so the phone can play what was heard before deciding on it.
-      this.phone.event({ type: 'approval', text: instruction, clip: turn.clip });
+      this.phone.event({ type: 'approval', text: instruction });
       return;
     }
     this.run(instruction);
@@ -467,7 +480,7 @@ export class Session {
     this.disarm();
     // Which chat this turned out to be, so the next connection the phone opens can
     // carry it on — including one it opens to type into.
-    this.phone.event({ type: 'turn_end', session: this.sessionId, clip: this.turn.clip });
+    this.phone.event({ type: 'turn_end', session: this.sessionId });
     void this.record(this.turn).catch((e) => this.log(`record failed: ${e}`));
     this.turn = this.blank();
     this.state = 'user';

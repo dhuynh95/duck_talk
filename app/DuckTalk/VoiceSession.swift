@@ -84,10 +84,13 @@ final class VoiceSession {
     private(set) var muted = false
     /// What is being said right now, revised as it is spoken. Not yet history.
     private(set) var utterance: String?
+    /// The audio it was heard from, held until the utterance becomes a line — so a
+    /// line in the transcript can be played back and corrected, and so the review card
+    /// can play what it is asking you about. One holder, because there is one utterance
+    /// in flight and the review card is that utterance waiting to be sent.
+    private(set) var heardClip: Double?
     /// The instruction the server is holding for a yes/no/edit, in review mode.
     private(set) var pending: String?
-    /// The audio behind it, so you can hear what was said before deciding on it.
-    private(set) var pendingClip: Double?
     /// A typed instruction is running: sent, and the reply has not finished arriving.
     private(set) var asking = false
     /// The conversation this screen is in, named by the relay and carried into every
@@ -180,8 +183,8 @@ final class VoiceSession {
             task.cancel(with: .normalClosure, reason: nil)
             self.task = nil
             pending = nil
-            pendingClip = nil
             utterance = nil
+            heardClip = nil
             replied = false
             guard wantLive else { break }
 
@@ -213,8 +216,8 @@ final class VoiceSession {
         level = 0
         muted = false // a new session starts hearing
         pending = nil
-        pendingClip = nil
         utterance = nil
+        heardClip = nil
         status = .idle
         endActivity()
     }
@@ -311,17 +314,19 @@ final class VoiceSession {
     func approve(_ text: String) {
         guard pending != nil else { return }
         pending = nil
-        pendingClip = nil
         commit(text) // accepting is what sends it, so that is when it becomes history
         send(["type": "approve", "text": text])
     }
 
-    /// Move what was said into the history, now that it has actually been sent.
+    /// Move what was said into the history, now that it has actually been sent — with
+    /// the audio it was heard from, which is what makes the line correctable later.
     private func commit(_ text: String? = nil) {
         let said = (text ?? utterance)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clip = heardClip
         utterance = nil
+        heardClip = nil
         guard let said, !said.isEmpty else { return }
-        lines.append(Line(kind: .user, text: said))
+        lines.append(Line(kind: .user, text: said, clip: clip))
     }
 
     private func send(_ msg: [String: String]) {
@@ -364,7 +369,7 @@ final class VoiceSession {
     private struct Event: Decodable {
         let type: String
         let text: String?
-        /// On `approval` and `turn_end`: the utterance this turn was heard from.
+        /// On a finished `user`: the audio that utterance was heard from.
         let clip: Double?
         /// Live transcription revises its guess as you speak, so each update carries the
         /// whole utterance and replaces the last one instead of extending it.
@@ -383,7 +388,8 @@ final class VoiceSession {
             // sent — barging in over a reply replaces it, and a rejected one is dropped.
             utterance = event.text
             turnEnded = false
-            if event.partial != true { publish() } // the finished utterance, not every revision
+            // The audio arrives with the finished text, never with a revision of it.
+            if event.partial != true { heardClip = event.clip; publish() }
         case "model":
             commit() // Claude answering is proof the instruction went
             if !turnEnded, let last = lines.last, last.kind == .model {
@@ -397,7 +403,6 @@ final class VoiceSession {
             // question, so only one of the two is ever on screen.
             utterance = nil
             pending = event.text
-            pendingClip = event.clip
             publish()
         case "tool":
             // A name starts a tool, no name ends it. Consecutive tools join one line,
@@ -421,11 +426,6 @@ final class VoiceSession {
             turnEnded = true
             replied = false
             pending = nil
-            pendingClip = nil
-            // The turn is over, so the relay has named the audio it was heard from.
-            // It goes on the line that was heard — the last thing you said — which is
-            // where "fix" will look for it.
-            if let clip = event.clip, let i = lines.lastIndex(where: { $0.kind == .user }) { lines[i].clip = clip }
             // Now the conversation has a name, so the next connection can carry it on.
             if let session = event.session { chatId = session }
             asking = false // a typed turn is its socket, and this closes it
@@ -436,7 +436,6 @@ final class VoiceSession {
             // so the card goes away however the decision was made. What is being said
             // now is the barge-in, and it stays in the box.
             pending = nil
-            pendingClip = nil
             endToolRun()
             pipe?.flush()
         case "error":

@@ -13,7 +13,7 @@
  *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"interrupted"|"turn_end"|"error","text"?}
  *             a `user` event also carries `partial`: true replaces the line, false ends it
  *             a `turn_end` carries `session`: which chat this connection is in
- *             `approval` and `turn_end` carry `clip`: the utterance's audio, by id
+ *             a finished `user` carries `clip`: that utterance's audio, by id
  *
  * Audio is what buys audio: the ears open on the first microphone buffer and the voice
  * speaks only where there are ears, so a connection that is only typed to reaches
