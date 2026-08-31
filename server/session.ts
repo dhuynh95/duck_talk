@@ -169,6 +169,18 @@ export class Session {
       resume: this.resume,
       log: this.log,
       onStart: (kind) => {
+        // A turn nobody sent: a background task finished and Claude is speaking up
+        // to say so — claude.ts only lets such a turn through when nothing is owed.
+        // Claiming the floor is the whole of handling it: everything downstream (the
+        // voice, the phone, turn_end, the record that skips an instructionless turn)
+        // already treats a claimed floor as a turn, barge-in included. A held floor
+        // is not claimed: the review card is a question, and the narration's text is
+        // dropped by the guard in onText.
+        if (this.state === 'user' && !this.closed) {
+          this.log('claude speaks up (background task)');
+          this.state = 'claude';
+          this.arm();
+        }
         this.turn.claude_start_at ??= Date.now();
         this.turn.claude_opens ??= kind;
         // The one opening that would otherwise show nothing: text is the answer
@@ -178,6 +190,7 @@ export class Session {
         if (kind === 'thinking') this.phone.event({ type: 'tool', text: 'Thinking' });
       },
       onText: (text) => {
+        if (this.state !== 'claude') return; // a narration must not talk over a held card
         this.arm(); // words are proof of life
         this.turn.claude_first_at ??= Date.now();
         this.turn.said += text;
@@ -337,6 +350,9 @@ export class Session {
     // it would otherwise stamp the blank turn that follows. Last one wins, because a
     // joined utterance sends a mark per fragment and the sentence ends at the last.
     else if (msg.type === 'mark' && msg.name === 'speech_end' && typeof msg.at === 'number') { if (this.state !== 'user') this.turn.speech_end_at = msg.at; }
+    // The stem-press device test: an AirPods press the phone received, said in this
+    // log so it lands beside everything else on the one clock. Not recorded anywhere.
+    else if (msg.type === 'mark' && typeof msg.name === 'string' && msg.name.startsWith('stem_')) this.log(`stem press: ${msg.name}`);
     else if (msg.type === 'text' && typeof msg.text === 'string') this.typed(msg.text);
     else if (msg.type === 'approve') this.decide(true, msg.text);
     else if (msg.type === 'claude') this.be(msg.model, msg.permission, msg.effort);
@@ -504,6 +520,7 @@ export class Session {
   /** The turn is alive as of now. Called to start it and again on every sign of life,
    *  so one method means one thing and there is no second timer to keep in step. */
   private arm(): void {
+    if (this.closed) return; // a drain narrates into a closed session; no timer for it
     this.disarm();
     if (QUIET_MS > 0) this.watchdog = setTimeout(() => this.cancel('gone quiet'), QUIET_MS);
   }

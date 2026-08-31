@@ -22,6 +22,16 @@
  * stamps every frame they produce with `parent_tool_use_id`, so they arrive as blocks
  * like any other and the only question is whose they are — see `Block.parent`.
  *
+ * A *background* task — an agent or a shell the model sent off to work while the
+ * conversation goes on — outlives the turn that launched it, and three facts follow.
+ * An interrupt must not kill it, which `perTaskStopAffordance` in the options is for;
+ * stopping one is something you ask the model to do, the same way you started it.
+ * A close must not kill it either, so `close` drains: the subprocess stays up until
+ * the last task settles (or a cap), and only then exits. And when one settles, the
+ * CLI says so with a `task_notification` and then opens a turn of its own to narrate
+ * the result — a turn no `send` asked for, matched by `ambient` below rather than by
+ * a stamp, because a turn Claude starts is still a turn.
+ *
  *   node claude.ts "what is the latest commit"     one turn, streamed to stdout
  */
 
@@ -32,6 +42,10 @@ import { PROJECT as CWD } from './paths.ts';
 import { read } from './prompts.ts';
 
 const MODEL = process.env['CLAUDE_MODEL'];
+// How long a closed session may keep running for the background tasks still in it.
+// A ceiling, not a wait: with no tasks the close is immediate, and the moment the
+// last one settles the drain ends early. 0 closes at once, tasks and all.
+const DRAIN_MS = Number(process.env['TASK_DRAIN_MS'] ?? 600_000);
 const PERMISSION_MODE = (process.env['CLAUDE_PERMISSION_MODE'] ?? 'plan') as PermissionMode;
 const EFFORT = (process.env['CLAUDE_EFFORT'] as EffortLevel | undefined) ?? null;
 
@@ -203,6 +217,16 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
   // stray error on the phone for a turn nobody was waiting on, and turn records
   // with impossible negative timings (3 of the first 133).
   let wanted: string | null = null;
+  // A turn nobody sent: after a background task settles, the CLI opens a turn of its
+  // own to narrate the result. The notification that precedes it is the delimiter, so
+  // this is set there and cleared by everything that outranks it — a send (the user's
+  // turn wins), an interrupt (talking over the announcement, the same barge-in as
+  // ever), or the ambient turn's own result.
+  let ambient = false;
+  // Live background tasks, from the CLI's own level signal (replace semantics). What
+  // `close` waits on, so a task keeps its process for as long as it is working.
+  let tasks = 0;
+  let draining: ReturnType<typeof setTimeout> | null = null;
   let streaming: string | null = null; // whose frames are arriving now, by the last stamp seen
   let stamps = false; // this CLI stamps frames — proven the first time one arrives
   let opened = false; // this turn's first block has been announced
@@ -218,6 +242,14 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
   let effort = EFFORT;
   // What `set` is still applying, if anything. An instruction waits for it below.
   let settled: Promise<unknown> = Promise.resolve();
+  /** Actually end the session — what `close` does at once when nothing is working,
+   *  and what the drain does when the last task settles or the cap fires. */
+  function finish(): void {
+    if (draining) { clearTimeout(draining); draining = null; }
+    done = true;
+    wake?.();
+    wake = null;
+  }
   async function* input(): AsyncGenerator<SDKUserMessage> {
     while (!done) {
       while (queue.length) {
@@ -258,6 +290,12 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
     // enough to take the relay down — so without this the top rung would need a
     // reconnect. The session still starts at PERMISSION_MODE, which is `plan`.
     allowDangerouslySkipPermissions: true,
+    // Without this the CLI fails closed and an interrupt kills every background task —
+    // so a barge-in over the reply silently executed whatever research was still
+    // running. Declared, interrupt means only "stop talking". The stop path the
+    // declaration promises is conversational: the model stops its own tasks when
+    // asked, the same way it starts them.
+    perTaskStopAffordance: true,
     // The project's settings and its CLAUDE.md — and deliberately not the user's own
     // ~/.claude/settings.json, whose pre-approved commands (rm, git push, bash) would
     // widen every rung without saying so, and make the phone's description of what
@@ -291,7 +329,11 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
         const stamp = (msg as { user_message_uuid?: string }).user_message_uuid;
         if (stamp) stamps = true;
         if (stamp && msg.type !== 'result') streaming = stamp;
-        const alive = wanted !== null && (!stamps || streaming === wanted); // still wanted?
+        // Still wanted? While a send is outstanding the stamp decides; while nothing
+        // is owed, the only turn allowed through is an ambient one — the CLI is
+        // sequential, so between a task's notification and its narration's result,
+        // unstamped frames are that narration.
+        const alive = wanted !== null ? !stamps || streaming === wanted : ambient;
         if (msg.type === 'stream_event') {
           if (!alive) continue;
           const event = msg.event as { type?: string; delta?: { text?: unknown }; content_block?: { type?: string } };
@@ -312,6 +354,19 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
           for (const b of content as { type: string }[]) {
             if (b.type === 'tool_result') cb.onBlock({ name: null, parent: msg.parent_tool_use_id });
           }
+        } else if (msg.type === 'system' && msg.subtype === 'background_tasks_changed') {
+          // The full live set every time membership changes — replace, never count.
+          tasks = msg.tasks.filter((t) => !t.ambient).length;
+          log(`background tasks: ${tasks}${tasks ? ` (${msg.tasks.filter((t) => !t.ambient).map((t) => t.description).join('; ')})` : ''}`);
+          if (tasks === 0 && draining) finish(); // the drain was for these, and they are done
+        } else if (msg.type === 'system' && msg.subtype === 'task_notification') {
+          if (msg.ambient) continue; // housekeeping, not the user's work
+          log(`task ${msg.status}: ${msg.summary.slice(0, 200)}`);
+          // The narration turn follows; let it through. If a user turn is running the
+          // CLI queues the narration behind it, and that turn's result resets `opened`
+          // so the narration still announces its own first block.
+          ambient = true;
+          if (wanted === null) opened = false;
         } else if (msg.type === 'result') {
           // What the turn cost, which is not what the result says it cost. On a warm
           // streaming session `total_cost_usd` is the running total for the whole
@@ -330,14 +385,16 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
           // Booked above the match, so an abandoned turn still moves the running
           // total: nobody is listening for what it cost, but it must not be billed to
           // the turn that comes next.
-          const mine = wanted !== null && (stamps ? stamp === wanted : true);
+          const mine = wanted !== null ? (stamps ? stamp === wanted : true) : ambient;
           if (!mine) {
             // An interrupted turn's result, or a diagnostic the CLI files as one.
             // Said in the log, where a stray belongs — never on the phone.
             log(`stray result dropped (${msg.subtype}${msg.is_error ? ', error' : ''})`);
             continue;
           }
+          if (wanted === null) ambient = false; // a narration's own result is its end
           wanted = null; // answered; nothing is owed until the next send
+          opened = false; // a narration queued behind this turn announces its own block
           let error: string | null = null;
           if (msg.is_error) error = 'errors' in msg && Array.isArray(msg.errors) ? msg.errors.join('; ') : 'result' in msg ? String(msg.result) : 'unknown error';
           cb.onResult({ sessionId: msg.session_id, costUsd: cost, error, model: model ?? null, permission, effort });
@@ -351,6 +408,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
   return {
     send(instruction) {
       wanted = randomUUID();
+      ambient = false; // the user's turn outranks a narration
       opened = false; // this turn announces its own first block
       queue.push({ type: 'user', message: { role: 'user', content: instruction }, parent_tool_use_id: null, uuid: wanted } as SDKUserMessage);
       wake?.();
@@ -399,12 +457,22 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
       // Stop wanting before asking — the request races the next send, and whichever
       // turn it lands on, that turn's output now matches nothing.
       wanted = null;
+      ambient = false; // talking over the announcement is the same barge-in as ever
       void q.interrupt().catch((e) => log(`claude interrupt: ${e}`));
     },
     close() {
-      done = true;
-      wake?.();
-      wake = null;
+      if (done || draining) return;
+      // A task is the user's work in flight, and the socket closing is not a verdict
+      // on it. Keep the subprocess until the last task settles — `finish` runs from
+      // the level signal above — or until the cap says enough. unref'd, so a drain
+      // never holds a process that is otherwise done (probe, the CLI below).
+      if (tasks > 0 && DRAIN_MS > 0) {
+        log(`draining ${tasks} background task(s), up to ${DRAIN_MS / 1000}s`);
+        draining = setTimeout(finish, DRAIN_MS);
+        draining.unref?.();
+        return;
+      }
+      finish();
     },
   };
 }
