@@ -6,9 +6,13 @@
  * remembered sentence is a guess, and a correction made while listening to what was
  * actually sent is evidence. The phone plays these; `corrections.ts` points at them.
  *
- * A clip's id is the moment the utterance finished, which is `Turn.heard_at` — already
- * stamped, already unique, already in the turn record. So nothing here invents an id
- * and nothing has to look one up.
+ * A clip's id is the moment the utterance finished — unique, orderable, and the same
+ * number the turn record and any correction born from it carry. So the id is also the
+ * filename, and nothing has to keep an index.
+ *
+ * How long one lives is one rule: a clip a correction points at is part of that
+ * correction and stays; every other clip is a debugging aid with a short life. The
+ * whole store is asked, not the window a prompt gets — see `load` in corrections.ts.
  *
  * Written as a WAV rather than raw PCM because the one consumer is a phone that plays
  * it: 44 bytes of header is what turns "some bytes" into something AVAudioPlayer opens

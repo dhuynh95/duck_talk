@@ -27,15 +27,21 @@ export interface Correction {
   heard: string;
   proposed: string;
   meant: string;
-  /** The utterance this was taught from, as clips.ts files it: `Turn.heard_at`. */
+  /** The utterance this was taught from, as clips.ts files it. Set here, this is also
+   *  what keeps that audio from being pruned. */
   clip?: number;
 }
 
 /** One file per project, under the folder the relay was started in — see paths.ts. */
 const file = () => state('corrections.jsonl');
-const MAX = 50; // a prompt is not a database; keep the most recent lessons
 
-/** Every correction learned so far, newest last, one per `heard` (a later edit wins). */
+/**
+ * Every correction learned so far, newest last, one per `heard` (a later edit wins).
+ *
+ * All of them, because everything that is not a prompt wants all of them: the phone
+ * lists them to delete one, and clips.ts asks which audio is still spoken for. Only a
+ * prompt has a size limit, and that limit lives in `render` — where the prompt is.
+ */
 export function load(): Correction[] {
   let text: string;
   try {
@@ -53,7 +59,7 @@ export function load(): Correction[] {
       // a half-written line is not worth losing the rest of the file over
     }
   }
-  return [...byHeard.values()].slice(-MAX);
+  return [...byHeard.values()];
 }
 
 export function add(c: Correction): void {
@@ -91,10 +97,16 @@ function rewrite(corrections: Correction[]): void {
   writeFileSync(file(), corrections.map((c) => `${JSON.stringify(c)}\n`).join(''));
 }
 
+// A prompt is not a database. The store keeps every lesson; this many of the most
+// recent ones is what a model is told about, and the cap belongs here rather than in
+// `load` — where it also quietly shortened the phone's list and the set of clips that
+// count as spoken for.
+const MAX = 50;
+
 /** The block both consumers paste into a prompt. Empty string when nothing is known. */
 export function render(corrections: Correction[]): string {
   if (!corrections.length) return '';
-  const lines = corrections.map((c) => `- "${c.heard.trim()}" → "${c.meant.trim()}"`);
+  const lines = corrections.slice(-MAX).map((c) => `- "${c.heard.trim()}" → "${c.meant.trim()}"`);
   return `\n\n<STT_CORRECTIONS>\nThe speech-to-text often mishears this user. When you hear the left, they mean the right:\n${lines.join('\n')}\n</STT_CORRECTIONS>\n`;
 }
 
