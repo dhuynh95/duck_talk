@@ -327,7 +327,11 @@ export class Session {
    */
   frame(msg: { type?: string; name?: string; at?: number; text?: string; model?: string; permission?: string }): void {
     if (msg.type === 'mark' && msg.name === 'reply_in' && typeof msg.at === 'number') this.turn.reply_in_at = msg.at;
-    else if (msg.type === 'mark' && msg.name === 'speech_end' && typeof msg.at === 'number') this.turn.speech_end_at = msg.at;
+    // Only while a turn is in flight: the mark trails its final by a beat, so after a
+    // final that itself ended things — a bare "no", a "stop" said to a quiet room —
+    // it would otherwise stamp the blank turn that follows. Last one wins, because a
+    // joined utterance sends a mark per fragment and the sentence ends at the last.
+    else if (msg.type === 'mark' && msg.name === 'speech_end' && typeof msg.at === 'number') { if (this.state !== 'user') this.turn.speech_end_at = msg.at; }
     else if (msg.type === 'text' && typeof msg.text === 'string') this.typed(msg.text);
     else if (msg.type === 'approve') this.decide(true, msg.text);
     else if (msg.type === 'claude') this.be(msg.model, msg.permission);

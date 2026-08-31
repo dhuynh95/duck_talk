@@ -381,7 +381,7 @@ final class VoiceSession {
         while wantLive {
             switch try await task.receive() {
             case .data(let pcm):
-                markFirstReply(task)
+                markFirstReply()
                 pipe?.play(pcm)
             case .string(let json):
                 handle(json)
@@ -394,11 +394,17 @@ final class VoiceSession {
     /// Tell the relay the moment the first byte of a reply arrived. The relay already
     /// knows when it sent that byte, and on the simulator both clocks are this Mac's,
     /// so the two timestamps subtract into the real cost of the hop. Once per turn.
-    private func markFirstReply(_ task: URLSessionWebSocketTask) {
+    private func markFirstReply() {
         guard !replied else { return }
         replied = true
-        let at = Int(Date().timeIntervalSince1970 * 1000)
-        task.send(.string(#"{"type":"mark","name":"reply_in","at":\#(at)}"#)) { _ in }
+        mark("reply_in", at: Date().timeIntervalSince1970 * 1000)
+    }
+
+    /// A `mark`: a moment only the phone can see, stamped into the relay's turn
+    /// record. Hand-built JSON because `send` speaks [String: String] and `at` has to
+    /// stay a number, which is the one thing the relay checks before believing it.
+    private func mark(_ name: String, at ms: Double) {
+        task?.send(.string(#"{"type":"mark","name":"\#(name)","at":\#(Int(ms))}"#)) { _ in }
     }
 
     /// The tools stop running when speech resumes or the turn ends.
@@ -436,7 +442,17 @@ final class VoiceSession {
             utterance = event.text
             turnEnded = false
             // The audio arrives with the finished text, never with a revision of it.
-            if event.partial != true { heardClip = event.clip; publish() }
+            if event.partial != true {
+                heardClip = event.clip
+                // A finished transcript proves there was an utterance to time, and
+                // when the mic last crossed the meter's floor is when it actually
+                // stopped — the one number only the phone can know, and the relay's
+                // `stt` column is the difference. Not sent over an approval card: the
+                // utterance that just finished was the decision being spoken, and the
+                // instruction it decides about already marked its own end.
+                if pending == nil, let at = pipe?.lastLoudAt, at > 0 { mark("speech_end", at: at) }
+                publish()
+            }
         case "model":
             commit() // Claude answering is proof the instruction went
             if !turnEnded, let last = lines.last, last.kind == .model {

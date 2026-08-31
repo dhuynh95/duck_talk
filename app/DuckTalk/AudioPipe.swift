@@ -124,10 +124,22 @@ final class AudioPipe {
         var peak: Float = 0
         vDSP_maxmgv(scratch, 1, &peak, vDSP_Length(count))
         let db = 20 * log10f(max(peak / 32768, 1e-7))
+        if db > Self.floorDb { lastLoudAt = Date().timeIntervalSince1970 * 1000 }
         let target = min(1, max(0, (db - Self.floorDb) / (Self.ceilingDb - Self.floorDb)))
         level += (target - level) * (target > level ? Self.attack : Self.release)
         return level
     }
+
+    /// When the microphone last heard anything the meter would draw. The same floor on
+    /// purpose: one definition of audible, so this and the waveform cannot disagree —
+    /// a room noisy enough to confuse the mark is a room whose bars visibly never rest.
+    /// Deciding that speech *ended* stays Gemini's job; this only says when the sound
+    /// stopped, read once a finished transcript proves there was an utterance to time.
+    /// Milliseconds since 1970, 0 until anything has been heard. Written on the audio
+    /// thread and read on the main one — the crossing `muted` already makes, in the
+    /// other direction. The meter is skipped while muted, so silence sent on purpose
+    /// never counts as sound.
+    private(set) var lastLoudAt: Double = 0
 
     private static let floorDb: Float = -60   // below this the meter is empty
     private static let ceilingDb: Float = -16 // at this it is full
