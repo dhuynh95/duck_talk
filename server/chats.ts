@@ -106,7 +106,14 @@ export async function fork(id: string, uuid: string): Promise<string> {
   return sessionId;
 }
 
-/** Keep a chat at the top of the list, or stop. The tag is the star — see above. */
+/**
+ * Keep a chat at the top of the list, or stop. The tag is the star — see above.
+ *
+ * A session has one tag, and this spends it. Any tag counts as a star, which is the
+ * forgiving way round: a chat tagged something else from elsewhere shows up flagged and
+ * an explicit Unstar clears it, where matching on the word alone would leave that tag
+ * invisible for a Star to overwrite without asking.
+ */
 export async function star(id: string, on: boolean): Promise<void> {
   await tagSession(id, on ? 'starred' : null, { dir: CWD });
 }
