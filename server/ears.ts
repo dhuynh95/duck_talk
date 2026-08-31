@@ -24,9 +24,11 @@
  * A final also carries the audio it was made from. Every byte went out through this
  * file, and 16 kHz Int16 is 32 bytes per millisecond, so where an utterance began and
  * ended in the stream is a subtraction rather than a measurement — the same trick the
- * turn timings use. The model has no word timestamps to offer here (asked for, and
- * `gemini-3.5-transcribe-live` returns none), so the two transcript signals are the
- * clock: the first partial says speech had started, the final says it has stopped.
+ * turn timings use. The model has no word timestamps to offer here — the SDK's
+ * `wordTimestamp: true` sits exactly where `customVocabulary` goes, and
+ * `gemini-3.5-transcribe-live` returns finals without a `words` field either way
+ * (probed raw, flag on) — so the two transcript signals are the clock: the first
+ * partial says speech had started, the final says it has stopped.
  *
  *   node ears.ts --file turn.wav      feed a 16 kHz mono recording, print events
  */

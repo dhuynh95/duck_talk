@@ -255,8 +255,11 @@ export class Session {
           else this.cancel('spoke over the reply');
         }
         this.turn.heard = text;
-        // The last one before the final says how long Gemini took to decide the
-        // utterance was over — the one wait an endpointing setting would change.
+        // The first partial is when words first reached the screen, the last one is
+        // how long Gemini then took to decide the utterance was over — the one wait
+        // an endpointing setting would change. Stamped after the cancel above, so a
+        // barge-in's first partial belongs to the turn it starts, not the one it ends.
+        this.turn.partial_first_at ??= Date.now();
         this.turn.partial_last_at = Date.now();
         this.phone.event({ type: 'user', text, partial: true });
       },
@@ -555,7 +558,7 @@ export class Session {
     return {
       turn: ++this.turns, mode: this.mode, model: this.model, permission: this.permission,
       session_id: null, heard: '', clip: null, proposed: '', corrected: null, instruction: '',
-      approval: null, said: '', speech_end_at: null, partial_last_at: null, heard_at: null, corrected_at: null,
+      approval: null, said: '', speech_end_at: null, partial_first_at: null, partial_last_at: null, heard_at: null, corrected_at: null,
       ran_at: null, claude_start_at: null, claude_opens: null, claude_first_at: null, tts_sent_at: null,
       voice_out_at: null, reply_in_at: null, voice_ms: 0, cost_usd: null,
     };

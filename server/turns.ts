@@ -45,6 +45,12 @@ export interface Turn {
   approval: 'accepted' | 'rejected' | null;
   said: string;
   speech_end_at: number | null; // caller marked the moment its audio stopped (probe/app)
+  /** The utterance's first committed text — when words first appeared on the phone's
+   *  screen. With `speech_end_at` on the other side it brackets the utterance from
+   *  both edges, which is as close to voice onset as this stack gets: Gemini offers
+   *  no word timings (asked, probed), and a mic-side onset detector is a threshold
+   *  this project does not build. */
+  partial_first_at: number | null;
   partial_last_at: number | null; // last interim transcript before the final
   heard_at: number | null; // the utterance was finished — the instruction exists
   corrected_at: number | null; // auto-correct came back
