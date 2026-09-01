@@ -33,8 +33,8 @@ GEMINI_API_KEY=AIza... npx duck_talk
 That's the whole setup. **The folder you run it in is the project Claude works on** —
 its files, its git history, and its Claude Code conversations, including the ones you
 started in a terminal. It is also where the relay keeps what it learns: a `.duck-talk/`
-directory holding the turn records, the corrections, and any prompt you edited from the
-phone. Run it somewhere else tomorrow and it is about that instead. Then point a client
+directory holding the turn records, the corrections, any prompt you edited from the
+phone, and one log per run, kept for a week. Run it somewhere else tomorrow and it is about that instead. Then point a client
 at the address it prints.
 
 You will need:
@@ -87,7 +87,10 @@ third party to trust:
 The relay's *anywhere* line then shows `wss://<your-mac>.<tailnet>.ts.net` — no port
 in it, because Tailscale answers on 443 with a Let's Encrypt certificate and forwards to
 8765 itself. The relay stays a plain WebSocket server that knows nothing about TLS.
-When any step is missing, that line says which one instead.
+When any step is missing, that line says which one instead. And if the door is already
+open onto a port nothing answers on — a relay you moved, or one no longer running — the
+relay repoints it at itself and says so, rather than leaving you an address that
+resolves and answers nothing.
 
 Without Tailscale, the *anywhere* line says so, and the other two still work.
 

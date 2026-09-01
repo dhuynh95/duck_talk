@@ -63,6 +63,11 @@ for (const file of [resolve(project, '.env'), resolve(process.cwd(), '.env')]) {
 
 process.env['PROJECT_CWD'] = project;
 
+// From here on the terminal is also a file — one per start, a week each, under the
+// project's state directory. Imported dynamically for the same reason server.ts is:
+// paths.ts reads PROJECT_CWD when it loads, so it must load after the line above.
+const logFile = (await import('./log.ts')).openLog();
+
 if (!process.env['GEMINI_API_KEY']) {
   console.error(`duck-talk needs a Gemini key to hear you and to speak.
 
@@ -88,7 +93,7 @@ if (process.env['ANTHROPIC_API_KEY']?.trim()) {
 const port = flag('port');
 if (port) process.env['PORT'] = port;
 
-console.log(`duck-talk ${version()}\n  project      ${project}`);
+console.log(`duck-talk ${version()}\n  project      ${project}\n  log          ${logFile}`);
 await import('./server.ts');
 
 /**

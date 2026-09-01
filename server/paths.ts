@@ -6,8 +6,8 @@
  *   PROJECT   the folder you ran `duck-talk` in — the repo Claude works in, and what
  *             scopes a Claude Code session, so it is also which chats the drawer shows.
  *   state()   `<PROJECT>/.duck-talk` — what the relay has learned about that folder:
- *             the corrections, the turn records, and the prompts you edited from the
- *             phone.
+ *             the corrections, the turn records, the prompts you edited from the
+ *             phone, and one log per run.
  *
  * Nothing is kept beside the code any more, and both halves of that matter. Installed
  * by `npx` the code sits in a cache directory that is wiped between runs, so state

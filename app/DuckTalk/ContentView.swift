@@ -158,10 +158,12 @@ struct ContentView: View {
         // Client-only, so it reaches the session directly rather than riding a frame —
         // and mid-wait, so switching it off silences a loop already playing.
         .task(id: filler) { session.fillerEnabled = filler }
-        // Which models exist is the relay's to say, and the capsule needs the answer
-        // before any sheet is opened. Connecting twice is a no-op — forking shares this
-        // store.
-        .onAppear { relay.connect(to: serverURL) }
+        // The home screen's own socket to the relay, held for as long as the screen is
+        // up: it is where the model list comes from, where a fork is sent, and — since
+        // it is the one connection that is always supposed to be there — what the gear
+        // reads to know whether the relay is reachable at all. Keyed on the address, so
+        // correcting a wrong one re-aims it with nothing else to press.
+        .task(id: serverURL) { relay.connect(to: serverURL) }
     }
 
     /// What the app is. Full bleed, and the only thing under the chrome.
@@ -294,7 +296,10 @@ struct ContentView: View {
                     .floating(in: Capsule())
                 }
                 .buttonStyle(.plain)
-                .padding(.horizontal, 52) // clear of the two circles, either side
+                // Clear of the controls either side, which is a circle unless the gear
+                // has grown into the offline pill — then the title gives up the width
+                // rather than sliding under it.
+                .padding(.horizontal, relay.connected ? 52 : 108)
                 .accessibilityIdentifier("chat-title")
             }
             HStack {
@@ -530,10 +535,33 @@ struct ContentView: View {
             Divider()
             Button { sheet = .server } label: { Label("Server", systemImage: "network") }
         } label: {
-            Image(systemName: "gearshape").font(.title3).slot(.glass)
+            // Two faces, and the connection picks which. Reachable, a gear is a gear.
+            // Not, it says so in red and grows a word — because a relay that is not
+            // there looks exactly like one that is until you tap the microphone and
+            // nothing happens. This is the only thing on the home screen that can say
+            // it: the data socket behind it is the one connection the screen always
+            // holds, whether or not a session is running.
+            //
+            // The same button either way, so the fix is one tap from the alarm: the
+            // menu's Server row opens the sheet that checks the address as you type.
+            if relay.connected {
+                Image(systemName: "gearshape").font(.title3).slot(.glass)
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: "gearshape").font(.subheadline.weight(.medium))
+                    Text("Offline").font(.subheadline.weight(.medium))
+                }
+                .foregroundStyle(.red)
+                .padding(.horizontal, 13)
+                .frame(height: 38)
+                .floating(in: Capsule())
+                .overlay { Capsule().strokeBorder(.red.opacity(0.45), lineWidth: 1) }
+            }
         }
+        .animation(.easeOut(duration: 0.2), value: relay.connected)
         .accessibilityIdentifier("settings")
         .accessibilityLabel("Settings")
+        .accessibilityValue(relay.connected ? "connected" : "offline")
     }
 
     // MARK: - Messages

@@ -40,29 +40,68 @@ final class RelayStore {
     /// how it knows a fork succeeded.
     private(set) var wasForked = false
     private(set) var error: String?
+    /// A relay is answering right now. True once a frame comes back — which is proof of
+    /// a relay, where an opened socket is only proof of something accepting TCP — and
+    /// false the moment the connection drops. The home screen draws its status from this.
+    private(set) var connected = false
 
     private var task: URLSessionWebSocketTask?
+    /// The address someone wants held. It outlives any one socket, so it is what the
+    /// loop below runs on, and nil is the only thing that stops it.
+    private var wanted: String?
 
+    /// Hold a data socket to `serverURL` for as long as someone wants one.
+    ///
+    /// The same shape as `VoiceSession.run`, for the same reason: a relay that is not up
+    /// yet, a Mac that slept, or an address just corrected should cost a reconnect and
+    /// not a screen that stays empty for the life of the app. Before, the first failure
+    /// left `task` set and every later `connect` guarded itself out — the model capsule
+    /// never filled in, and nothing said why.
+    ///
+    /// Asking for the address already held does nothing; asking for a different one
+    /// re-aims the loop, so editing the server address is the whole of reconnecting.
     func connect(to serverURL: String) {
-        guard task == nil, let url = URL(string: serverURL + "?data=1") else { return }
-        let task = URLSession.shared.webSocketTask(with: url)
-        self.task = task
-        task.resume()
-        Task {
-            do {
-                send(["type": "read"])  // anything is answered with all of it
-                while self.task != nil {
-                    if case .string(let json) = try await task.receive() { receive(json) }
-                }
-            } catch let failure {
-                if self.task != nil { error = failure.localizedDescription }
-            }
-        }
+        guard wanted != serverURL else { return }
+        wanted = serverURL
+        task?.cancel(with: .normalClosure, reason: nil)
+        task = nil
+        Task { await hold(serverURL) }
     }
 
     func disconnect() {
+        wanted = nil
+        connected = false
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
+    }
+
+    private func hold(_ serverURL: String) async {
+        guard let url = URL(string: serverURL + "?data=1") else {
+            error = "Needs a ws:// or wss:// address"
+            return
+        }
+        var backoff: Duration = .milliseconds(250)
+        while wanted == serverURL {
+            let task = URLSession.shared.webSocketTask(with: url)
+            self.task = task
+            task.resume()
+            send(["type": "read"])  // anything is answered with all of it
+            let openedAt = ContinuousClock.now
+            do {
+                while wanted == serverURL {
+                    if case .string(let json) = try await task.receive() { receive(json) }
+                }
+            } catch let failure {
+                if wanted == serverURL { error = failure.localizedDescription }
+            }
+            task.cancel(with: .normalClosure, reason: nil)
+            connected = false
+            guard wanted == serverURL else { break }
+            // A connection that lasted is not a failing one; only a fast drop backs off.
+            if openedAt.duration(to: .now) > .seconds(5) { backoff = .milliseconds(250) }
+            try? await Task.sleep(for: backoff)
+            backoff = min(backoff * 2, .seconds(5))
+        }
     }
 
     func save(_ correction: Correction) {
@@ -127,6 +166,7 @@ final class RelayStore {
             loaded = state.id
         }
         error = nil
+        connected = true  // a frame came back, so there is a relay there
     }
 
     private func send(_ msg: [String: Any]) {

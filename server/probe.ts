@@ -81,6 +81,9 @@ async function turn(pcm: Buffer, timeoutMs = 90_000): Promise<Turn> {
   };
 
   let sentAt = 0;
+  // When the question's audio stopped, on the shared clock — stamped when the last
+  // frame goes out, sent as a mark once the final proves there is a turn to file it on.
+  let spokeAt = 0;
   const done = new Promise<void>((resolve) => {
     const finish = (why?: string) => {
       if (why) result.error = why;
@@ -95,11 +98,18 @@ async function turn(pcm: Buffer, timeoutMs = 90_000): Promise<Turn> {
         reply.push(chunk);
         return;
       }
-      const msg = JSON.parse(ev.data) as { type: string; text?: string };
+      const msg = JSON.parse(ev.data) as { type: string; text?: string; partial?: boolean };
       // Each `user` event carries the whole utterance as currently heard, revised as
       // it is spoken, so the last one is the transcript.
-      if (msg.type === 'user') result.heard = msg.text ?? '';
-      else if (msg.type === 'model') result.said += msg.text ?? '';
+      if (msg.type === 'user') {
+        result.heard = msg.text ?? '';
+        // The finished transcript is when the relay will believe a speech_end mark:
+        // it files marks against the turn in flight, and there is no turn until the
+        // final makes one. So the mark is sent now and the timestamp was taken then —
+        // when the question's audio stopped — the same split the phone makes with
+        // lastLoudAt. Sent early instead, it lands on no turn and stt reads "—".
+        if (msg.partial === false && spokeAt) { ws.send(JSON.stringify({ type: 'mark', name: 'speech_end', at: spokeAt })); spokeAt = 0; }
+      } else if (msg.type === 'model') result.said += msg.text ?? '';
       else if (msg.type === 'interrupted') result.interrupted = true;
       else if (msg.type === 'error') { clearTimeout(timer); finish(msg.text); }
       else if (msg.type === 'turn_end') { clearTimeout(timer); finish(); }
@@ -120,9 +130,7 @@ async function turn(pcm: Buffer, timeoutMs = 90_000): Promise<Turn> {
     await new Promise((r) => setTimeout(r, FRAME_MS));
   }
   sentAt = performance.now();
-  // Mark the moment the question's audio stopped, on the relay's own clock, so the
-  // turn record can isolate the transcription latency (speech_end → heard).
-  ws.send(JSON.stringify({ type: 'mark', name: 'speech_end', at: Date.now() }));
+  spokeAt = Date.now(); // the mark itself waits for the final — see the user event above
 
   // Keep streaming silence, exactly as the phone's open mic does. Gemini's voice
   // detection watches a continuous stream for speech turning to quiet; a client
