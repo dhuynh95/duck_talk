@@ -7,7 +7,8 @@
  *
  *   ↑ binary  raw PCM Int16 LE, 16 kHz, mono          (mic)
  *   ↑ text    {"type":"text","text"}                  an instruction, typed
- *             {"type":"mark","name","at"}             a moment only the phone can see
+ *             {"type":"mark","name","at"?,"note"?}    a moment only the phone can see
+ *             {"type":"played","ms"}                  reply audio its speaker has played
  *             {"type":"approve","text"?}              run a held instruction, as edited
  *             {"type":"stop"}                         stop the running turn — the spoken "stop", as a button
  *             {"type":"claude","model"?,"permission"?,"effort"?} which model answers, what it may do, how hard it thinks

@@ -35,6 +35,34 @@ final class AudioPipe {
     /// played to the speaker", so dryness is the hardware's own bookkeeping, never
     /// an inference from timing.
     private var queued = 0
+
+    /// Reply audio this turn's speaker has actually played, in milliseconds — counted
+    /// off the same `.dataPlayedBack` callback, so it is the hardware's answer and not
+    /// a timer's. The relay sends audio and can only know what it handed over; this is
+    /// the half of the subtraction that lives on this side, and the only way a reply
+    /// cut off mid-sentence stops being recorded as one that played in full.
+    private(set) var playedMs: Double = 0
+
+    /// The speaker has nothing left: it played the reply out, or a flush or a rebuild
+    /// took what was queued. Carries `playedMs` so the reader needs no second question.
+    var onDrained: ((Double) -> Void)?
+
+    /// Something the audio system did to this session, reported as it was observed:
+    /// which notification fired, the route around it, and what it cost in buffers.
+    ///
+    /// Deliberately no diagnosis. This ends up in the relay's log, and a line naming
+    /// the notification and the numbers is still true a year from now, where a line
+    /// naming the cause is only as good as the guess that wrote it.
+    var onAudio: ((String) -> Void)?
+
+    /// Something went wrong that the session above should say out loud. Failing here
+    /// costs the microphone and the speaker, which is not something to discover by
+    /// talking into a phone that stopped listening.
+    var onProblem: ((String) -> Void)?
+
+    /// A new reply is coming, so forget what the last one played.
+    func expectReply() { playedMs = 0 }
+
     /// When the speaker last ran dry. A lull has to last before it chimes: the
     /// serial voice can starve for tens of milliseconds between sentences, and a
     /// chime in a seam that short would sound inside the reply's own breath.
@@ -114,6 +142,19 @@ final class AudioPipe {
     /// returned, which is what says so.
     func start() throws {
         engine.attach(player)
+        try wire()
+        engine.prepare()
+        try engine.start()
+        player.play()
+        observe()
+    }
+
+    /// Everything that depends on what the hardware is *right now*: the player's
+    /// connection to the mixer, and a tap on the input converted to what the relay
+    /// listens in. It is one method because it is one answer to one question, and
+    /// because iOS can invalidate that answer at any moment — see `rebuild`, which is
+    /// the only reason this is not simply the body of `start`.
+    private func wire() throws {
         engine.connect(player, to: engine.mainMixerNode, format: speakerFormat)
 
         let input = engine.inputNode
@@ -156,10 +197,75 @@ final class AudioPipe {
             }
             self.onChunk?(Data(bytes: samples[0], count: n * 2))
         }
+    }
 
-        engine.prepare()
-        try engine.start()
-        player.play()
+    /// Watch for the two ways iOS takes the audio out from under a running session.
+    ///
+    /// A configuration change is the engine saying its own graph is gone: the hardware
+    /// format moved — AirPods in or out, a Bluetooth link dropping, a phone hitting the
+    /// floor — so the engine is stopped, the player's connection to the mixer is
+    /// undone, and the tap's format names a device that is no longer there. It is the
+    /// exact primitive for "rebuild", which is why the route notification is not also
+    /// watched: a route change that does not move the format breaks nothing.
+    ///
+    /// An interruption is something else taking the session outright — Siri, an alarm,
+    /// a timer. None of those pass through CallKit, so `Call.onAudioSession` never
+    /// hears about them and this is the only warning there is.
+    private func observe() {
+        let centre = NotificationCenter.default
+        watching.append(centre.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            self?.rebuild()
+        })
+        watching.append(centre.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            switch type {
+            case .began:
+                self?.suspend()
+                self?.onAudio?("interruption began")
+            case .ended:
+                // Only when the system says the session is ours to take back. Told to
+                // stay quiet, staying quiet is the whole of it.
+                let options = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+                let resume = AVAudioSession.InterruptionOptions(rawValue: options).contains(.shouldResume)
+                if resume { self?.resume() }
+                self?.onAudio?("interruption ended, shouldResume \(resume)")
+            @unknown default:
+                break
+            }
+        })
+    }
+
+    /// The block-based observers above, held because that is the only way to take them
+    /// back: `addObserver(forName:)` hands out a token and `removeObserver(self)` — the
+    /// selector-based spelling — does not reach it.
+    private var watching: [NSObjectProtocol] = []
+
+    /// Build the same graph again, against the hardware as it now is.
+    ///
+    /// Nothing recovers on its own here: the engine stays stopped and the socket stays
+    /// up, so without this the reply dies mid-word, the microphone goes quiet, and the
+    /// relay goes on believing both are fine. What was queued for the speaker went with
+    /// the old graph and cannot be re-scheduled, so it is reported rather than mourned.
+    private func rebuild() {
+        let dropped = queued
+        let was = engine.inputNode.outputFormat(forBus: 0).sampleRate
+        engine.inputNode.removeTap(onBus: 0)
+        engine.disconnectNodeOutput(player)
+        var failed: String?
+        do {
+            try wire()
+            engine.prepare()
+            try engine.start()
+            player.play()
+        } catch {
+            failed = error.localizedDescription
+            onProblem?("the audio route changed and could not be picked up again: \(error.localizedDescription)")
+        }
+        let now = engine.inputNode.outputFormat(forBus: 0).sampleRate
+        drained()
+        onAudio?("engine config change; in \(Int(was))→\(Int(now))Hz, \(Self.route), \(dropped) buffers dropped"
+            + (failed.map { ", rewire failed: \($0)" } ?? ""))
     }
 
     /// Queue one chunk of 24 kHz Int16 PCM. The player node plays chunks back to back.
@@ -173,26 +279,46 @@ final class AudioPipe {
             for i in 0..<Int(frames) { out[i] = Float(samples[i]) / 32768 }
         }
         queued += 1
+        let mine = epoch // the batch this buffer belongs to; see `drained`
         settle() // the reply owns the speaker from the moment audio exists to play
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             DispatchQueue.main.async {
-                guard let self else { return }
-                self.queued = max(0, self.queued - 1) // clamped: flush also zeroes it
-                if self.queued == 0 { self.dryAt = Date() }
-                self.settle()
+                guard let self, mine == self.epoch else { return }
+                // Played, in the hardware's own words — so this is where the count of
+                // what was actually heard grows, and nowhere else.
+                self.playedMs += Double(frames) / 24
+                self.queued = max(0, self.queued - 1)
+                if self.queued == 0 { self.drained() }
+                else { self.settle() }
             }
         }
         if !player.isPlaying { player.play() }
     }
+
+    /// The speaker has nothing left to play. Three ways to arrive: the reply ran out,
+    /// a barge-in dropped it, or a rebuild took it — and the one thing that is true in
+    /// all three is what this says, so all three come through here.
+    ///
+    /// Abandoning the queue is why `epoch` exists. `.dataPlayedBack` fires for every
+    /// scheduled buffer, including the ones `player.stop()` throws away unplayed, so
+    /// counting those would credit the listener with audio they never heard — and
+    /// inflate the count precisely when it is being read to prove a reply was cut.
+    private func drained() {
+        epoch &+= 1
+        queued = 0
+        dryAt = Date()
+        onDrained?(playedMs)
+        settle()
+    }
+
+    private var epoch = 0
 
     func flush() {
         player.stop()
         player.play()
         // Stopping fires the completion of every unplayed buffer, but the flush is
         // the truth right now: the speaker is dry because the turn was taken away.
-        queued = 0
-        dryAt = Date()
-        settle()
+        drained()
     }
 
     /// How loud this buffer was, 0…1 — the same thing the input level meter in macOS
@@ -272,6 +398,8 @@ final class AudioPipe {
     }
 
     func stop() {
+        watching.forEach(NotificationCenter.default.removeObserver)
+        watching.removeAll()
         waiting = false // fades the chimes out with the session, if they were playing
         engine.inputNode.removeTap(onBus: 0)
         player.stop()

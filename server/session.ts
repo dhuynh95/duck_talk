@@ -185,7 +185,10 @@ export class Session {
         // claimed: the review card is a question, and the narration's text is
         // dropped by the guard in onText.
         if (this.state === 'user' && !this.closed) {
-          this.log('claude has the floor (attached mid-turn, or a task narration)');
+          // What is known: a turn opened a block here with no instruction outstanding.
+          // Which of the two ways that happens — attaching to a session mid-turn, or a
+          // background task's narration — this cannot see, so it does not say.
+          this.log(`claude opened ${kind} with nothing sent`);
           this.state = 'claude';
           this.arm();
         }
@@ -276,8 +279,10 @@ export class Session {
         // the instruction that started the turn — take the turn back and wait for the
         // fuller sentence. Anything else is a new utterance over the reply: barge-in.
         if (this.state === 'claude') {
+          // The reason given is the signal that caused it — the ears' own JOIN
+          // decision — rather than what the speaker is presumed to be doing.
           if (continuing) this.retract();
-          else this.cancel('spoke over the reply');
+          else this.cancel('partial while claude, not continuing');
         }
         this.turn.heard = text;
         // The first partial is when words first reached the screen, the last one is
@@ -305,9 +310,10 @@ export class Session {
       // run again: the very next microphone buffer reopens through `listen`, which
       // already holds audio in a backlog, re-sends the vocabulary, and tells the
       // phone if it fails. Nothing else to keep in step.
+      // ears.ts already logs the close and its code; what happens next is this
+      // object's own state and not an observation, so it is not narrated twice.
       onClosed: () => {
         if (this.closed) return;
-        this.log('the next audio reopens them');
         this.ears = null;
       },
     }, this.corrections);
@@ -342,7 +348,11 @@ export class Session {
     if (this.gap) clearTimeout(this.gap);
     this.gap = setTimeout(() => {
       this.deaf = true;
-      this.log('audio stopped — the phone is not sending');
+      // The observation, not a diagnosis of it. This used to read "the phone is not
+      // sending", which is one of several things a gap can mean and was the wrong one
+      // the first time it mattered: the phone was rebuilding its audio graph and came
+      // back. What is known here is how long no bytes have arrived for.
+      this.log(`no audio for ${(AUDIO_GAP_MS / 1000).toFixed(1)}s`);
     }, AUDIO_GAP_MS);
   }
 
@@ -353,16 +363,31 @@ export class Session {
    * it — say "no", or hang up — so the only refusal that needs a message is the
    * spoken one, and that arrives as a transcript like any other.
    */
-  frame(msg: { type?: string; name?: string; at?: number; text?: string; model?: string; permission?: string; effort?: string }): void {
+  frame(msg: { type?: string; name?: string; note?: string; at?: number; ms?: number; text?: string; model?: string; permission?: string; effort?: string }): void {
     if (msg.type === 'mark' && msg.name === 'reply_in' && typeof msg.at === 'number') this.turn.reply_in_at = msg.at;
     // Only while a turn is in flight: the mark trails its final by a beat, so after a
     // final that itself ended things — a bare "no", a "stop" said to a quiet room —
     // it would otherwise stamp the blank turn that follows. Last one wins, because a
     // joined utterance sends a mark per fragment and the sentence ends at the last.
     else if (msg.type === 'mark' && msg.name === 'speech_end' && typeof msg.at === 'number') { if (this.state !== 'user') this.turn.speech_end_at = msg.at; }
-    // The stem-press device test: an AirPods press the phone received, said in this
-    // log so it lands beside everything else on the one clock. Not recorded anywhere.
-    else if (msg.type === 'mark' && typeof msg.name === 'string' && msg.name.startsWith('stem_')) this.log(`stem press: ${msg.name}`);
+    // Any other mark is a moment only the phone can see — a mute, its audio graph
+    // being rebuilt under it — narrated here so it lands beside everything else on the
+    // one clock, and recorded nowhere. One branch rather than one per name: the phone
+    // says what happened and who caused it, and this does not have to know the list.
+    else if (msg.type === 'mark' && typeof msg.name === 'string') this.log(`phone: ${msg.name}${msg.note ? ` — ${msg.note}` : ''}`);
+    // What the speaker has really played of this turn's reply. The only honest answer
+    // to "was it heard": everything else here is arithmetic over what was sent.
+    //
+    // Recorded only while a turn is in flight, for the reason speech_end is: the
+    // report trails the audio by a beat, and on an ordinary turn the wait below has
+    // already ended on its own arithmetic — so a report arriving after that would
+    // stamp the blank turn that follows with the last turn's number. The case this
+    // exists for is the other one, where the speaker falls silent seconds early and
+    // says so while the turn is very much still running.
+    else if (msg.type === 'played' && typeof msg.ms === 'number') {
+      if (this.state !== 'user') this.turn.heard_ms = msg.ms;
+      this.voice.heard(msg.ms);
+    }
     else if (msg.type === 'text' && typeof msg.text === 'string') this.typed(msg.text);
     else if (msg.type === 'approve') this.decide(true, msg.text);
     // The stop button, as a frame — the spoken "stop" of a typed or followed turn.
@@ -544,7 +569,7 @@ export class Session {
   private arm(): void {
     if (this.closed) return; // a drain narrates into a closed session; no timer for it
     this.disarm();
-    if (QUIET_MS > 0) this.watchdog = setTimeout(() => this.cancel('gone quiet'), QUIET_MS);
+    if (QUIET_MS > 0) this.watchdog = setTimeout(() => this.cancel(`nothing from claude for ${QUIET_MS / 1000}s`), QUIET_MS);
   }
 
   private disarm(): void {
@@ -563,7 +588,7 @@ export class Session {
    * from the instruction that was actually meant.
    */
   private retract(): void {
-    this.log('retract (still talking)');
+    this.log('retract (partial while claude, continuing)');
     this.claude.interrupt();
     this.voice.interrupt();
     this.phone.event({ type: 'interrupted', retract: true });
@@ -604,7 +629,7 @@ export class Session {
       session_id: null, heard: '', clip: null, proposed: '', corrected: null, instruction: '',
       approval: null, said: '', speech_end_at: null, partial_first_at: null, partial_last_at: null, heard_at: null, corrected_at: null,
       ran_at: null, claude_start_at: null, claude_opens: null, claude_first_at: null, tts_sent_at: null,
-      voice_out_at: null, reply_in_at: null, voice_ms: 0, cost_usd: null,
+      voice_out_at: null, reply_in_at: null, voice_ms: 0, heard_ms: null, cost_usd: null,
     };
   }
 
@@ -631,10 +656,16 @@ export class Session {
     // change moves, and the reason this one is a turn's own cost rather than the
     // session's running total (see claude.ts).
     const cost = t.cost_usd === null ? '' : `  $${t.cost_usd.toFixed(4)}`;
+    // What the listener actually heard, said only when it is not what was sent — a
+    // reply cut short by a route change, or dropped by a barge-in. The margin is one
+    // buffer's worth of rounding between a byte count here and a frame count there.
+    // A turn where the two agree adds nothing, so an ordinary line stays the line it
+    // has always been and this one is only ever bad news.
+    const heard = t.heard_ms !== null && t.voice_ms - t.heard_ms > 250 ? ` (${(t.heard_ms / 1000).toFixed(1)}s heard)` : '';
     this.log(
       `turn ${t.turn} end  stt ${d(t.speech_end_at, t.heard_at)}  final ${d(t.partial_last_at, t.heard_at)}  ${corrected}${held}` +
       `${claude}  buffer ${d(t.claude_first_at, t.tts_sent_at)}  tts ${d(t.tts_sent_at, t.voice_out_at)}  ` +
-      `→phone ${d(t.voice_out_at, t.reply_in_at)}  ${(t.voice_ms / 1000).toFixed(1)}s voice${cost}`,
+      `→phone ${d(t.voice_out_at, t.reply_in_at)}  ${(t.voice_ms / 1000).toFixed(1)}s voice${heard}${cost}`,
     );
     await append(t);
   }

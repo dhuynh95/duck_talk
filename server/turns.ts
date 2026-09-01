@@ -67,6 +67,14 @@ export interface Turn {
   voice_out_at: number | null; // first reply byte written to the phone
   reply_in_at: number | null; // phone reported that byte arrived
   voice_ms: number; // reply audio sent, exact (24 kHz Int16 = 48 bytes/ms)
+  /** Reply audio the phone's speaker actually played, when it fell short of what was
+   *  sent — a route change took the queued buffers with it, or a barge-in dropped
+   *  them. Null on an ordinary turn, and that is the normal case rather than a gap:
+   *  the phone's report trails the last buffer by a beat, by which time the turn has
+   *  already ended on its own arithmetic, so only a reply that stopped *early* gets
+   *  here in time to be written down. Also null for a listener that cannot count —
+   *  a typed turn, an older app, `probe.ts`. */
+  heard_ms: number | null;
   /** What this turn cost, alone. The SDK reports what the whole session has cost so
    *  far, so claude.ts subtracts one result's total from the last — which is why a
    *  session's bill is the sum of its turns here, and why an interrupted turn, whose

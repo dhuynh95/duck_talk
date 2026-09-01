@@ -53,6 +53,12 @@ export interface Voice {
   say(text: string): void;
   /** No more text is coming for this turn; `onDone` fires once the audio has all been sent. */
   finish(): void;
+  /** How much of this turn's audio the phone's speaker has actually played, in
+   *  milliseconds. The one true answer to "has the reply been heard" — the count comes
+   *  from the player node's own per-buffer callback, where everything below is
+   *  arithmetic over what was sent. A caller that cannot say this simply never calls
+   *  it, and the arithmetic stands. */
+  heard(ms: number): void;
   /** Drop what is queued and what is still coming for this turn. */
   interrupt(): void;
   close(): void;
@@ -79,9 +85,14 @@ export function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbacks): V
   let finishing = false; // the caller has said no more text is coming
   let closed = false;
   // The phone plays what it is sent, back to back, at 48 bytes per millisecond, so
-  // when the reply finishes being *heard* is a subtraction rather than a guess.
+  // when the reply should finish being heard is a subtraction over what went out.
   let firstAt = 0; // when this turn's first byte went out
-  let playedMs = 0; // how much audio this turn has sent, in milliseconds of playback
+  let sentMs = 0; // how much audio this turn has sent, in milliseconds of playback
+  // And what the phone says it actually played, which is the same number only when
+  // nothing went wrong. A route change takes queued audio with it, and then the
+  // arithmetic above describes a reply nobody heard the end of.
+  let heardMs = 0;
+  let enough: (() => void) | null = null; // resolves the wait below, once heard covers sent
 
   const buf = sentenceBuffer((text) => {
     queue.push(text);
@@ -128,7 +139,7 @@ export function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbacks): V
               if (!spoke && process.env['DEBUG']) log(`sentence audio in ${Date.now() - askedAt}ms: ${text.slice(0, 40)}`);
               spoke = true;
               firstAt ||= Date.now();
-              playedMs += pcm.length / 48;
+              sentMs += pcm.length / 48;
               cb.onPcm(pcm);
             }
           }
@@ -154,21 +165,60 @@ export function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbacks): V
     // synthesis outruns playback about three to one. Report the turn over when it has
     // been heard, not when it was sent — until then the caller is still in its
     // `claude` state, which is what lets it recognise someone talking over the reply.
-    if (finishing && !closed) await sleep(firstAt + playedMs - Date.now(), aborter.signal);
+    if (finishing && !closed) await played(aborter.signal);
     reading = false;
     if (queue.length) return void pump(); // more text arrived while the tail played
     if (finishing && !closed) {
       finishing = false;
-      firstAt = 0;
-      playedMs = 0;
+      reset();
       cb.onDone?.();
     }
+  }
+
+  /**
+   * Wait for the reply to have been heard.
+   *
+   * Two answers race, and the phone's is the true one: it counts buffers its speaker
+   * actually played, where the sleep only knows what was handed over. Whichever
+   * arrives first ends the wait — so a phone that reports ends the turn sooner and
+   * more honestly when audio was lost, and one that cannot (an older app, probe.ts)
+   * waits out the arithmetic exactly as before.
+   */
+  function played(signal: AbortSignal): Promise<void> {
+    return Promise.race([
+      sleep(firstAt + sentMs - Date.now(), signal),
+      new Promise<void>((resolve) => {
+        const done = () => { signal.removeEventListener('abort', done); enough = null; resolve(); };
+        if (heardMs >= sentMs) return done();
+        enough = done;
+        signal.addEventListener('abort', done, { once: true });
+      }),
+    ]);
+  }
+
+  /** Back to knowing nothing about a reply, for the next turn. */
+  function reset(): void {
+    firstAt = 0;
+    sentMs = 0;
+    heardMs = 0;
+    enough = null;
   }
 
   return {
     say(text) {
       if (closed) return;
       buf.push(text);
+    },
+    heard(ms) {
+      if (closed) return;
+      // Never backwards: a turn's audio is only ever more played than it was.
+      heardMs = Math.max(heardMs, ms);
+      // The phone only says this when its speaker has run dry, and `enough` only
+      // exists while the last thing being waited for is the tail playing out — so a
+      // report arriving here means the tail is over. Deliberately not conditional on
+      // having heard all of it: short is exactly the case worth ending early, because
+      // the missing audio is not late, it is gone.
+      enough?.();
     },
     finish() {
       if (closed) return;
@@ -181,8 +231,7 @@ export function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbacks): V
       aborter.abort();
       aborter = new AbortController();
       finishing = false;
-      firstAt = 0;
-      playedMs = 0;
+      reset();
       queue.length = 0;
       buf.clear();
     },

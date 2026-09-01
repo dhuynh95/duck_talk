@@ -187,6 +187,21 @@ final class VoiceSession {
         pipe.onLevel = { [weak self] l in
             Task { @MainActor in self?.level = l }
         }
+        // What the speaker really played, which is the relay's only way to tell a reply
+        // that was heard from one that was cut off. Sent when it runs dry, so a normal
+        // turn reports once.
+        pipe.onDrained = { [weak self] ms in
+            Task { @MainActor in self?.send(played: ms) }
+        }
+        // What the audio system did, in its own terms, on the one clock — so a cut
+        // reply has the notification that caused it in the log beside it rather than
+        // looking like the relay going quiet.
+        pipe.onAudio = { [weak self] what in
+            Task { @MainActor in self?.mark("audio", note: what) }
+        }
+        pipe.onProblem = { [weak self] why in
+            Task { @MainActor in self?.error = why }
+        }
         status = .connecting
         do {
             // In this order: the mic, or no call UI; the call, which is the system
@@ -244,19 +259,34 @@ final class VoiceSession {
     /// press takes — so the call UI, the stem and this button can never disagree.
     func toggleMute() {
         guard pipe != nil else { return }
+        weAsked = true
         call.setMuted(!muted)
     }
 
-    /// The mute bit actually flipping, wherever the request came from: the stem, the
-    /// call UI, or `toggleMute` above.
+    /// Whether the mute about to arrive is the answer to our own request. Every other
+    /// mute was volunteered by the system — a stem press, the call UI, or the cleanup
+    /// one iOS fires as a call winds down — and telling those apart is the difference
+    /// between a log that explains why the room went quiet and one that guesses.
+    private var weAsked = false
+
+    /// The mute bit actually flipping, wherever the request came from.
     private func applyMute(_ on: Bool) {
         guard let pipe, muted != on else { return }
+        let byUs = weAsked
+        weAsked = false
         muted = on
         pipe.muted = on
-        // Stamped into the relay's log on the one clock, so a stem press is visible
-        // from the Mac — the same channel the device test used.
-        mark(on ? "stem_mute" : "stem_unmute", at: Date().timeIntervalSince1970 * 1000)
+        mark(on ? "mute" : "unmute", note: byUs ? "you" : "system")
+        // A mute nobody on this screen asked for is worth a word: the mic button turns
+        // orange either way, and "why can it not hear me" is not a question the colour
+        // answers on its own. Anything else makes it untrue, so anything else clears it.
+        notice = !byUs && on ? "Muted by your headphones or the call screen." : nil
     }
+
+    /// Something worth saying that is not a failure, so it is not `error` and is not
+    /// drawn in red. There is one so far: the session was muted by something other
+    /// than this screen.
+    private(set) var notice: String?
 
     func stop() {
         wantLive = false
@@ -267,6 +297,7 @@ final class VoiceSession {
         pipe = nil
         level = 0
         muted = false // a new session starts hearing
+        notice = nil
         pending = nil
         utterance = nil
         heardClip = nil
@@ -401,7 +432,10 @@ final class VoiceSession {
         committed = true
     }
 
-    private func send(_ msg: [String: String]) {
+    /// Anything this screen says to the relay over the live socket. `Any` rather than
+    /// `String` because two of the frames carry numbers, and one round trip through
+    /// JSONSerialization is what keeps a quote inside a value from ending the value.
+    private func send(_ msg: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: msg),
               let json = String(data: data, encoding: .utf8) else { return }
         task?.send(.string(json)) { _ in }
@@ -452,11 +486,26 @@ final class VoiceSession {
         didSet { if !fillerEnabled { pipe?.waiting = false } }
     }
 
-    /// A `mark`: a moment only the phone can see, stamped into the relay's turn
-    /// record. Hand-built JSON because `send` speaks [String: String] and `at` has to
-    /// stay a number, which is the one thing the relay checks before believing it.
-    private func mark(_ name: String, at ms: Double) {
-        task?.send(.string(#"{"type":"mark","name":"\#(name)","at":\#(Int(ms))}"#)) { _ in }
+    /// A `mark`: a moment only the phone can see. Two kinds, and the relay tells them
+    /// apart by name — `reply_in` and `speech_end` carry `at` and are stamped into the
+    /// turn record, everything else carries a `note` and is only narrated in the log.
+    ///
+    /// A note says what was observed, never what it is thought to mean: it is read in
+    /// the log months later, beside lines from the relay's own clock, by someone
+    /// working out what happened.
+    private func mark(_ name: String, at ms: Double? = nil, note: String? = nil) {
+        var msg: [String: Any] = ["type": "mark", "name": name]
+        if let ms { msg["at"] = Int(ms) }
+        if let note { msg["note"] = note }
+        send(msg)
+    }
+
+    /// How much of this turn's reply the speaker has played. The relay knows what it
+    /// sent and nothing more, so this is the half of the subtraction only the phone
+    /// can supply — and what lets it end a turn on the audio being over rather than on
+    /// its own arithmetic about when it should have been.
+    private func send(played ms: Double) {
+        send(["type": "played", "ms": Int(ms)])
     }
 
     /// The tools stop running when speech resumes or the turn ends.
@@ -514,6 +563,7 @@ final class VoiceSession {
             commit()
             turnEnded = false
             waiting(true)
+            pipe?.expectReply() // a new reply, so the played count starts from nothing
         case "model":
             commit() // Claude answering is proof the instruction went
             waiting(true) // and words with no voice for them yet are still the wait

@@ -194,6 +194,17 @@ struct ContentView: View {
                     .padding(.horizontal, 8)
                     .accessibilityIdentifier("error")
             }
+            // Not red: something happened to the session that is worth knowing and is
+            // nobody's fault — so far, being muted by the headphones or the call
+            // screen, which the orange button shows without explaining.
+            if let notice = session.notice {
+                Text(notice)
+                    .font(.footnote)
+                    .foregroundStyle(Brand.tertiaryText)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 8)
+                    .accessibilityIdentifier("notice")
+            }
             composer
                 .background {
                     GeometryReader { box in
