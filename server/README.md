@@ -52,6 +52,7 @@ published package, which cannot assume that of a stranger's Node.
 | phone → server | text | `{"type":"mark","name","at"}` — a moment only the phone can see |
 | phone → server | text | `{"type":"approve","text"?}` — run a held instruction, as edited |
 | phone → server | text | `{"type":"stop"}` — stop the running turn: the spoken "stop", as a button |
+| phone → server | text | `{"type":"attach","id","data"}` — a picture, base64 JPEG, for the next instruction |
 | phone → server | text | `{"type":"claude","model"?,"permission"?,"effort"?}` — which model answers, what it may do, how hard it thinks |
 | server → phone | binary | raw PCM Int16 LE, 24 kHz, mono (Claude's voice) |
 | server → phone | text | `{"type":"user"\|"model"\|"tool"\|"approval"\|"interrupted"\|"turn_end"\|"error","text"?}` |
@@ -101,6 +102,13 @@ run this?", which nothing here can, so every action under them is denied. `effor
 one of the levels the model's own row in the `models` list offers, or `default` to
 hand the choice back to the CLI.
 
+`attach` is a picture, and it names no turn on purpose. A typed instruction could carry
+its own, but a spoken one cannot — the instruction is made here from the ears, long after
+the picture was chosen — so the relay holds what has been attached and gives it to
+whichever instruction runs next, typed, spoken or approved. The id is minted by the phone,
+because it has to exist before a socket does; the relay files the picture under it and
+the turn record names it, which is how a chat reopened next week still shows it.
+
 `?data=1` opens a connection that edits what the relay owns and nothing else — no
 voice session, no Gemini, no Claude:
 
@@ -115,6 +123,8 @@ voice session, no Gemini, no Claude:
 | `{"type":"chat_star","id","starred"}` | … — a session tag, so it lists first |
 | `{"type":"chat_rename","id","text"}` | … |
 | `{"type":"chat_delete","id"}` | … |
+| `{"type":"clip_get","id"}` | that utterance's audio, one binary frame |
+| `{"type":"image_get","id"}` | that picture, one binary frame |
 
 Every message is answered with `{"type":"corrections","items":[…]}`,
 `{"type":"prompts","prompts":[…]}`, `{"type":"models","models":[…]}`,
@@ -145,7 +155,7 @@ Every finished turn is appended to `.duck-talk/turns.jsonl` as one line:
 
 ```json
 {"turn":1,"mode":"direct","model":"haiku","permission":"plan",
- "heard":"What branch am I on?","instruction":"What branch am I on?",
+ "heard":"What branch am I on?","instruction":"What branch am I on?","clip":null,"images":[],
  "approval":null,"said":"You're on main.","session_id":"0d85ded9-…","heard_at":1787900000000,"claude_first_at":1787900006146,
  "voice_out_at":1787900007000,"reply_in_at":1787900007001,"voice_ms":5630,"cost_usd":0.063}
 ```

@@ -62,7 +62,6 @@ struct ContentView: View {
     /// The stored strings as what they mean. A value from a version that named things
     /// differently falls back rather than crashing.
     private var mode: Mode { Mode(rawValue: modeName) ?? .direct }
-    private var permission: Permission { Permission(rawValue: permissionName) ?? .plan }
 
     /// One exclusive mode, plus auto-correct as an independent axis. Which chat is
     /// being carried on is the session's own business — it appends `resume` itself, so
@@ -117,7 +116,10 @@ struct ContentView: View {
                 case .corrections(let seed): CorrectionsView(serverURL: serverURL, seed: seed)
                 case .server: ServerView(serverURL: $serverURL)
                 case .mode: ChoiceSheet(title: "Mode", choices: Mode.choices, picked: $modeName)
-                case .permission: ChoiceSheet(title: "What Claude may do", choices: Permission.choices, picked: $permissionName)
+                // What you add to the turn besides words — a picture, and what Claude
+                // may do with it. Permission lives here rather than in the bar: you
+                // glance at the model every turn and set the permission once.
+                case .context: ContextSheet(permissionName: $permissionName) { session.attach($0) }
                 // The only list the phone does not know by heart: which models this Mac
                 // can offer is the relay's to say, so the rows come down the socket.
                 // Effort rides along as a row under the models rather than a fourth
@@ -224,7 +226,7 @@ struct ContentView: View {
     /// fixed and the Corrections menu item land on the same screen — one editor, two
     /// doors, and nothing to keep in step.
     private enum Sheet: Identifiable {
-        case prompts, corrections(Correction?), server, mode, model, permission
+        case prompts, corrections(Correction?), server, mode, model, context
         var id: String {
             switch self {
             case .prompts: return "prompts"
@@ -232,7 +234,7 @@ struct ContentView: View {
             case .server: return "server"
             case .mode: return "mode"
             case .model: return "model"
-            case .permission: return "permission"
+            case .context: return "context"
             }
         }
     }
@@ -378,6 +380,25 @@ struct ContentView: View {
                     }
                 }
             }
+            // The pictures this turn will be given, until it has been. Above the field
+            // like the review clip, because both are what the instruction is *about*.
+            if !session.attached.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 10) {
+                        ForEach(session.attached) { attachment in
+                            AttachThumb(source: .picked(attachment.data), serverURL: serverURL) {
+                                session.drop(attachment)
+                            }
+                        }
+                    }
+                    // Room for the remove badge, which overhangs its square on purpose —
+                    // a target you can hit without covering the picture it is on.
+                    .padding(.top, 8)
+                    .padding(.trailing, 8)
+                }
+                .scrollIndicators(.hidden)
+                .frame(height: 78)
+            }
             if writer == .relay, let clip = session.heardClip {
                 // The spacer, not a frame on the chip: a capsule you can miss by
                 // aiming at it is worse than a small one, and a full-width button
@@ -521,18 +542,19 @@ struct ContentView: View {
                 }
             }
             HStack(spacing: 8) {
-                // Left of the microphone is what Claude is, and it stays through a live
-                // session: the relay puts both on the session already running, so they
-                // are things you can change mid-conversation rather than things you
-                // settle beforehand.
+                // What you are adding to the turn. Stays through a live session, because
+                // a picture can be picked mid-sentence and permission can be changed
+                // mid-conversation — the relay puts both on the session already running.
+                glyph("plus", accent: false) { sheet = .context }
+                    .accessibilityIdentifier("add-context")
+                    .accessibilityLabel("Add context")
+                // Left of the microphone is what Claude is. The model is here rather than
+                // behind the plus for the same reason permission is not: this is the one
+                // you check every turn.
                 capsule(modelLabel) { sheet = .model }
                     .accessibilityIdentifier("model")
                     .accessibilityLabel("Model")
                     .accessibilityValue(modelLabel)
-                capsule(permission.short) { sheet = .permission }
-                    .accessibilityIdentifier("permission")
-                    .accessibilityLabel("What Claude may do")
-                    .accessibilityValue(permission.title)
                 Spacer()
                 // Right of it is the session: how it will run, until it is running, and
                 // then how to quieten it or end it.
@@ -721,6 +743,17 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .user:
             VStack(alignment: .trailing, spacing: 6) {
+                // What the turn was shown, above what it was asked — the order they were
+                // given in, and the order Claude reads them in.
+                if !line.images.isEmpty {
+                    HStack(spacing: 6) {
+                        // By position, not by value: the same photo sent twice is two
+                        // pictures, and two equal ones would be one row under `id: \.self`.
+                        ForEach(Array(line.images.enumerated()), id: \.offset) { _, picture in
+                            AttachThumb(source: picture, serverURL: serverURL)
+                        }
+                    }
+                }
                 // What you said wears a surface; what Claude said does not. That
                 // alternation is what makes a long transcript scannable — the eye finds
                 // the turns without reading them, so neither side needs a name on it.

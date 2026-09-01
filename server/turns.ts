@@ -42,6 +42,9 @@ export interface Turn {
   /** The audio `heard` was made from, as clips.ts files it. Null for a typed turn —
    *  nothing was heard. */
   clip: number | null;
+  /** The pictures this instruction carried, as images.ts files them. Empty for a turn
+   *  with none, which is most of them. */
+  images: number[];
   proposed: string; // what Gemini's tool call asked for, before any correction
   corrected: string | null; // what auto-correct made of it, when on
   instruction: string; // what actually ran — corrected, or edited by the user
@@ -113,6 +116,34 @@ export function clips(): Map<string, number> {
     try {
       const t = JSON.parse(line) as Turn;
       if (t.clip && t.instruction) found.set(t.instruction, t.clip);
+    } catch {
+      // a half-written line is not worth losing the rest of the file over
+    }
+  }
+  return found;
+}
+
+/**
+ * Which pictures each instruction carried — the same lookup as `clips`, for the other
+ * kind of media, and keyed the same way and for the same reasons.
+ *
+ * One read of the file could answer both, and deliberately does not: a caller wanting
+ * audio would then pay for images it never draws, and the two would have to agree on a
+ * pair shape neither needs. Both are cheap, both are called once per chat opened.
+ */
+export function images(): Map<string, number[]> {
+  let text: string;
+  try {
+    text = readFileSync(file(), 'utf8');
+  } catch {
+    return new Map(); // no turns yet, which is the normal first-run state
+  }
+  const found = new Map<string, number[]>();
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const t = JSON.parse(line) as Turn;
+      if (t.images?.length && t.instruction) found.set(t.instruction, t.images);
     } catch {
       // a half-written line is not worth losing the rest of the file over
     }

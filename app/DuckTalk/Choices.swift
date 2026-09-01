@@ -96,13 +96,10 @@ protocol Choosable: RawRepresentable, CaseIterable, Identifiable where RawValue 
     var title: String { get }
     var detail: String { get }
     var icon: String { get }
-    /// What fits on the capsule in the bar, which is narrower than a sheet row.
-    var short: String { get }
 }
 
 extension Choosable {
     var id: String { rawValue }
-    var short: String { title }
     static var choices: [Choice] {
         allCases.map { Choice(id: $0.rawValue, title: $0.title, detail: $0.detail, icon: $0.icon) }
     }
@@ -176,14 +173,6 @@ enum Permission: String, CaseIterable, Choosable {
         case .plan: return "eye"
         case .acceptEdits: return "pencil"
         case .bypassPermissions: return "bolt"
-        }
-    }
-
-    var short: String {
-        switch self {
-        case .plan: return "Plan"
-        case .acceptEdits: return "Edits"
-        case .bypassPermissions: return "Full"
         }
     }
 }

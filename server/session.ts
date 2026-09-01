@@ -22,6 +22,11 @@
  * connection that is only typed to never opens a Gemini session in either direction,
  * and nothing has to be told which kind of connection it is.
  *
+ * A picture is neither spoken nor typed: it is picked before there is an instruction to
+ * give it with, so it is held on the turn rather than carried by the frame that starts
+ * one. That is what makes typed, spoken and approved-in-review a single path — and what
+ * makes a retract free, since the turn it re-runs still holds them. See `attached`.
+ *
  * ears is a long-lived session for the connection and claude one for the *chat* —
  * claimed on open, released on close, and still working after the socket is gone —
  * so an interrupt cancels a turn and leaves both warm; the next one is fast. The
@@ -35,6 +40,7 @@ import { save as saveClip } from './clips.ts';
 import { correct, CORRECT_MODEL } from './correct.ts';
 import { add, load, type Correction } from './corrections.ts';
 import { openEars, keyword, type Ears, type Keyword } from './ears.ts';
+import { save as saveImage } from './images.ts';
 import { append, type Mode, type Turn } from './turns.ts';
 import { openVoice, type Voice } from './voice.ts';
 
@@ -100,6 +106,15 @@ export class Session {
   private gap: ReturnType<typeof setTimeout> | null = null;
 
   private corrections: Correction[] = [];
+
+  // The pictures this turn was given, held from the moment they are picked until the
+  // turn they belong to is over. Not a field on the frame that starts the turn, because
+  // there is no such frame when you speak: the instruction is made here, from the ears,
+  // long after the picture was chosen. Held, all three ways of instructing are one path.
+  //
+  // The bytes arrive once and are used twice — sent to Claude from memory here, written
+  // to disk by images.ts only so a chat reopened next week can still show them.
+  private attached: { id: number; data: string }[] = [];
 
   // What Claude has been asked to be. Kept here as well as in claude.ts so a turn that
   // never reaches a result — interrupted, or stopped — still records what it ran as.
@@ -363,7 +378,7 @@ export class Session {
    * it — say "no", or hang up — so the only refusal that needs a message is the
    * spoken one, and that arrives as a transcript like any other.
    */
-  frame(msg: { type?: string; name?: string; note?: string; at?: number; ms?: number; text?: string; model?: string; permission?: string; effort?: string }): void {
+  frame(msg: { type?: string; name?: string; note?: string; at?: number; ms?: number; text?: string; data?: string; id?: number; model?: string; permission?: string; effort?: string }): void {
     if (msg.type === 'mark' && msg.name === 'reply_in' && typeof msg.at === 'number') this.turn.reply_in_at = msg.at;
     // Only while a turn is in flight: the mark trails its final by a beat, so after a
     // final that itself ended things — a bare "no", a "stop" said to a quiet room —
@@ -389,6 +404,8 @@ export class Session {
       this.voice.heard(msg.ms);
     }
     else if (msg.type === 'text' && typeof msg.text === 'string') this.typed(msg.text);
+    // A picture, picked. It says nothing about when the turn runs — see `attached`.
+    else if (msg.type === 'attach' && typeof msg.data === 'string' && typeof msg.id === 'number') this.attach(msg.id, msg.data);
     else if (msg.type === 'approve') this.decide(true, msg.text);
     // The stop button, as a frame — the spoken "stop" of a typed or followed turn.
     // The phone closes the socket right after, but the two are separate acts on the
@@ -460,6 +477,25 @@ export class Session {
     } catch (e) {
       this.log(`clip failed: ${e}`);
     }
+  }
+
+  /**
+   * File a picture and hold it for the turn it will be given with.
+   *
+   * The id was minted by the phone, because it has to exist before any socket does: a
+   * picture chosen with nothing running is still that picture when you finally press
+   * send. Failing to write costs the replay and not the turn — Claude is sent what is
+   * in memory either way, so a full disk loses the thumbnail in a month-old chat rather
+   * than the answer you are waiting for.
+   */
+  private attach(id: number, data: string): void {
+    try {
+      saveImage(Buffer.from(data, 'base64'), id);
+    } catch (e) {
+      this.log(`image failed: ${e}`);
+    }
+    this.attached.push({ id, data });
+    this.log(`attached image ${id} (${Math.round((data.length * 3) / 4 / 1024)} KB)`);
   }
 
   /**
@@ -559,7 +595,10 @@ export class Session {
     // and every turn that does is guaranteed a closer (turn_end or interrupted).
     this.phone.event({ type: 'turn_start' });
     this.arm();
-    this.claude.send(instruction); // the callbacks wired in open() carry the reply
+    // Recorded rather than consumed: the pictures belong to the turn, and a retract
+    // re-runs this same turn with them still in hand. `endTurn` is what lets go.
+    this.turn.images = this.attached.map((a) => a.id);
+    this.claude.send(instruction, this.attached.map((a) => a.data)); // the callbacks wired in open() carry the reply
   }
 
   // --- Watchdog: the turn is alive, or nothing is arriving --------------------
@@ -620,13 +659,14 @@ export class Session {
     this.phone.event({ type: 'turn_end', session: this.sessionId });
     void this.record(this.turn).catch((e) => this.log(`record failed: ${e}`));
     this.turn = this.blank();
+    this.attached = []; // the pictures were this turn's, and the turn is over
     this.state = 'user';
   }
 
   private blank(): Turn {
     return {
       turn: ++this.turns, mode: this.mode, model: this.model, permission: this.permission, effort: this.effort,
-      session_id: null, heard: '', clip: null, proposed: '', corrected: null, instruction: '',
+      session_id: null, heard: '', clip: null, images: [], proposed: '', corrected: null, instruction: '',
       approval: null, said: '', speech_end_at: null, partial_first_at: null, partial_last_at: null, heard_at: null, corrected_at: null,
       ran_at: null, claude_start_at: null, claude_opens: null, claude_first_at: null, tts_sent_at: null,
       voice_out_at: null, reply_in_at: null, voice_ms: 0, heard_ms: null, cost_usd: null,

@@ -90,8 +90,17 @@ export interface Block {
 }
 
 export interface Claude {
-  /** Start a turn. Only one runs at a time; call after the previous ended or was interrupted. */
-  send(instruction: string): void;
+  /**
+   * Start a turn. Only one runs at a time; call after the previous ended or was
+   * interrupted.
+   *
+   * `images` are base64 JPEGs — the pictures the instruction was given with. They ride
+   * *in* the user message as content blocks rather than as paths for Claude to go and
+   * read, so a turn with a screenshot in it is still one turn. Base64 rather than ids
+   * on purpose: this file is the SDK boundary and knows nothing about where a picture
+   * is kept.
+   */
+  send(instruction: string, images?: string[]): void;
   /**
    * What Claude is: which model answers, what it is allowed to do, and how hard it
    * thinks. `effort` is one of the levels the model's own ModelInfo lists, or
@@ -498,12 +507,21 @@ function openClaude(cb: ClaudeCallbacks): Claude {
   })();
 
   self = {
-    send(instruction) {
+    send(instruction, images) {
       wanted = randomUUID();
       ambient = false; // the user's turn outranks a narration
       opened = false; // this turn announces its own first block
       tail = { ...blank(), instruction };
-      queue.push({ type: 'user', message: { role: 'user', content: instruction }, parent_tool_use_id: null, uuid: wanted } as SDKUserMessage);
+      // A plain string when there are no pictures, so the ordinary turn is byte for byte
+      // the message it has always been. With pictures it is blocks, text last — the
+      // model reads what it was shown before what it was asked about it.
+      const content = images?.length
+        ? [
+            ...images.map((data) => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/jpeg' as const, data } })),
+            { type: 'text' as const, text: instruction },
+          ]
+        : instruction;
+      queue.push({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, uuid: wanted } as SDKUserMessage);
       wake?.();
       wake = null;
       report();
@@ -650,8 +668,14 @@ export function inflight(id: string): string | null {
 // --- CLI: run alone ---------------------------------------------------------
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const instruction = process.argv.slice(2).join(' ');
-  if (!instruction) { console.error('usage: node claude.ts "instruction"'); process.exit(1); }
+  const argv = process.argv.slice(2);
+  // The whole picture path, from a terminal: what the phone sends as base64 is what this
+  // reads off disk, so the half that cannot be seen in a simulator can be proven here.
+  const at = argv.indexOf('--image');
+  const picture = at >= 0 ? argv.splice(at, 2)[1] : undefined;
+  const instruction = argv.join(' ');
+  if (!instruction) { console.error('usage: node claude.ts [--image shot.jpg] "instruction"'); process.exit(1); }
+  const images = picture ? [(await import('node:fs')).readFileSync(picture).toString('base64')] : undefined;
   const t0 = performance.now();
   let first = 0;
   const claude = openClaude({
@@ -666,5 +690,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       process.exit(0);
     },
   });
-  claude.send(instruction);
+  claude.send(instruction, images);
 }

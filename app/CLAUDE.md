@@ -5,13 +5,20 @@ extension holding the lock-screen Live Activity. The home screen is the conversa
 a voice session against `server/` (mic → relay → Gemini → speaker) — with past chats
 behind the drawer on the left.
 
-The bar under the composer splits at the microphone: what Claude *is* on the left (which
-model answers, and what it may do), the session itself on the right (Direct/Review until
-it starts, then mute and stop). The left two stay usable while live, because the relay
-puts both on the session already running. `Choices.swift` holds the choices and the one
-sheet that shows them; the model list comes down the socket rather than being written
+The bar under the composer splits at the microphone: what you are adding to the turn on
+the left (`+`, then the model), the session itself on the right (Direct/Review until it
+starts, then mute and stop). The left two stay usable while live, because the relay puts
+what it carries on the session already running. `Choices.swift` holds the choices and the
+one sheet that shows them; the model list comes down the socket rather than being written
 into the app, and effort — how hard the model thinks — is a row inside the model sheet,
 its levels read off each model's own row in that list.
+
+`+` is `ContextSheet.swift`: the camera, the last dozen photos straight from PhotoKit, All
+photos for the rest, and Permission — which lives there rather than in the bar because you
+glance at the model every turn and set the permission once. A picture is held on the turn
+rather than carried by the frame that starts one (`Attachment.swift`, `VoiceSession.attached`),
+so typing, talking and approving are one path and a retract keeps them. A line just sent
+draws the bytes it still has; a chat reopened later draws by id over `image_get`.
 
 You can also type. A typed instruction is a socket of its own that lives for one turn,
 and the relay opens ears only for a connection that sends audio, so typing costs no

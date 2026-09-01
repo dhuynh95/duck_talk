@@ -21,11 +21,12 @@ mic ─▶ AudioPipe ─▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts
 🔊 ◀─ AudioPipe ◀─ VoiceSession ◀─ws─  server.ts ◀─ session.ts ◀─ voice ◀── Gemini TTS  (reads aloud)
 ⌨️ ─────────────▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts ─┬── claude ◀▶ Claude Code (the agent)
                                                               └── (no ears, no voice)
+📷 ─────────────▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts ──── held for whichever turn runs next
 ```
 
 The conversations are Claude Code's own sessions, so the drawer, `?resume=`, a fork, and starring, renaming or deleting one all go through a single store — `chats.ts` is the only thing that touches it, and a star is that store's own session tag rather than a list kept beside it.
 
-Architecture B: the phone is a mic, a speaker and a keyboard, the Mac holds the sessions. Chosen over "phone talks to Gemini directly" because the orchestrator between Gemini and Claude Code belongs on the server, not in two clients. `session.ts` is that orchestrator, and its state is who holds the floor — user, held (review), or claude. `ears` transcribes only, so a finished transcript IS the instruction and a partial arriving while Claude talks is an interruption — unless it continues the instruction itself, which takes the turn back to run whole; `claude` (Claude Code, one warm session per *chat* — claimed by whichever socket is looking, working on after all of them hang up) answers, and `voice` (a text-to-speech request per sentence, not a session) reads the answer back. Audio is what buys audio: the ears open on the first microphone buffer and the voice speaks only where there are ears, so a typed instruction — one socket, one turn — reaches Claude and never Gemini, with nothing in the URL saying which kind of connection it is. Both carry `?resume=`, so talking and typing are one conversation. What Claude *is* — which model answers, what it is allowed to do, and how hard it thinks — is a frame on that socket rather than a URL parameter, because the CLI takes all three on a session that is already running: they hold from the next turn and nothing reconnects to change its mind. Measured cost of the phone hop: **~1 ms**; the wait a user feels is Claude (a few seconds), recorded per turn in `.duck-talk/turns.jsonl`. The app, the relay and the test harness all run on this Mac, so those timestamps share one clock and latency is a subtraction, never a measurement.
+Architecture B: the phone is a mic, a speaker, a keyboard and a camera, the Mac holds the sessions. Chosen over "phone talks to Gemini directly" because the orchestrator between Gemini and Claude Code belongs on the server, not in two clients. `session.ts` is that orchestrator, and its state is who holds the floor — user, held (review), or claude. `ears` transcribes only, so a finished transcript IS the instruction and a partial arriving while Claude talks is an interruption — unless it continues the instruction itself, which takes the turn back to run whole; `claude` (Claude Code, one warm session per *chat* — claimed by whichever socket is looking, working on after all of them hang up) answers, and `voice` (a text-to-speech request per sentence, not a session) reads the answer back. Audio is what buys audio: the ears open on the first microphone buffer and the voice speaks only where there are ears, so a typed instruction — one socket, one turn — reaches Claude and never Gemini, with nothing in the URL saying which kind of connection it is. A picture is neither spoken nor typed — it is picked before there is an instruction to give it with — so the relay holds it on the turn instead, and typing, talking and approving become one path. Both carry `?resume=`, so talking and typing are one conversation. What Claude *is* — which model answers, what it is allowed to do, and how hard it thinks — is a frame on that socket rather than a URL parameter, because the CLI takes all three on a session that is already running: they hold from the next turn and nothing reconnects to change its mind. Measured cost of the phone hop: **~1 ms**; the wait a user feels is Claude (a few seconds), recorded per turn in `.duck-talk/turns.jsonl`. The app, the relay and the test harness all run on this Mac, so those timestamps share one clock and latency is a subtraction, never a measurement.
 
 The relay is the published package — `npx duck_talk`, and `cli.ts` is its entry both here and there. That is why nothing writable sits beside the code: **the folder you start it in is the project it works on**, and `<folder>/.duck-talk/` is everything the relay learns about that project — turns, corrections, edited prompts, and one log per run. `paths.ts` is the only file that decides any of that, and the only one to change if it should ever live somewhere else.
 
@@ -40,6 +41,7 @@ The request path end to end (phone → relay → Gemini + Claude), the prompts t
 - @server/session.ts
 - @server/ears.ts
 - @server/clips.ts
+- @server/images.ts
 - @server/voice.ts
 - @server/claude.ts
 - @server/live.ts
@@ -58,6 +60,8 @@ The request path end to end (phone → relay → Gemini + Claude), the prompts t
 - @app/DuckTalk/Choices.swift
 - @app/DuckTalk/Chats.swift
 - @app/DuckTalk/Clip.swift
+- @app/DuckTalk/Attachment.swift
+- @app/DuckTalk/ContextSheet.swift
 - @app/sim.py
 - @app/dt
 - @app/project.yml

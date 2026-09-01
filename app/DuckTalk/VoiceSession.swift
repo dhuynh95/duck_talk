@@ -22,6 +22,11 @@ import Observation
 /// socket opens and whenever the choice changes, and it holds from the next turn either
 /// way.
 ///
+/// Pictures travel the same way and for the same reason: the relay puts them on the turn
+/// it is about to run, so one `attach` frame serves talking, typing and approving alike.
+/// They are held here until the turn they were given with ends — which is what lets a
+/// retract re-run with them, and why they are cleared on `turn_end` and not on send.
+///
 /// What you are saying and what has been said are kept apart, because the screen
 /// keeps them apart: `utterance` is the sentence being transcribed right now, and
 /// `lines` is everything already sent. An utterance joins `lines` at the moment the
@@ -55,14 +60,23 @@ final class VoiceSession {
         /// It is what makes a mishearing fixable after the fact — see `fix` on the
         /// home screen.
         var clip: Double?
+        /// The pictures it was given with — in hand for a line just sent, by id for one
+        /// read back out of a stored chat. See `Picture`.
+        var images: [Picture] = []
 
-        init(kind: Kind, text: String = "", tools: [String] = [], running: Bool = false, uuid: String? = nil, clip: Double? = nil) {
-            self.kind = kind; self.text = text; self.tools = tools; self.running = running; self.uuid = uuid; self.clip = clip
+        init(kind: Kind, text: String = "", tools: [String] = [], running: Bool = false, uuid: String? = nil, clip: Double? = nil, images: [Picture] = []) {
+            self.kind = kind; self.text = text; self.tools = tools; self.running = running; self.uuid = uuid; self.clip = clip; self.images = images
         }
 
         /// One message of a stored chat, as a line of the transcript.
         init(_ message: ChatMessage) {
-            self.init(kind: message.role == "user" ? .user : .model, text: message.text, uuid: message.uuid, clip: message.clip)
+            self.init(
+                kind: message.role == "user" ? .user : .model,
+                text: message.text,
+                uuid: message.uuid,
+                clip: message.clip,
+                images: (message.images ?? []).map(Picture.stored),
+            )
         }
 
         /// The tool now running, or — once the run is over — what it did, collapsed.
@@ -94,6 +108,13 @@ final class VoiceSession {
     /// can play what it is asking you about. One holder, because there is one utterance
     /// in flight and the review card is that utterance waiting to be sent.
     private(set) var heardClip: Double?
+    /// The pictures the next instruction will be given with, whether it ends up spoken,
+    /// typed or approved. Held until the turn is over rather than until it is sent, so a
+    /// retract keeps them — the relay's own holder has exactly this lifetime.
+    private(set) var attached: [Attachment] = []
+    /// The last id minted. Ids are the moment a picture was picked, and picking several
+    /// at once would otherwise mint one name for all of them.
+    private var lastAttachId: Double = 0
     /// The instruction the server is holding for a yes/no/edit, in review mode.
     private(set) var pending: String?
     /// A typed instruction is running: sent, and the reply has not finished arriving.
@@ -173,6 +194,7 @@ final class VoiceSession {
         if asking { asking = false; askTask?.cancel(with: .normalClosure, reason: nil) }
         lines = past.map(Line.init)
         chatId = id
+        attached = [] // picked for the conversation you were in, not this one
         utterance = nil
         pending = nil
         error = nil
@@ -226,6 +248,7 @@ final class VoiceSession {
             pipe.onChunk = { data in task.send(.data(data)) { _ in } }
             task.resume()
             sendClaude(to: task) // before anything is said on it
+            sendAttachments(to: task) // and so is anything picked before it opened
             status = .live
             error = nil
             call.reportConnected() // the lock screen stops saying "connecting"; once only
@@ -315,6 +338,39 @@ final class VoiceSession {
         sendClaude(to: askTask)
     }
 
+    /// Keep a picture for the next instruction, and tell whatever socket is open now.
+    ///
+    /// The id is minted here because it has to exist before any socket does — a picture
+    /// picked with nothing running is still that picture when you press send, and every
+    /// socket opened after this one is handed the whole pending set.
+    func attach(_ jpeg: Data) {
+        let now = (Date().timeIntervalSince1970 * 1000).rounded()
+        lastAttachId = max(now, lastAttachId + 1)
+        attached.append(Attachment(id: lastAttachId, data: jpeg))
+        sendAttachments(to: task)
+        sendAttachments(to: askTask)
+    }
+
+    /// Take one back, before it has been sent. Afterwards there is nothing to take back:
+    /// the transcript shows what the turn was actually given.
+    func drop(_ attachment: Attachment) {
+        attached.removeAll { $0.id == attachment.id }
+    }
+
+    /// Everything still pending, onto one socket — the twin of `sendClaude`, and called
+    /// from the same places, because it answers the same question: what does a socket
+    /// need to be told before anything is said on it.
+    private func sendAttachments(to task: URLSessionWebSocketTask?) {
+        guard let task else { return }
+        for attachment in attached {
+            guard let data = try? JSONSerialization.data(withJSONObject: [
+                "type": "attach", "id": attachment.id, "data": attachment.data.base64EncodedString(),
+            ]),
+                let json = String(data: data, encoding: .utf8) else { continue }
+            task.send(.string(json)) { _ in }
+        }
+    }
+
     /// The one frame that carries it — the same message whether a socket has just opened
     /// or the choice has just changed, so there is no separate first-time path to keep in
     /// step with this one.
@@ -340,7 +396,7 @@ final class VoiceSession {
         let said = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !said.isEmpty, status == .idle, !asking else { return }
         // Nothing has to prove this was sent — you wrote it — so it is history at once.
-        lines.append(Line(kind: .user, text: said))
+        lines.append(Line(kind: .user, text: said, images: attached.map { .picked($0.data) }))
         asking = true
         Task { await converse(said, url: resuming(url)) }
     }
@@ -384,6 +440,7 @@ final class VoiceSession {
         askTask = task
         task.resume()
         sendClaude(to: task) // ahead of the instruction, so the turn runs as asked
+        sendAttachments(to: task) // and the pictures ahead of the instruction they go with
         defer {
             task.cancel(with: .normalClosure, reason: nil)
             askTask = nil
@@ -428,7 +485,9 @@ final class VoiceSession {
         utterance = nil
         heardClip = nil
         guard let said, !said.isEmpty else { return }
-        lines.append(Line(kind: .user, text: said, clip: clip))
+        // Copied, not moved: the pictures belong to the turn, and a retract puts this
+        // line back in the composer's hands. `turn_end` is what lets go of them.
+        lines.append(Line(kind: .user, text: said, clip: clip, images: attached.map { .picked($0.data) }))
         committed = true
     }
 
@@ -603,6 +662,7 @@ final class VoiceSession {
             // belongs in the history now.
             commit()
             committed = false // history now, not this turn's to take back
+            attached = [] // the pictures were this turn's, exactly as the relay has it
             turnEnded = true
             replied = false
             pending = nil

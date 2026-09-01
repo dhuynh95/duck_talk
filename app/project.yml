@@ -30,6 +30,10 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSMicrophoneUsageDescription: Duck Talk streams your voice to your Mac so you can talk to it.
+        NSCameraUsageDescription: Duck Talk sends a photo you take to Claude, so you can show it what you are looking at.
+        # Only for the row of recent pictures behind the plus button — the system picker
+        # behind "All photos" needs no permission, so refusing this costs that row alone.
+        NSPhotoLibraryUsageDescription: Duck Talk shows your latest photos so you can send one to Claude without leaving the conversation.
         # Typing a LAN address like ws://192.168.1.5:8765 makes iOS ask permission
         # first, and it needs a sentence to show. The Tailscale wss:// address does
         # not go through this, so a phone set up by `./dt phone` never sees it.

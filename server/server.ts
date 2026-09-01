@@ -11,6 +11,7 @@
  *             {"type":"played","ms"}                  reply audio its speaker has played
  *             {"type":"approve","text"?}              run a held instruction, as edited
  *             {"type":"stop"}                         stop the running turn — the spoken "stop", as a button
+ *             {"type":"attach","id","data"}            a picture, base64 JPEG, for the next instruction
  *             {"type":"claude","model"?,"permission"?,"effort"?} which model answers, what it may do, how hard it thinks
  *   ↓ binary  raw PCM Int16 LE, 24 kHz, mono          (Claude's voice)
  *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"turn_start"|"interrupted"|"turn_end"|"error","text"?}
@@ -47,9 +48,9 @@
  * project's skills, and the chats — so the phone can show those screens with no voice
  * session running. Every message is answered with all of it, so the phone never has
  * to ask twice or guess what the files now say. The exceptions are the two parts that are not small: one chat's messages, sent
- * when asked for by `chat_open`, and one utterance's audio, sent as a binary frame
- * when asked for by `clip_get` — the only binary a data connection ever carries, so
- * there is nothing to tell apart. `fork` branches a chat at one message and answers
+ * when asked for by `chat_open`, and the media, sent as a binary frame when asked for
+ * by `clip_get` or `image_get` — the only binary a data connection ever carries, and one
+ * question gets one frame, so there is nothing to tell apart. `fork` branches a chat at one message and answers
  * with the new one, which is `chat_open` on it; `chat_star`, `chat_rename` and
  * `chat_delete` answer with nothing of their own, because the list already says.
  * Each chat in the list carries `working`: Claude has work in flight there — a turn
@@ -68,6 +69,7 @@ import { Session, type Mode, type Phone } from './session.ts';
 import { billingMode, capabilities } from './claude.ts';
 import { chat, chats, fork, remove as removeChat, rename, star } from './chats.ts';
 import { read as readClip } from './clips.ts';
+import { read as readImage } from './images.ts';
 import { load, remove, save } from './corrections.ts';
 import { watch, working } from './live.ts';
 import { all as prompts, isName, write as writePrompt } from './prompts.ts';
@@ -154,9 +156,9 @@ wss.on('connection', (ws, req) => {
         log(`deleted ${f['id']}`);
       }
       if (ws.readyState !== ws.OPEN) return;
-      // The one thing here that is not text. Sent as the file, so the phone hands it
-      // to a player rather than decoding anything — and asked for by id, so the list
-      // stays small whether there are two clips or fifty.
+      // The things here that are not text. Sent as the file, so the phone hands one to a
+      // player or an image view rather than decoding anything — and asked for by id, so
+      // the list stays small whether there are two clips or fifty.
       //
       // Before the state frames below, which is the whole answer to "was there one":
       // the first frame back is the audio, or it is text and there was none. Nothing
@@ -165,6 +167,13 @@ wss.on('connection', (ws, req) => {
         const wav = readClip(f['id']);
         if (wav) ws.send(wav);
         else log(`clip ${f['id']} is gone`);
+      }
+      // The other thing that is not text, answered the same way and for the same
+      // reasons: a picture the phone is about to draw, asked for by id.
+      if (f?.['type'] === 'image_get' && typeof f['id'] === 'number') {
+        const jpeg = readImage(f['id']);
+        if (jpeg) ws.send(jpeg);
+        else log(`image ${f['id']} is gone`);
       }
       ws.send(JSON.stringify({ type: 'corrections', items: load() }));
       // Every prompt with its text, and with when it takes effect — so the phone can

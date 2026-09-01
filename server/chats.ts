@@ -32,7 +32,7 @@ import { deleteSession, forkSession, getSessionMessages, listSessions, renameSes
 import { inflight } from './claude.ts';
 // The directory claude.ts runs in, which is what scopes a session to this project.
 import { PROJECT as CWD } from './paths.ts';
-import { clips } from './turns.ts';
+import { clips, images } from './turns.ts';
 
 /** One exchange, as it would be spoken. `uuid` is where a fork can cut. */
 export interface Message {
@@ -42,6 +42,9 @@ export interface Message {
   /** The audio this was heard from, when it was spoken and the clip is still kept.
    *  Only the id travels — the phone asks for the sound when someone presses play. */
   clip?: number;
+  /** The pictures it was given with. Ids only, for the reason `clip` is: a thumbnail is
+   *  fetched when it is drawn, so a long chat costs its words and not its megabytes. */
+  images?: number[];
 }
 
 export interface Chat {
@@ -81,6 +84,7 @@ export async function chats(): Promise<Chat[]> {
 export async function chat(id: string): Promise<Message[]> {
   const messages = await getSessionMessages(id, { dir: CWD });
   const heard = clips();
+  const shown = images();
   const all: Message[] = [];
   for (const m of messages) {
     if (m.type !== 'user' && m.type !== 'assistant') continue;
@@ -90,7 +94,11 @@ export async function chat(id: string): Promise<Message[]> {
     if (!said) continue;
     const role = m.type === 'user' ? 'user' : 'model';
     const clip = role === 'user' ? heard.get(said) : undefined;
-    all.push({ uuid: m.uuid, role, text: said, ...(clip ? { clip } : {}) });
+    // Found by what was said, like the audio — and for the same reason: the transcript
+    // stores the picture too, but as base64 inside the message, which is the one thing
+    // not worth sending to a phone that only wants a thumbnail.
+    const pictures = role === 'user' ? shown.get(said) : undefined;
+    all.push({ uuid: m.uuid, role, text: said, ...(clip ? { clip } : {}), ...(pictures ? { images: pictures } : {}) });
   }
   // A chat mid-turn is cut at the instruction now being answered: the CLI flushes
   // reply blocks to the transcript as they complete, and the socket that attaches to
@@ -167,7 +175,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const messages = await chat(first);
     console.error(`${messages.length} messages`);
     for (const m of messages) {
-      console.log(`${m.uuid}  ${m.clip ? '♪' : ' '}${m.role === 'user' ? '›' : ' '} ${m.text.slice(0, 120)}`);
+      console.log(`${m.uuid}  ${m.clip ? '♪' : ' '}${m.images ? '▣' : ' '}${m.role === 'user' ? '›' : ' '} ${m.text.slice(0, 120)}`);
     }
   } else {
     const all = await chats();
