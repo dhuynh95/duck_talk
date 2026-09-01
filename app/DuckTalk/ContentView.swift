@@ -378,7 +378,7 @@ struct ContentView: View {
                     }
                 }
             }
-            if held != nil, let clip = session.heardClip {
+            if writer == .relay, let clip = session.heardClip {
                 // The spacer, not a frame on the chip: a capsule you can miss by
                 // aiming at it is worse than a small one, and a full-width button
                 // around a small glyph is exactly that.
@@ -387,36 +387,55 @@ struct ContentView: View {
                     Spacer()
                 }
             }
-            ZStack(alignment: .topLeading) {
-                TextField("Message", text: text, axis: .vertical)
+            // One writer at a time, and each gets the field it needs rather than one
+            // field whose binding and keyboard traits change underneath it. A switch is
+            // three views, so switching writers builds a new one — where mutating
+            // `disabled` or `autocorrectionDisabled` on the field that currently holds
+            // the keyboard makes UIKit tear the input session down and start it again,
+            // and a session started again has forgotten what you were correcting.
+            switch writer {
+            case .ears:
+                // Not a field at all. What the ears write is not yours to edit — the
+                // relay only hands it back in review — so there is no field to disable
+                // and nothing transparent laid over one to undo the disabling. Tapping
+                // it is still how you take the keyboard back.
+                Text(session.utterance ?? "Message")
+                    .italic()
+                    .foregroundStyle(session.utterance == nil ? Brand.tertiaryText : Brand.secondaryText)
+                    // A sentence still being transcribed grows at its end, and the end
+                    // is the part being read — so a long one loses its head, not its tail.
+                    .lineLimit(6)
+                    .truncationMode(.head)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        session.stop()
+                        // The draft field does not exist yet — it is the next branch of
+                        // this switch — so ask for focus on the next turn of the run
+                        // loop, once stopping has been drawn.
+                        Task { typing = true }
+                    }
+                    .accessibilityIdentifier("message")
+                    .accessibilityLabel("Message")
+            case .you:
+                TextField("Message", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...6)
-                    .italic(hearing)
-                    .foregroundStyle(hearing ? Brand.secondaryText : Brand.text)
-                    // Never "corrected" while reviewing — iOS autocorrect rewrites the
-                    // very words you are there to fix.
-                    .autocorrectionDisabled(held != nil)
-                    .textInputAutocapitalization(held != nil ? .never : .sentences)
                     .focused($typing)
-                    .disabled(hearing)
                     .accessibilityIdentifier("message")
-                    .accessibilityLabel(held != nil ? "Instruction" : "Message")
-                // Reaching for the keyboard is how you say you would rather type, so it
-                // is also how you stop listening. A sibling of the field rather than a
-                // layer on it, because `disabled` reaches everything inside.
-                if hearing {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            session.stop()
-                            // The field is still disabled this turn of the run loop,
-                            // and a disabled field cannot take focus — so ask on the
-                            // next one, once stopping has been drawn.
-                            Task { typing = true }
-                        }
-                }
+                    .accessibilityLabel("Message")
+            case .relay:
+                TextField("Message", text: Binding(get: { held ?? "" }, set: { held = $0 }), axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...6)
+                    // Never "corrected": iOS autocorrect rewrites the very words you
+                    // are there to fix.
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .focused($typing)
+                    .accessibilityIdentifier("message")
+                    .accessibilityLabel("Instruction")
             }
-            .fixedSize(horizontal: false, vertical: true)
             controls
         }
         .padding(12)
@@ -440,7 +459,7 @@ struct ContentView: View {
     /// arguments; the existing arrow sends it, and the relay's Claude runs it the way
     /// it runs anything typed.
     private var matchingSkills: [SkillInfo] {
-        guard !live, held == nil, draft.hasPrefix("/") else { return [] }
+        guard writer == .you, draft.hasPrefix("/") else { return [] }
         let typed = draft.dropFirst().lowercased()
         return relay.skills.filter { typed.isEmpty || $0.name.lowercased().hasPrefix(typed) }
     }
@@ -450,20 +469,24 @@ struct ContentView: View {
     private enum Intent { case talk, send, stop }
 
     private var intent: Intent {
-        if held != nil || (!live && !draft.isEmpty) { return .send }
-        if session.asking { return .stop }
-        return .talk
+        switch writer {
+        case .relay: return .send
+        case .you: if !draft.isEmpty { return .send }
+        case .ears: break
+        }
+        return session.asking ? .stop : .talk
     }
 
-    /// The ears are writing the field: it is not yours until they are done, or until
-    /// the relay hands you what it heard to look at.
-    private var hearing: Bool { live && held == nil }
+    /// Who is writing the field. One field, three writers — you, the ears, and the
+    /// relay when it holds an instruction back for you to look at — and this is that
+    /// sentence as a value: what the field shows, who may change it, whether iOS may
+    /// correct it, and what the button under it does all follow from this and from
+    /// nothing else.
+    private enum Writer { case you, ears, relay }
 
-    /// What the field shows, and who may change it.
-    private var text: Binding<String> {
-        if held != nil { return Binding(get: { held ?? "" }, set: { held = $0 }) }
-        if live { return .constant(session.utterance ?? "") }
-        return $draft
+    private var writer: Writer {
+        if held != nil { return .relay }
+        return live ? .ears : .you
     }
 
     /// Send what is in the field. A held instruction you edited is also the only
@@ -684,6 +707,10 @@ struct ContentView: View {
 
     /// One line of the transcript: what you said, what Claude said, or the tools it
     /// used in between.
+    ///
+    /// The two that are speech are `SelectableText`, so a long press grabs a word and
+    /// the handles widen it. The tool line stays a plain `Text` — it is a run of tool
+    /// names, and nobody lifts a phrase out of one.
     @ViewBuilder
     private func row(_ line: VoiceSession.Line) -> some View {
         switch line.kind {
@@ -698,8 +725,7 @@ struct ContentView: View {
                 // alternation is what makes a long transcript scannable — the eye finds
                 // the turns without reading them, so neither side needs a name on it.
                 // The bubble hugs its own text, which is why the width comes after it.
-                Text(line.text)
-                    .foregroundStyle(Brand.text)
+                SelectableText(line.text)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(Brand.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
@@ -708,7 +734,7 @@ struct ContentView: View {
             }
         case .model:
             VStack(alignment: .leading, spacing: 6) {
-                Text(line.text)
+                SelectableText(line.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 actions(line)
             }
@@ -722,11 +748,13 @@ struct ContentView: View {
     /// eye passes the row, and a word beside it earns its width once and costs it
     /// forever — the row stops being a margin and becomes a second thing to read. The
     /// word belongs in `accessibilityLabel`, where it is said only to someone who
-    /// asked. This is the rule for every icon under a message, not just these three.
+    /// asked. This is the rule for every icon under a message, not just these two.
     ///
     /// One row, and what is in it follows from the line: the only thing to do with
-    /// what you said is fix what was misheard, and the things to do with an answer are
-    /// branch from it or take its text.
+    /// what you said is fix what was misheard, and the thing to do with an answer is
+    /// branch from it. Taking the words is not here any more — a long press on the
+    /// words themselves selects them, and it works on your own lines too, which a
+    /// button on Claude's never did.
     private func actions(_ line: VoiceSession.Line) -> some View {
         HStack(spacing: 18) {
             // Only a line that was heard has audio, so this is also what says the line
@@ -752,10 +780,6 @@ struct ContentView: View {
                     .accessibilityIdentifier("fork")
                     .accessibilityLabel("Fork from here")
                 }
-                Button { UIPasteboard.general.string = line.text } label: {
-                    Image(systemName: "doc.on.doc")
-                }
-                .accessibilityLabel("Copy")
             }
         }
         .font(.footnote)
