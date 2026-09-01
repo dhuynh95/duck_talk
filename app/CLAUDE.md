@@ -15,7 +15,9 @@ its levels read off each model's own row in that list.
 
 You can also type. A typed instruction is a socket of its own that lives for one turn,
 and the relay opens ears only for a connection that sends audio, so typing costs no
-Gemini session and gets no spoken reply. The two are exclusive: touching the field while
+Gemini session and gets no spoken reply. Typing `/` offers the project's skills,
+filtered on-device as you type from the list the data socket already holds; sending
+`/name` runs one, because the CLI expands it into the turn itself. The two are exclusive: touching the field while
 listening stops the session. Both carry `resume`, so a typed turn and a spoken one are
 the same conversation. The earlier chat client (session list, SSE against the web app's
 Express backend, now at the `web-app` tag) is parked on the `ios/wired-mvp` branch;

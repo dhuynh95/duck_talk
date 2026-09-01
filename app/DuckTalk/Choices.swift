@@ -81,6 +81,16 @@ struct ClaudeModel: Codable, Hashable {
     }
 }
 
+/// One skill the project offers, invoked by sending `/name` as an instruction. Like
+/// the model list, only the relay can know which exist, so they arrive down the socket
+/// — and the composer's "/" autocomplete is a filter over these rows, never a request.
+struct SkillInfo: Codable, Hashable {
+    let name: String
+    let description: String
+    /// What the skill takes after its name (e.g. "<file>"), empty for none.
+    let argumentHint: String
+}
+
 /// A set of choices the phone decides for itself, and can therefore describe.
 protocol Choosable: RawRepresentable, CaseIterable, Identifiable where RawValue == String {
     var title: String { get }

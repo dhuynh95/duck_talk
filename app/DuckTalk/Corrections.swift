@@ -29,6 +29,9 @@ final class RelayStore {
     /// Which models this Mac can offer. Asked of Claude Code rather than written into
     /// the app, so a model added to your account appears here with nothing to change.
     private(set) var models: [ClaudeModel] = []
+    /// The project's skills, for the composer's "/" autocomplete. Asked of Claude Code
+    /// like the models, and filtered on the phone as you type.
+    private(set) var skills: [SkillInfo] = []
     /// Every conversation Claude Code has in this project, newest first.
     private(set) var chats: [Chat] = []
     /// The one chat asked for by `openChat`, and which one it was — the messages are
@@ -147,6 +150,7 @@ final class RelayStore {
         let items: [Correction]?
         let prompts: [Prompt]?
         let models: [ClaudeModel]?
+        let skills: [SkillInfo]?
         let chats: [Chat]?
         let id: String?
         let messages: [ChatMessage]?
@@ -159,6 +163,7 @@ final class RelayStore {
         if let items = state.items { self.items = items.reversed() }  // newest first
         if let prompts = state.prompts { self.prompts = prompts }
         if let models = state.models { self.models = models }
+        if let skills = state.skills { self.skills = skills }
         if let chats = state.chats { self.chats = chats }  // already newest first
         if let messages = state.messages {
             self.messages = messages

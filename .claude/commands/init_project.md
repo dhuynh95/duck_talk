@@ -42,6 +42,7 @@ The request path end to end (phone → relay → Gemini + Claude), the prompts t
 - @server/clips.ts
 - @server/voice.ts
 - @server/claude.ts
+- @server/live.ts
 - @server/correct.ts
 - @server/corrections.ts
 - @server/chats.ts
@@ -77,6 +78,7 @@ The request path end to end (phone → relay → Gemini + Claude), the prompts t
 - `todos/` — web-app-era problems, most now solved in `server/` or `app/`: muting, stop words, voice approval, tool streaming, STT corrections. Worth reading for the dead ends they record, especially `correction_gemini_live.md` on the audio calibration loop.
 - `server/import.ts` — a conversation from elsewhere written in as a session. Writes the transcript by hand, because there is no API that puts a past conversation into one.
 - `server/lab.ts` — holds a Gemini Live session open over HTTP and logs every raw message, for answering what the SDK docs do not.
+- `server/log.ts` — the terminal as a file too: one log per start under the project's state directory, a week each.
 - `app/Shared/{LiveSession,StopListening}.swift` — the `ActivityAttributes`, and the two App Intents behind the lock-screen card's buttons: mute and stop. Compiled into both targets, and the intents run in the app, which is what lets them touch the session that holds the microphone.
 - `app/DuckTalkWidget/LiveActivity.swift` — that card, and the Dynamic Island pill. Draws only; the microphone stays alive because of `UIBackgroundModes`, not because of this.
 - `README.md` — the npm page: what `npx duck_talk` does, and how a release is cut.

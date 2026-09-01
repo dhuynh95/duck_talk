@@ -15,6 +15,12 @@ struct Chat: Identifiable, Codable, Hashable {
     /// would fail the whole message and empty the drawer rather than lose one star.
     private let starred: Bool?
     var isStarred: Bool { starred ?? false }
+    /// Claude has work in flight here — a turn being answered, or a background task
+    /// still going. The relay pushes a fresh list whenever this changes, so the pill
+    /// in the drawer appears and clears on its own. Optional for the same reason
+    /// `starred` is: an older relay loses the pill, not the drawer.
+    private let working: Bool?
+    var isWorking: Bool { working ?? false }
 }
 
 /// One exchange from a past chat, as it would have been spoken. `uuid` is where a
@@ -228,12 +234,23 @@ struct ChatsDrawer: View {
             Spacer()
             if opening?.id == chat.id {
                 ProgressView().controlSize(.mini)
+            } else if chat.isWorking {
+                // In place of the age, because working *is* the age: it is being
+                // written to right now.
+                Text("working")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Brand.accent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .overlay(Capsule().strokeBorder(Brand.accent.opacity(0.5)))
+                    .accessibilityIdentifier("working")
             } else {
                 Text(ago(chat.at)).font(.caption2).foregroundStyle(Brand.tertiaryText)
             }
         }
         .contentShape(Rectangle())
         .accessibilityLabel(chat.title)
+        .accessibilityValue(chat.isWorking ? "working" : "")
     }
 
     private func openChat(_ chat: Chat) {

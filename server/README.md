@@ -111,11 +111,17 @@ voice session, no Gemini, no Claude:
 | `{"type":"chat_delete","id"}` | … |
 
 Every message is answered with `{"type":"corrections","items":[…]}`,
-`{"type":"prompts","prompts":[…]}`, `{"type":"models","models":[…]}` and
-`{"type":"chats","chats":[…]}`, so the phone reads what is there rather than tracking
-it. The models are the ones this account may use, asked of the CLI once and remembered
-— the phone writes no model list of its own. One chat's messages are the exception,
-sent only when asked for, because they are the one part that is not small.
+`{"type":"prompts","prompts":[…]}`, `{"type":"models","models":[…]}`,
+`{"type":"skills","skills":[…]}` and `{"type":"chats","chats":[…]}`, so the phone
+reads what is there rather than tracking it. The models are the ones this account may
+use, asked of the CLI once and remembered — the phone writes no model list of its own.
+The skills are the project's own, from the same ask: each row `{name, description,
+argumentHint}`, and sending `/name` as an ordinary `text` instruction runs one — the
+CLI expands it into the turn itself, which is all the composer's `/` autocomplete is.
+A chat carries `working` when Claude has a turn or a background task in flight there,
+and a fresh `chats` frame is pushed the moment that changes — the one answer that
+arrives unasked, since only the relay can see it change. One chat's messages are the
+exception, sent only when asked for, because they are the one part that is not small.
 
 A prompt is one of the files in `prompts/` — see `prompts.ts`, which is the only
 thing that names them. Each arrives with its `title`, a `detail` explaining what it

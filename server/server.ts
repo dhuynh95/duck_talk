@@ -36,15 +36,19 @@
  * turn. Nothing reconnects to think differently.
  *
  * `?data=1` is a connection that reads and edits what the relay can see and nothing
- * else — the corrections, the prompts it says to each model, the models themselves, and
- * the chats — so the phone can show those screens with no voice session running. Every message is answered
- * with all of it, so the phone never has to ask twice or guess what the files now
- * say. The exceptions are the two parts that are not small: one chat's messages, sent
+ * else — the corrections, the prompts it says to each model, the models themselves, the
+ * project's skills, and the chats — so the phone can show those screens with no voice
+ * session running. Every message is answered with all of it, so the phone never has
+ * to ask twice or guess what the files now say. The exceptions are the two parts that are not small: one chat's messages, sent
  * when asked for by `chat_open`, and one utterance's audio, sent as a binary frame
  * when asked for by `clip_get` — the only binary a data connection ever carries, so
  * there is nothing to tell apart. `fork` branches a chat at one message and answers
  * with the new one, which is `chat_open` on it; `chat_star`, `chat_rename` and
  * `chat_delete` answer with nothing of their own, because the list already says.
+ * Each chat in the list carries `working`: Claude has work in flight there — a turn
+ * being answered, or a background task still going. It is the one fact the store on
+ * disk cannot say, and it changes on its own, so a fresh list is also pushed to every
+ * open data connection the moment it does — see live.ts.
  *
  * Every finished turn is appended to `.duck-talk/turns.jsonl`. The phone, this relay and the
  * test harness all run on one Mac, so those timestamps share one clock and any
@@ -58,6 +62,7 @@ import { billingMode, capabilities } from './claude.ts';
 import { chat, chats, fork, remove as removeChat, rename, star } from './chats.ts';
 import { read as readClip } from './clips.ts';
 import { load, remove, save } from './corrections.ts';
+import { watch, working } from './live.ts';
 import { all as prompts, isName, write as writePrompt } from './prompts.ts';
 import { reach } from './reach.ts';
 
@@ -77,6 +82,26 @@ const ai = new GoogleGenAI({ apiKey: API_KEY });
 const wss = new WebSocketServer({ port: PORT });
 let nextId = 1;
 
+// The chat list with the one fact only this process knows on it: which chats Claude
+// is working in right now. Merged here rather than in chats.ts, because the store on
+// disk cannot say it — see live.ts.
+async function chatList() {
+  const busy = working();
+  return (await chats()).map((c) => ({ ...c, working: busy.has(c.id) }));
+}
+
+// The data connections held open right now — the drawer keeps one for as long as it
+// is on screen. Told the moment the working set changes, so the pill on a chat
+// appears and clears without the phone asking.
+const dataConnections = new Set<import('ws').WebSocket>();
+watch(() => {
+  if (!dataConnections.size) return;
+  void chatList().then((list) => {
+    const frame = JSON.stringify({ type: 'chats', chats: list });
+    for (const ws of dataConnections) if (ws.readyState === ws.OPEN) ws.send(frame);
+  }).catch((e) => console.error(`chat list push failed: ${e}`));
+});
+
 wss.on('connection', (ws, req) => {
   const id = nextId++;
   const url = new URL(req.url ?? '/', 'ws://x');
@@ -94,6 +119,7 @@ wss.on('connection', (ws, req) => {
   // the phone can open those screens whether or not a session is live. Every message
   // is answered with all of it, so the phone never has to guess what the files say.
   if (url.searchParams.get('data') === '1') {
+    dataConnections.add(ws);
     ws.on('message', async (raw, isBinary) => {
       if (isBinary) return;
       const f = parse(String(raw));
@@ -141,9 +167,13 @@ wss.on('connection', (ws, req) => {
       // the CLI rather than written down here, the same rule the startup addresses
       // follow: the one process that knows, says. Remembered after the first ask, so
       // only the first data connection of a relay's life waits for it.
-      const { models } = await capabilities();
+      const { models, skills } = await capabilities();
       if (ws.readyState !== ws.OPEN) return;
       ws.send(JSON.stringify({ type: 'models', models }));
+      // The project's skills, for the composer's "/" autocomplete. The whole list every
+      // time, like everything above: filtering as you type is the phone's own filter
+      // over rows it already holds, never a question over the wire.
+      ws.send(JSON.stringify({ type: 'skills', skills }));
       // Branching a chat has to happen before the list is sent, or the new one is
       // missing from the answer that reports it.
       let forked: string | null = null;
@@ -156,7 +186,7 @@ wss.on('connection', (ws, req) => {
         }
       }
       if (ws.readyState !== ws.OPEN) return;
-      ws.send(JSON.stringify({ type: 'chats', chats: await chats() }));
+      ws.send(JSON.stringify({ type: 'chats', chats: await chatList() }));
       // The list is small and always sent; a chat's messages are not, so they come
       // only when one is opened — or when a fork has just made one worth opening.
       const open = forked ?? (f?.['type'] === 'chat_open' && typeof f['id'] === 'string' ? f['id'] : null);
@@ -164,7 +194,7 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'chat', id: open, messages: await chat(open), forked: forked !== null }));
       }
     });
-    ws.on('close', () => log('close'));
+    ws.on('close', () => { dataConnections.delete(ws); log('close'); });
     return;
   }
 

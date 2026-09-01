@@ -221,8 +221,9 @@ export class Session {
         this.turn.effort = this.effort = effort;
         if (error) { this.phone.event({ type: 'error', text: error }); this.cancel(`claude error: ${error}`); return; }
         // With a voice, the turn ends when the audio has been heard; without one,
-        // Claude finishing is the whole of it.
-        if (this.ears) this.voice.finish(); // onDone → endTurn once the audio drains
+        // Claude finishing is the whole of it. A closed session has no voice to
+        // drain — the turn outlived its socket, and ends (and is recorded) here.
+        if (this.ears && !this.closed) this.voice.finish(); // onDone → endTurn once the audio drains
         else this.endTurn();
       },
     });

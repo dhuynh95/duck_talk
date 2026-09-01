@@ -332,6 +332,37 @@ struct ContentView: View {
             // below stops being a guess. Inline rather than a sheet — mid-hold you are
             // deciding whether to *run* something, and nothing modal belongs between
             // you and that.
+            // "/" reaches for a skill, and these are the ones that match so far. Rows
+            // above the field, filtered on every keystroke from the list the data
+            // socket already delivered — nothing is asked of the relay as you type.
+            if !matchingSkills.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(matchingSkills, id: \.name) { skill in
+                        Button { draft = "/\(skill.name) " } label: {
+                            HStack(spacing: 8) {
+                                Text("/\(skill.name)")
+                                    .font(.callout.monospaced())
+                                    .foregroundStyle(Brand.text)
+                                if !skill.argumentHint.isEmpty {
+                                    Text(skill.argumentHint)
+                                        .font(.caption)
+                                        .foregroundStyle(Brand.tertiaryText)
+                                }
+                                Spacer(minLength: 12)
+                                Text(skill.description)
+                                    .font(.caption)
+                                    .foregroundStyle(Brand.secondaryText)
+                                    .lineLimit(1)
+                            }
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("skill-\(skill.name)")
+                        .accessibilityLabel(skill.name)
+                    }
+                }
+            }
             if held != nil, let clip = session.heardClip {
                 // The spacer, not a frame on the chip: a capsule you can miss by
                 // aiming at it is worse than a small one, and a full-width button
@@ -387,6 +418,16 @@ struct ContentView: View {
         .animation(.easeOut(duration: 0.2), value: live)
         .animation(.easeOut(duration: 0.2), value: session.muted)
         .onChange(of: session.pending) { held = session.pending }
+    }
+
+    /// The skills matching what is typed after "/" — the whole of autocomplete. A tap
+    /// puts "/name " in the field rather than sending, because a skill can take
+    /// arguments; the existing arrow sends it, and the relay's Claude runs it the way
+    /// it runs anything typed.
+    private var matchingSkills: [SkillInfo] {
+        guard !live, held == nil, draft.hasPrefix("/") else { return [] }
+        let typed = draft.dropFirst().lowercased()
+        return relay.skills.filter { typed.isEmpty || $0.name.lowercased().hasPrefix(typed) }
     }
 
     /// What pressing the middle button does. The field's contents follow from the same

@@ -37,7 +37,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { query, type AccountInfo, type EffortLevel, type ModelInfo, type Options, type PermissionMode, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type AccountInfo, type EffortLevel, type ModelInfo, type Options, type PermissionMode, type Query, type SDKUserMessage, type SlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import { track } from './live.ts';
 import { PROJECT as CWD } from './paths.ts';
 import { read } from './prompts.ts';
 
@@ -141,6 +142,11 @@ export interface Capabilities {
   /** Every model this account may use, each with the words to show for it. Empty for
    *  the same reasons `account` is null. */
   models: ModelInfo[];
+  /** The project's skills, each invokable by sending `/name` as an instruction — the
+   *  CLI expands it into the turn itself, so the Skill tool stays disallowed and the
+   *  model still cannot reach for one on its own. Empty for the same reasons `account`
+   *  is null. */
+  skills: SlashCommand[];
 }
 
 /**
@@ -176,12 +182,26 @@ async function ask(): Promise<Capabilities> {
   });
   try {
     const init = await q.initializationResult();
-    return { account: init.account, models: init.models };
+    return { account: init.account, models: init.models, skills: skills(init.commands) };
   } catch {
-    return { account: null, models: [] }; // no CLI, or one that cannot say — reported below
+    return { account: null, models: [], skills: [] }; // no CLI, or one that cannot say — reported below
   } finally {
     q.close();
   }
+}
+
+/**
+ * The project's skills, out of the CLI's command list — which mixes them in with the
+ * built-ins (/usage, /compact). The one mark of a skill is the source suffix the CLI
+ * puts on its description, and this relay loads only project settings, so "(project)"
+ * is the whole filter. The suffix comes off on the way through: it says where the row
+ * came from, which here is always the same place.
+ */
+function skills(commands: SlashCommand[]): SlashCommand[] {
+  const source = / \(project\)$/;
+  return commands
+    .filter((c) => source.test(c.description))
+    .map((c) => ({ ...c, description: c.description.replace(source, '') }));
 }
 
 /** That answer as the one line the relay prints at startup. */
@@ -242,6 +262,15 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
   let effort = EFFORT;
   // What `set` is still applying, if anything. An instruction waits for it below.
   let settled: Promise<unknown> = Promise.resolve();
+  // Which chat this session turned out to be, and whether work is in flight — the one
+  // fact about a chat the list on the phone cannot read off disk, so it is reported
+  // to live.ts on every edge that changes the answer. Work is a turn being answered
+  // or a background task still going, and both outlive the socket: closing ends the
+  // input, not the turn — measured, a turn cut off at 1s ran its tools and finished.
+  // The id is null until the CLI's first frame names it, which the loop below reads.
+  const live = track();
+  let sessionId: string | null = cb.resume ?? null;
+  const report = () => live.update(sessionId, wanted !== null || ambient || tasks > 0);
   /** Actually end the session — what `close` does at once when nothing is working,
    *  and what the drain does when the last task settles or the cap fires. */
   function finish(): void {
@@ -328,6 +357,10 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
         // this loop did before there were stamps.
         const stamp = (msg as { user_message_uuid?: string }).user_message_uuid;
         if (stamp) stamps = true;
+        // Every frame names the chat, and the first one is the earliest anyone can:
+        // a fresh session has no id until the CLI mints one.
+        const sid = (msg as { session_id?: string }).session_id;
+        if (sid && sid !== sessionId) { sessionId = sid; report(); }
         if (stamp && msg.type !== 'result') streaming = stamp;
         // Still wanted? While a send is outstanding the stamp decides; while nothing
         // is owed, the only turn allowed through is an ambient one — the CLI is
@@ -358,6 +391,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
           // The full live set every time membership changes — replace, never count.
           tasks = msg.tasks.filter((t) => !t.ambient).length;
           log(`background tasks: ${tasks}${tasks ? ` (${msg.tasks.filter((t) => !t.ambient).map((t) => t.description).join('; ')})` : ''}`);
+          report();
           if (tasks === 0 && draining) finish(); // the drain was for these, and they are done
         } else if (msg.type === 'system' && msg.subtype === 'task_notification') {
           if (msg.ambient) continue; // housekeeping, not the user's work
@@ -367,6 +401,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
           // so the narration still announces its own first block.
           ambient = true;
           if (wanted === null) opened = false;
+          report();
         } else if (msg.type === 'result') {
           // What the turn cost, which is not what the result says it cost. On a warm
           // streaming session `total_cost_usd` is the running total for the whole
@@ -395,6 +430,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
           if (wanted === null) ambient = false; // a narration's own result is its end
           wanted = null; // answered; nothing is owed until the next send
           opened = false; // a narration queued behind this turn announces its own block
+          report();
           let error: string | null = null;
           if (msg.is_error) error = 'errors' in msg && Array.isArray(msg.errors) ? msg.errors.join('; ') : 'result' in msg ? String(msg.result) : 'unknown error';
           cb.onResult({ sessionId: msg.session_id, costUsd: cost, error, model: model ?? null, permission, effort });
@@ -402,6 +438,8 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
       }
     } catch (e) {
       if (!done) log(`claude stream ended: ${e}`);
+    } finally {
+      live.close(); // the stream is the work; when it ends, nothing here is working
     }
   })();
 
@@ -413,6 +451,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
       queue.push({ type: 'user', message: { role: 'user', content: instruction }, parent_tool_use_id: null, uuid: wanted } as SDKUserMessage);
       wake?.();
       wake = null;
+      report();
     },
     set(wantModel, wantPermission, wantEffort) {
       // Recorded before the answer arrives, so repeating a value costs nothing — and
@@ -458,6 +497,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
       // turn it lands on, that turn's output now matches nothing.
       wanted = null;
       ambient = false; // talking over the announcement is the same barge-in as ever
+      report();
       void q.interrupt().catch((e) => log(`claude interrupt: ${e}`));
     },
     close() {
