@@ -22,14 +22,15 @@
  * connection that is only typed to never opens a Gemini session in either direction,
  * and nothing has to be told which kind of connection it is.
  *
- * ears and claude are long-lived sessions for the connection, so an interrupt cancels
- * a turn and leaves both warm; the next one is fast. The voice is not a session at
- * all — one request per sentence — so there is nothing there for an interrupt to
- * damage and nothing to reopen when one fails.
+ * ears is a long-lived session for the connection and claude one for the *chat* —
+ * claimed on open, released on close, and still working after the socket is gone —
+ * so an interrupt cancels a turn and leaves both warm; the next one is fast. The
+ * voice is not a session at all — one request per sentence — so there is nothing
+ * there for an interrupt to damage and nothing to reopen when one fails.
  */
 
 import { GoogleGenAI } from '@google/genai';
-import { DEFAULTS, openClaude, type Claude, type PermissionMode } from './claude.ts';
+import { claim, DEFAULTS, release, type Claude, type ClaudeCallbacks, type PermissionMode } from './claude.ts';
 import { save as saveClip } from './clips.ts';
 import { correct, CORRECT_MODEL } from './correct.ts';
 import { add, load, type Correction } from './corrections.ts';
@@ -51,7 +52,9 @@ export interface Phone {
    *  read as the Agent finishing. `retract` rides on `interrupted`: the turn was
    *  taken back, so what it already put on the screen comes off — a warm Claude can
    *  answer a fragment inside the pause that made it, and that answer must not sit
-   *  in the transcript beside the real one. */
+   *  in the transcript beside the real one. `turn_start` carries nothing at all: it
+   *  is the instruction having been dispatched, which is the earliest anything can
+   *  honestly say the turn is running — see `run`. */
   event(msg: { type: string; text?: string; partial?: boolean; session?: string | null; clip?: number | null; parent?: string | null; retract?: boolean }): void;
 }
 
@@ -83,6 +86,8 @@ export class Session {
   private turns = 0;
   private turn = this.blank();
   private claude!: Claude;
+  /** The callbacks handed to `claim` — this session's proof of attachment. */
+  private audience!: ClaudeCallbacks;
   private sessionId: string | null = null;
   private closed = false;
   private watchdog: ReturnType<typeof setTimeout> | null = null;
@@ -162,22 +167,25 @@ export class Session {
       onDone: () => { if (this.state === 'claude') this.endTurn(); },
     });
 
-    // Claude is a session too, warm for the whole connection. Its callbacks always
-    // belong to the turn now running — claude.ts fences an interrupted turn's
-    // stragglers — so no correlation guard is needed here.
-    this.claude = openClaude({
-      resume: this.resume,
+    // Claude is a session too, warm for the whole connection — claimed rather than
+    // opened, so resuming a chat whose session is still working reattaches to it and
+    // the running turn is replayed through these callbacks. They always belong to
+    // the turn now running — claude.ts fences an interrupted turn's stragglers — so
+    // no correlation guard is needed here. The object is kept: it is this session's
+    // proof of attachment, which `release` requires so a socket that closed late
+    // cannot strip the callbacks off whoever attached after it.
+    this.audience = {
       log: this.log,
       onStart: (kind) => {
-        // A turn nobody sent: a background task finished and Claude is speaking up
-        // to say so — claude.ts only lets such a turn through when nothing is owed.
-        // Claiming the floor is the whole of handling it: everything downstream (the
-        // voice, the phone, turn_end, the record that skips an instructionless turn)
-        // already treats a claimed floor as a turn, barge-in included. A held floor
-        // is not claimed: the review card is a question, and the narration's text is
+        // A turn this connection never sent: a background task's narration, or a
+        // turn replayed by attaching to a session mid-turn. Claiming the floor is
+        // the whole of handling either: everything downstream (the voice, the
+        // phone, turn_end, the record that skips an instructionless turn) already
+        // treats a claimed floor as a turn, barge-in included. A held floor is not
+        // claimed: the review card is a question, and the narration's text is
         // dropped by the guard in onText.
         if (this.state === 'user' && !this.closed) {
-          this.log('claude speaks up (background task)');
+          this.log('claude has the floor (attached mid-turn, or a task narration)');
           this.state = 'claude';
           this.arm();
         }
@@ -226,7 +234,8 @@ export class Session {
         if (this.ears && !this.closed) this.voice.finish(); // onDone → endTurn once the audio drains
         else this.endTurn();
       },
-    });
+    };
+    this.claude = claim(this.resume, this.audience);
   }
 
   /**
@@ -356,6 +365,10 @@ export class Session {
     else if (msg.type === 'mark' && typeof msg.name === 'string' && msg.name.startsWith('stem_')) this.log(`stem press: ${msg.name}`);
     else if (msg.type === 'text' && typeof msg.text === 'string') this.typed(msg.text);
     else if (msg.type === 'approve') this.decide(true, msg.text);
+    // The stop button, as a frame — the spoken "stop" of a typed or followed turn.
+    // The phone closes the socket right after, but the two are separate acts on the
+    // wire on purpose: stopping the work and hanging up can be decoupled later.
+    else if (msg.type === 'stop') this.cancel('stop frame');
     else if (msg.type === 'claude') this.be(msg.model, msg.permission, msg.effort);
   }
 
@@ -381,7 +394,9 @@ export class Session {
     this.closed = true;
     this.disarm();
     if (this.gap) { clearTimeout(this.gap); this.gap = null; }
-    this.claude?.close();
+    // Released, not closed: a busy session stays in the pool and finishes its work,
+    // reattachable by the next `?resume=` — see claude.ts.
+    if (this.claude) release(this.claude, this.audience);
     this.ears?.close();
     this.voice?.close();
   }
@@ -512,6 +527,12 @@ export class Session {
   private run(instruction: string): void {
     this.state = 'claude';
     this.turn.ran_at = Date.now();
+    // The turn is running, said the moment it is true rather than at Claude's first
+    // block ~1.5s later — the longest silent stretch a user waits through, and the
+    // phone's cue to commit the utterance and start the filler. Safe here where it
+    // was not on the final transcript: a keyword-only final never reaches this line,
+    // and every turn that does is guaranteed a closer (turn_end or interrupted).
+    this.phone.event({ type: 'turn_start' });
     this.arm();
     this.claude.send(instruction); // the callbacks wired in open() carry the reply
   }

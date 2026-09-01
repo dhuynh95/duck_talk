@@ -87,9 +87,13 @@ struct ContentView: View {
                 current: chat,
                 onOpen: { opened, messages in
                     // Loading a chat is not starting one: the transcript appears, and
-                    // whatever you do next — talk or type — carries it on.
+                    // whatever you do next — talk or type — carries it on. A working
+                    // chat is the exception worth making: it is watched, not just
+                    // shown — the relay attaches the socket to the live session and
+                    // the reply streams in mid-sentence.
                     chat = opened
                     session.show(messages, id: opened.id)
+                    if opened.isWorking, let url { session.follow(url: url) }
                 },
                 onNew: {
                     chat = nil

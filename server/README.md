@@ -51,6 +51,7 @@ published package, which cannot assume that of a stranger's Node.
 | phone → server | text | `{"type":"text","text"}` — an instruction, typed |
 | phone → server | text | `{"type":"mark","name","at"}` — a moment only the phone can see |
 | phone → server | text | `{"type":"approve","text"?}` — run a held instruction, as edited |
+| phone → server | text | `{"type":"stop"}` — stop the running turn: the spoken "stop", as a button |
 | phone → server | text | `{"type":"claude","model"?,"permission"?,"effort"?}` — which model answers, what it may do, how hard it thinks |
 | server → phone | binary | raw PCM Int16 LE, 24 kHz, mono (Claude's voice) |
 | server → phone | text | `{"type":"user"\|"model"\|"tool"\|"approval"\|"interrupted"\|"turn_end"\|"error","text"?}` |
@@ -84,7 +85,12 @@ at once, `review` holds it until it is approved — by an `approve` frame, or by
 "no" or to hang up.
 `?correct=1` and `?readback=1` are orthogonal to both. `?resume=<session id>` carries
 on a past conversation instead of starting one — any session Claude Code has in this
-project, including the ones you started in a terminal.
+project, including the ones you started in a terminal. A Claude session belongs to its
+chat, not to a socket: resuming a chat whose session is still working *attaches* to it
+— the running turn's reply so far is replayed down the new socket, then the rest
+streams live, ending in `turn_end` as ever. So `?resume=` with nothing to send is how
+a phone watches a working chat, and `chat_open` on one cuts its snapshot at the
+instruction being answered, because the replay carries the reply.
 
 Which model answers, what it may do and how hard it thinks are deliberately not URL
 parameters. The CLI takes all three mid-session, so they arrive as a `claude` frame —

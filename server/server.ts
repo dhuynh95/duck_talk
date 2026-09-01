@@ -9,9 +9,11 @@
  *   ↑ text    {"type":"text","text"}                  an instruction, typed
  *             {"type":"mark","name","at"}             a moment only the phone can see
  *             {"type":"approve","text"?}              run a held instruction, as edited
+ *             {"type":"stop"}                         stop the running turn — the spoken "stop", as a button
  *             {"type":"claude","model"?,"permission"?,"effort"?} which model answers, what it may do, how hard it thinks
  *   ↓ binary  raw PCM Int16 LE, 24 kHz, mono          (Claude's voice)
- *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"interrupted"|"turn_end"|"error","text"?}
+ *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"turn_start"|"interrupted"|"turn_end"|"error","text"?}
+ *             a `turn_start` is the instruction reaching Claude — the turn is running
  *             a `user` event also carries `partial`: true replaces the line, false ends it
  *             a `turn_end` carries `session`: which chat this connection is in
  *             a finished `user` carries `clip`: that utterance's audio, by id
@@ -28,7 +30,11 @@
  * taught (`.duck-talk/corrections.jsonl`). `?readback=1` also reads a held instruction aloud,
  * for deciding without looking at the screen. `?resume=<id>` carries on a past chat
  * instead of starting one — any session Claude Code has in this project, including
- * the ones you started in a terminal.
+ * the ones you started in a terminal. A resumed chat whose Claude session is still
+ * working is *attached to* rather than reopened — see claude.ts — and the running
+ * turn's reply so far is replayed down the new socket before the rest streams live.
+ * So a connection opened with `?resume=` and nothing to send is how the phone
+ * watches a working chat: the same events as any turn, ending in `turn_end`.
  *
  * Which model answers, what it is allowed to do and how hard it thinks are deliberately
  * not in the URL: the CLI takes all three mid-session, so they arrive as a `claude`

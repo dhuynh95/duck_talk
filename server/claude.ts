@@ -1,10 +1,19 @@
 /**
- * Claude Code as one long-lived session per phone connection. Instructions go in
+ * Claude Code as one long-lived session per chat. Instructions go in
  * through `send`, text and tool blocks come back through callbacks, and a `result`
  * ends each turn. The session stays warm between turns — the first turn pays the
  * ~3s startup, every turn after is ~1s to first token — and `interrupt` stops the
  * current turn without tearing the session down, which is what barge-in needs. That
  * warmth is why the `claude` prompt is read once here and not per turn.
+ *
+ * Per chat, not per socket: a session belongs to the conversation it is having, and
+ * the socket is only whoever is looking at it right now. `claim` is the one door —
+ * resuming a chat whose session is still alive reattaches to it instead of spawning a
+ * second process onto the same transcript, and `attach` replays the running turn's
+ * reply so far before streaming the rest, so switching onto a working chat picks the
+ * stream up mid-sentence. `release` is the other side: detaching leaves a busy
+ * session to finish on its own (capped by DRAIN_MS, reattachable until then) and
+ * closes an idle one, because nothing could ever send to it again.
  *
  * Three things about the session are not fixed that way: which model answers, what it
  * is allowed to do, and how hard it thinks. All are requests the CLI takes mid-session,
@@ -43,9 +52,10 @@ import { PROJECT as CWD } from './paths.ts';
 import { read } from './prompts.ts';
 
 const MODEL = process.env['CLAUDE_MODEL'];
-// How long a closed session may keep running for the background tasks still in it.
-// A ceiling, not a wait: with no tasks the close is immediate, and the moment the
-// last one settles the drain ends early. 0 closes at once, tasks and all.
+// How long a session may keep running with nobody attached — for the background tasks
+// still in it, or the turn still being answered. A ceiling, not a wait: an idle
+// release closes at once, a busy one ends the moment the work settles, and a `claim`
+// before then lifts the cap. 0 closes at once, work and all.
 const DRAIN_MS = Number(process.env['TASK_DRAIN_MS'] ?? 600_000);
 const PERMISSION_MODE = (process.env['CLAUDE_PERMISSION_MODE'] ?? 'plan') as PermissionMode;
 const EFFORT = (process.env['CLAUDE_EFFORT'] as EffortLevel | undefined) ?? null;
@@ -94,6 +104,17 @@ export interface Claude {
   set(model?: string, permission?: PermissionMode, effort?: string): void;
   /** Stop the current turn. The session stays warm for the next `send`. */
   interrupt(): void;
+  /**
+   * Point the callbacks at a new consumer — the socket now looking at this chat.
+   * A turn in flight is replayed first, synchronously — its opening kind and the
+   * reply so far — so the new consumer sees the whole turn and nothing twice: no
+   * live delta can interleave until this returns.
+   */
+  attach(cb: ClaudeCallbacks): void;
+  /** Stop looking — but only if `cb` is still the audience: a socket that lingered
+   *  past a switch must not strip the callbacks off whoever attached after it.
+   *  Detached, output goes to a sink that keeps the log; the work continues. */
+  detach(cb: ClaudeCallbacks): void;
   close(): void;
 }
 
@@ -215,11 +236,15 @@ export async function billingMode(): Promise<string> {
   return who ? `${who} — ${how}` : how;
 }
 
-export function openClaude(cb: ClaudeCallbacks): Claude {
-  const log = cb.log ?? (() => {});
+function openClaude(cb: ClaudeCallbacks): Claude {
+  // Where the output goes right now. Starts on the opener's callbacks; `attach` points
+  // it at whoever looks next, and `detach` at the sink below — so every consumer of a
+  // frame reads through this, and swapping the audience is one assignment.
+  let target: ClaudeCallbacks = cb;
+  const log = (m: string) => (target.log ?? (() => {}))(m);
   /** Said in the log and on the phone: this happened between turns, so no result
    *  will carry it and a silent failure would look like the tap did nothing. */
-  const fail = (text: string) => { log(text); cb.onError?.(text); };
+  const fail = (text: string) => { log(text); target.onError?.(text); };
 
   // The input side: `send` drops an instruction in the queue and wakes the generator
   // the SDK is reading. One message per turn — the caller never queues two.
@@ -270,7 +295,18 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
   // The id is null until the CLI's first frame names it, which the loop below reads.
   const live = track();
   let sessionId: string | null = cb.resume ?? null;
-  const report = () => live.update(sessionId, wanted !== null || ambient || tasks > 0);
+  const busy = () => wanted !== null || ambient || tasks > 0;
+  const report = () => live.update(sessionId, busy());
+  // Nobody attached: nothing to show, but the work goes on and so does its log —
+  // named by the chat, since no connection owns these lines.
+  const sink: ClaudeCallbacks = {
+    onText: () => {}, onBlock: () => {}, onResult: () => {},
+    log: (m) => console.log(`[${sessionId?.slice(0, 8) ?? 'claude'}] ${m}`),
+  };
+  // The turn now running, kept so a socket attaching mid-turn can be shown what it
+  // missed: how the turn opened and the reply so far, replayed ahead of the live rest.
+  const blank = () => ({ instruction: null as string | null, opens: null as string | null, said: '' });
+  let tail = blank();
   /** Actually end the session — what `close` does at once when nothing is working,
    *  and what the drain does when the last task settles or the cap fires. */
   function finish(): void {
@@ -345,6 +381,10 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
   if (cb.resume) { options.resume = cb.resume; log(`resuming ${cb.resume}`); }
 
   const q: Query = query({ prompt: input(), options });
+  // Assigned at the bottom of this function, before anything asynchronous can run —
+  // the loop below only touches it once frames arrive, and the pool needs the object
+  // itself as the thing a later `claim` hands back.
+  let self!: Claude;
 
   // The output side: one loop for the life of the session, routing each turn's
   // messages to the callbacks. `result` marks the end of a turn.
@@ -358,9 +398,15 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
         const stamp = (msg as { user_message_uuid?: string }).user_message_uuid;
         if (stamp) stamps = true;
         // Every frame names the chat, and the first one is the earliest anyone can:
-        // a fresh session has no id until the CLI mints one.
+        // a fresh session has no id until the CLI mints one. The pool key follows it,
+        // so `claim` can find this session from the moment it is findable at all.
         const sid = (msg as { session_id?: string }).session_id;
-        if (sid && sid !== sessionId) { sessionId = sid; report(); }
+        if (sid && sid !== sessionId) {
+          if (sessionId) pool.delete(sessionId);
+          sessionId = sid;
+          pool.set(sid, { claude: self, busy, attached: () => target !== sink, instruction: () => tail.instruction });
+          report();
+        }
         if (stamp && msg.type !== 'result') streaming = stamp;
         // Still wanted? While a send is outstanding the stamp decides; while nothing
         // is owed, the only turn allowed through is an ambient one — the CLI is
@@ -372,20 +418,24 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
           const event = msg.event as { type?: string; delta?: { text?: unknown }; content_block?: { type?: string } };
           if (!opened && event.type === 'content_block_start') {
             opened = true;
-            cb.onStart?.(event.content_block?.type ?? 'unknown');
+            tail.opens ??= event.content_block?.type ?? 'unknown';
+            target.onStart?.(event.content_block?.type ?? 'unknown');
           }
-          if (typeof event.delta?.text === 'string' && event.delta.text) cb.onText(event.delta.text);
+          if (typeof event.delta?.text === 'string' && event.delta.text) {
+            tail.said += event.delta.text;
+            target.onText(event.delta.text);
+          }
         } else if (msg.type === 'assistant') {
           if (!alive) continue;
           for (const b of msg.message.content as { type: string; name?: string }[]) {
-            if (b.type === 'tool_use') cb.onBlock({ name: b.name!, parent: msg.parent_tool_use_id });
+            if (b.type === 'tool_use') target.onBlock({ name: b.name!, parent: msg.parent_tool_use_id });
           }
         } else if (msg.type === 'user') {
           if (!alive) continue;
           const content = msg.message.content;
           if (!Array.isArray(content)) continue;
           for (const b of content as { type: string }[]) {
-            if (b.type === 'tool_result') cb.onBlock({ name: null, parent: msg.parent_tool_use_id });
+            if (b.type === 'tool_result') target.onBlock({ name: null, parent: msg.parent_tool_use_id });
           }
         } else if (msg.type === 'system' && msg.subtype === 'background_tasks_changed') {
           // The full live set every time membership changes — replace, never count.
@@ -393,6 +443,7 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
           log(`background tasks: ${tasks}${tasks ? ` (${msg.tasks.filter((t) => !t.ambient).map((t) => t.description).join('; ')})` : ''}`);
           report();
           if (tasks === 0 && draining) finish(); // the drain was for these, and they are done
+          if (target === sink && !busy()) finish(); // detached and idle: nobody can send again
         } else if (msg.type === 'system' && msg.subtype === 'task_notification') {
           if (msg.ambient) continue; // housekeeping, not the user's work
           log(`task ${msg.status}: ${msg.summary.slice(0, 200)}`);
@@ -431,23 +482,27 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
           wanted = null; // answered; nothing is owed until the next send
           opened = false; // a narration queued behind this turn announces its own block
           report();
+          tail = blank(); // the turn is over; there is nothing left to replay
           let error: string | null = null;
           if (msg.is_error) error = 'errors' in msg && Array.isArray(msg.errors) ? msg.errors.join('; ') : 'result' in msg ? String(msg.result) : 'unknown error';
-          cb.onResult({ sessionId: msg.session_id, costUsd: cost, error, model: model ?? null, permission, effort });
+          target.onResult({ sessionId: msg.session_id, costUsd: cost, error, model: model ?? null, permission, effort });
+          if (target === sink && !busy()) finish(); // detached and idle: nobody can send again
         }
       }
     } catch (e) {
       if (!done) log(`claude stream ended: ${e}`);
     } finally {
+      if (sessionId) pool.delete(sessionId); // no stream, nothing to reattach to
       live.close(); // the stream is the work; when it ends, nothing here is working
     }
   })();
 
-  return {
+  self = {
     send(instruction) {
       wanted = randomUUID();
       ambient = false; // the user's turn outranks a narration
       opened = false; // this turn announces its own first block
+      tail = { ...blank(), instruction };
       queue.push({ type: 'user', message: { role: 'user', content: instruction }, parent_tool_use_id: null, uuid: wanted } as SDKUserMessage);
       wake?.();
       wake = null;
@@ -497,8 +552,21 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
       // turn it lands on, that turn's output now matches nothing.
       wanted = null;
       ambient = false; // talking over the announcement is the same barge-in as ever
+      tail = blank(); // an abandoned turn is not worth replaying to anyone
       report();
       void q.interrupt().catch((e) => log(`claude interrupt: ${e}`));
+    },
+    attach(next) {
+      target = next;
+      // Synchronous on purpose: live deltas only arrive through the event loop, so
+      // the replay lands whole before any of them — the whole ordering guarantee.
+      if (tail.opens || tail.said) {
+        target.onStart?.(tail.opens ?? 'text');
+        if (tail.said) target.onText(tail.said);
+      }
+    },
+    detach(whose) {
+      if (target === whose) target = sink;
     },
     close() {
       if (done || draining) return;
@@ -515,6 +583,68 @@ export function openClaude(cb: ClaudeCallbacks): Claude {
       finish();
     },
   };
+  // A resumed session knows its chat from birth, so it is findable from birth; a
+  // fresh one registers in the loop, on the first frame that mints its id.
+  if (sessionId) pool.set(sessionId, { claude: self, busy, attached: () => target !== sink, instruction: () => tail.instruction });
+  return self;
+}
+
+// --- The pool: one live session per chat -------------------------------------
+
+/** The live sessions by chat id — what `claim` reattaches and `inflight` reads.
+ *  `parked` is the DRAIN_MS cap on a session running with nobody attached. */
+const pool = new Map<string, {
+  claude: Claude;
+  busy(): boolean;
+  attached(): boolean;
+  instruction(): string | null;
+  parked?: ReturnType<typeof setTimeout>;
+}>();
+
+/**
+ * The one door to a Claude session: the live one for this chat, reattached — or a
+ * fresh open, resumed from the transcript. The caller cannot tell which, and that is
+ * the point: a socket landing on a working chat is replayed the turn in flight and
+ * then streams the rest, and lands on a warm process rather than paying a cold start.
+ */
+export function claim(resume: string | undefined, cb: ClaudeCallbacks): Claude {
+  const found = resume ? pool.get(resume) : undefined;
+  if (!found) return openClaude({ ...cb, resume });
+  if (found.parked) { clearTimeout(found.parked); found.parked = undefined; }
+  cb.log?.(`attached to the live session ${resume}`);
+  found.claude.attach(cb);
+  return found.claude;
+}
+
+/**
+ * The socket is done with this session; the session decides its own fate. Attached
+ * to someone else already — a switch whose old socket closed late — it is theirs, and
+ * this release only lets go. Busy — a turn being answered, or background tasks — it
+ * stays in the pool, working into the sink, reattachable, and closes on its own when
+ * the work settles (`finish` in the loop) or when DRAIN_MS says enough. Idle, it
+ * closes now: nobody could send again. `cb` proves who is asking — see `detach`.
+ */
+export function release(claude: Claude, cb: ClaudeCallbacks): void {
+  claude.detach(cb);
+  for (const [id, entry] of pool) {
+    if (entry.claude !== claude) continue;
+    if (entry.attached()) return; // claimed by the next socket; its session now
+    if (entry.busy()) {
+      entry.parked = setTimeout(() => { pool.delete(id); claude.close(); }, DRAIN_MS);
+      entry.parked.unref?.();
+    } else {
+      pool.delete(id);
+      claude.close();
+    }
+    return;
+  }
+  claude.close(); // never learned an id, so nothing could ever find it again
+}
+
+/** The instruction now being answered in this chat, or null — what lets chats.ts cut
+ *  a snapshot where the live replay takes over. */
+export function inflight(id: string): string | null {
+  return pool.get(id)?.instruction() ?? null;
 }
 
 // --- CLI: run alone ---------------------------------------------------------

@@ -29,6 +29,7 @@
 
 import { fileURLToPath } from 'node:url';
 import { deleteSession, forkSession, getSessionMessages, listSessions, renameSession, tagSession, type SessionMessage } from '@anthropic-ai/claude-agent-sdk';
+import { inflight } from './claude.ts';
 // The directory claude.ts runs in, which is what scopes a session to this project.
 import { PROJECT as CWD } from './paths.ts';
 import { clips } from './turns.ts';
@@ -90,6 +91,15 @@ export async function chat(id: string): Promise<Message[]> {
     const role = m.type === 'user' ? 'user' : 'model';
     const clip = role === 'user' ? heard.get(said) : undefined;
     all.push({ uuid: m.uuid, role, text: said, ...(clip ? { clip } : {}) });
+  }
+  // A chat mid-turn is cut at the instruction now being answered: the CLI flushes
+  // reply blocks to the transcript as they complete, and the socket that attaches to
+  // the live session is replayed the whole reply — a snapshot that kept those blocks
+  // would say them twice. Matched by text, the same way turns.clips() finds audio.
+  const running = inflight(id);
+  if (running) {
+    const at = all.findLastIndex((m) => m.role === 'user' && m.text === running);
+    if (at >= 0) return all.slice(0, at + 1);
   }
   return all;
 }

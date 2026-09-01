@@ -162,8 +162,15 @@ final class VoiceSession {
     /// The transcript is what is on screen, live session or not, which is why
     /// `connect` no longer empties it: a resumed chat has to survive being connected
     /// to, and emptying it is something only "New chat" ever means.
+    ///
+    /// A conversation mid-turn is left, never guarded against: closing the socket
+    /// does not stop the turn — the relay runs it to the end, and the drawer's
+    /// working pill is what says so — so switching away is detaching, and the
+    /// finished answer is in the chat when it is next opened. Refusing here instead
+    /// let the header change chats while the transcript could not follow it.
     func show(_ past: [ChatMessage], id: String?) {
-        guard status == .idle, !asking else { return }
+        if status != .idle { stop() }
+        if asking { asking = false; askTask?.cancel(with: .normalClosure, reason: nil) }
         lines = past.map(Line.init)
         chatId = id
         utterance = nil
@@ -307,12 +314,41 @@ final class VoiceSession {
         Task { await converse(said, url: resuming(url)) }
     }
 
-    /// Drop the turn. The socket is the turn, so closing it is the whole cancel.
-    func cancelAsk() {
-        askTask?.cancel(with: .normalClosure, reason: nil)
+    /// Watch a turn already running in this chat: the same socket as a typed turn,
+    /// with nothing to send. The relay attaches it to the live session, replays the
+    /// reply so far, and streams the rest — so opening a chat whose pill says
+    /// working picks the answer up mid-sentence. Ends the way a typed turn does.
+    func follow(url: URL) {
+        guard status == .idle, !asking, chatId != nil else { return }
+        asking = true
+        let before = lines.count
+        Task { await converse(nil, url: resuming(url)) }
+        // The pill can be stale — a restarted relay forgets its live sessions — and a
+        // follow that finds nothing running would wear the stop face forever. A real
+        // attach replays synchronously, so a screen still untouched after this long
+        // means there is nothing to watch, and the socket is put down.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, self.asking, self.lines.count == before else { return }
+            self.cancelAsk()
+        }
     }
 
-    private func converse(_ said: String, url: URL) async {
+    /// Stop the turn and put the socket down. Coupled today — the `stop` frame ends
+    /// the work, and its `turn_end` (or the close behind it) ends the socket — but
+    /// they are two acts on the wire, so the two can be decoupled later.
+    func cancelAsk() {
+        guard let task = askTask else { return }
+        // No longer waiting — said before the close so the socket dropping under the
+        // receive loop reads as the cancel it is, not as an error worth showing.
+        asking = false
+        task.send(.string(#"{"type":"stop"}"#)) { _ in
+            task.cancel(with: .normalClosure, reason: nil)
+        }
+    }
+
+    /// One turn watched to its end — sent by us, or already running on the relay.
+    private func converse(_ said: String?, url: URL) async {
         let task = URLSession.shared.webSocketTask(with: url)
         askTask = task
         task.resume()
@@ -323,10 +359,12 @@ final class VoiceSession {
             asking = false
             endToolRun()
         }
-        guard let data = try? JSONSerialization.data(withJSONObject: ["type": "text", "text": said]),
-              let json = String(data: data, encoding: .utf8) else { return }
         do {
-            try await task.send(.string(json))
+            if let said {
+                guard let data = try? JSONSerialization.data(withJSONObject: ["type": "text", "text": said]),
+                      let json = String(data: data, encoding: .utf8) else { return }
+                try await task.send(.string(json))
+            }
             // `turn_end` clears `asking`, so the relay ending the turn is what ends the
             // loop; a cancel throws out of `receive`, which is the other way it ends.
             while asking {
@@ -466,6 +504,16 @@ final class VoiceSession {
                 // instruction it decides about already marked its own end.
                 if pending == nil, let at = pipe?.lastLoudAt, at > 0 { mark("speech_end", at: at) }
             }
+        case "turn_start":
+            // The instruction reached Claude. That is proof enough — and about a
+            // second and a half earlier than the first block, which is the longest
+            // silence in a turn and used to be the one stretch with no chime and no
+            // movement on screen. Everything below still commits and still waits,
+            // because a relay too old to send this is a relay this app still works
+            // against; against a current one they are no-ops.
+            commit()
+            turnEnded = false
+            waiting(true)
         case "model":
             commit() // Claude answering is proof the instruction went
             waiting(true) // and words with no voice for them yet are still the wait
