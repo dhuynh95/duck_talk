@@ -26,7 +26,7 @@ A session is a JSONL transcript on disk under `~/.claude/projects/<cwd-key>/<ses
 
 - Spawn costs about 2.1 s. `startup()` pre-spawns; `warm.query()` then initialises in 0 ms. **(probe 6)**
 - Spawn is lazy: a resumed query with nothing to send never spawns. **(probe 3)**
-- `spawnClaudeCodeProcess` hands you the `ChildProcess`, so a supervisor can hold the pid.
+- `spawnClaudeCodeProcess` hands you the `ChildProcess`, so a supervisor can hold the pid. It also hands you the whole spawn, `cwd` included: a hook that passes `options` through unexamined can still land the child in the parent's directory, and the transcript then goes under the wrong project key, where `getSessionMessages(chat, { dir })` reads it as empty. Spread `cwd` in explicitly. **(probe 9)**
 - **Death is a thrown error.** SIGKILL on the CLI makes the `for await` loop throw `Claude Code process terminated by signal SIGKILL`. **(probe 2)**
 - **`close()` kills the whole tree**, background tasks and their children included. **(probe 6)**
 - **An orphan finishes its turn.** If the relay (the Node parent) dies, the CLI sees stdin EOF, completes the turn it is on however long that takes (21 s in the test, inside a tool call), writes it to the transcript, kills its background tasks, and exits. The result frame goes to a dead pipe, so nobody is told. **(probes 7, 8)**
@@ -64,7 +64,7 @@ These are the properties the current code tries to have and does not fully have.
 
 1. **Addressable from birth.** A chat has an id before its first frame, so every client and every log line can name it.
 2. **No silent loss.** A turn that was accepted either finishes or is reported as failed, across a CLI crash and across a relay restart.
-3. **Any number of observers, any time.** Attaching mid-turn shows the whole current turn: blocks, tools, tasks, text.
+3. **Any number of observers, any time.** Attaching mid-turn shows the current state — the transcript up to the last completed block — then streams live. No replay buffer.
 4. **Barge-in is exact.** Interrupt stops a turn without losing the session; queued sends are known from the receipt, not guessed from frame order.
 5. **Process policy in one place.** Idle processes are reaped, busy ones kept, and an observer leaving never kills a background task.
 6. **Mid-session settings** hold from the next turn (already true).
@@ -86,7 +86,7 @@ Runner
   pid
   turn            the open turn, or null: { uuid, ambient, events[] }
   tasks           Map<taskId, description>          (replace on background_tasks_changed)
-  subscribe(fn)   → unsubscribe                      (fan-out; a new subscriber first gets turn.events replayed, synchronously)
+  subscribe(fn)   → unsubscribe                      (fan-out; a new subscriber gets turn_started if a turn is open, then live)
   send(uuid, content)
   interrupt()     → { still_queued }
   set(model?, permission?, effort?)
@@ -268,7 +268,7 @@ flowchart TD
 | Call | Input | Output | Description | SDK underneath |
 |---|---|---|---|---|
 | `open(chat, opts)` | `{ resume: boolean, truncate?: { at, drops } }` | `Runner` | Spawn one process for one chat. `truncate` is the recovery pair. | `query({ sessionId \| resume, resumeSessionAt, resumeDropsTurn, spawnClaudeCodeProcess, … })` |
-| `subscribe(fn)` | `(e: Event) => void` | unsubscribe fn | Replays the open turn's events synchronously, then streams live. | — |
+| `subscribe(fn)` | `(e: Event) => void` | unsubscribe fn | Emits `turn_started` if a turn is open, then streams live. Nothing is replayed: the subscriber loads the transcript, which holds every completed block. | — |
 | `send(uuid, content)` | caller-minted uuid; string or content blocks (text + base64 JPEG) | — | One turn. The uuid is the join key everywhere. | yields `SDKUserMessage { uuid }` into the input generator |
 | `interrupt()` | — | `{ still_queued: uuid[] }` | Stop the running turn. Session and background tasks survive. Queued sends run next unless cancelled. | `q.interrupt()` |
 | `set(model?, permission?, effort?)` | any subset | `Promise<void>` | Holds from the next turn. A refused change is reported as an `error` event and the old value kept. The next `send` waits for it. | `setModel`, `setPermissionMode`, `applyFlagSettings({ effortLevel })` |
@@ -305,9 +305,9 @@ flowchart TD
 
 ## 6. Open items
 
-1. **First message dangling.** There is no entry to `resumeSessionAt`. Candidates: `deleteSession` then `open` with the same `sessionId` (keeps the id; untested), or start a fresh chat with a new id. Test the first.
+1. ~~**First message dangling.**~~ Answered: `deleteSession(chat, { dir })` then `open` with the same `sessionId` and a re-send. The id is kept, the transcript comes back clean — one user entry, then the reply, no duplicate — and `getSessionMessages` reads empty in between. **(probe 9)** So recovery has one shape after all: with a `prev` entry, truncate; without one, delete. (A `deleteSession` on a chat whose file is missing throws `Session <id> not found`, so the delete belongs behind the `inspect` that found the dangling entry.)
 2. **Narration turns and lifecycle frames.** The types say uuid-less commands such as task notifications produce no lifecycle frame. Confirm that an ambient turn shows no `command_lifecycle`, so the runner's "frames with no open turn" rule is the right one.
-3. **`claude` on PATH.** The SDK spawned its bundled binary in every probe. Confirm nothing else in the relay needs PATH `claude`, then drop it from the README and `cli.ts`.
+3. ~~**`claude` on PATH.**~~ Answered by reading: nothing in `server/` shells out to `claude`. The only `execFile` callers are `lab.ts` and `probe.ts` (`say`, `afconvert`) and `reach.ts` (`tailscale`), and the SDK spawns its own bundled binary. What the README must still ask for is the *login*, not the binary: credentials come from `~/.claude`, so "Claude Code, signed in" stays and "on your PATH" goes.
 4. **`snapshot: true` and the phone-edited prompt.** With the prompt recorded per conversation, an edit reaches only new chats, not the next session of an existing chat. `prompts.ts` says "takes effect the next time you press listen"; that text must change.
 5. **`inspect` cost at boot.** `getSessionMessages` reads the whole file. Only chats listed in `runners.json` are inspected, so this is a handful, not the drawer's 200.
 6. **`interrupt()` and `cancel_queued`.** The typed method takes no argument. If a stop button must also drop queued sends, that needs the raw control request or a per-uuid `cancel_async_message`.

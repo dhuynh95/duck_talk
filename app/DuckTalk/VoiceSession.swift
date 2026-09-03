@@ -85,11 +85,11 @@ final class VoiceSession {
             )
         }
 
-        /// The tool now running, or — once the run is over — what it did, collapsed.
-        /// Names are all the relay sends, so this summary is the whole story and
-        /// there is nothing to expand into.
+        /// What the run did, collapsed. Names are all the relay sends, so this summary
+        /// is the whole story and there is nothing to expand into. Whether Claude is
+        /// still at it is not said here: the Working row under the transcript says so,
+        /// from the relay's own word rather than from the last tool event seen.
         var toolLabel: String {
-            if running, let current = tools.last { return "\(current)…" }
             var counted: [(name: String, n: Int)] = []
             for tool in tools {
                 if let i = counted.firstIndex(where: { $0.name == tool }) { counted[i].n += 1 }
@@ -167,7 +167,11 @@ final class VoiceSession {
     }
 
     func connect(url: URL) {
-        guard status == .idle, !asking else { return }
+        guard status == .idle else { return }
+        // A turn is being watched, or was typed: the live socket takes over the same
+        // chat and the relay streams on from where the old one left off, so what is on
+        // the screen stays.
+        if asking { detachAsk() }
         self.url = url
         wantLive = true
         error = nil
@@ -454,49 +458,45 @@ final class VoiceSession {
 
     /// Watch a turn already running in this chat: the same socket as a typed turn,
     /// with nothing to send. The relay attaches it to the live session, replays the
-    /// reply so far, and streams the rest — so opening a chat whose pill says
-    /// working picks the answer up mid-sentence. Ends the way a typed turn does.
+    /// reply so far, and streams the rest — so opening a chat that is working picks
+    /// the answer up mid-sentence. Ends the way a typed turn does.
+    ///
+    /// Called only while the relay says the chat is working — the home screen reads
+    /// that off its data socket — so there is nothing to time out: a relay that has
+    /// nothing running here never said it had.
     func follow(url: URL) {
         guard status == .idle, !asking, chatId != nil else { return }
         asking = true
-        followSaw = false
         Task { await converse(nil, url: resuming(url)) }
-        // The pill can be stale — a restarted relay forgets its live sessions — and a
-        // follow that finds nothing running would wear the stop face forever. A live
-        // turn announces itself the moment the relay attaches this socket
-        // (`turn_start`), so silence this long means there is nothing to watch — and
-        // the socket is put down without a stop, because watching must never kill
-        // the work it is watching.
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
-            guard let self, self.asking, !self.followSaw else { return }
-            self.detachAsk()
-            self.notice = "Nothing running here — the relay may have restarted."
-        }
     }
 
-    /// Any event has arrived on the follow socket — proof there is something to
-    /// watch, which is all the bail above needs to stand down.
-    private var followSaw = false
-
     /// Put the ask socket down without touching the turn: watching is not owning,
-    /// so unlike `cancelAsk` this sends nothing.
-    private func detachAsk() {
+    /// so this sends nothing. Called when the relay says the chat has stopped working
+    /// — the turn this socket was watching is over, whether or not its `turn_end`
+    /// reached here — and before a live socket takes over the same chat.
+    func detachAsk() {
         guard let task = askTask else { return }
         asking = false
         task.cancel(with: .normalClosure, reason: nil)
     }
 
-    /// Stop the turn and put the socket down. Coupled today — the `stop` frame ends
-    /// the work, and its `turn_end` (or the close behind it) ends the socket — but
-    /// they are two acts on the wire, so the two can be decoupled later.
-    func cancelAsk() {
-        guard let task = askTask else { return }
+    /// Stop everything this screen is about: Claude's work in this chat — the turn and
+    /// its background tasks, which is what the relay makes of `stop` — and, if the
+    /// microphone is open, the session too. One button, whatever is running.
+    ///
+    /// The frame goes on whichever socket is up: the live one, or the one watching or
+    /// typing. The hang-up waits for the send to leave, or the frame dies with the
+    /// socket and Claude keeps working.
+    func stopAll() {
+        guard let socket = task ?? askTask else { return }
+        let wasLive = status != .idle
         // No longer waiting — said before the close so the socket dropping under the
-        // receive loop reads as the cancel it is, not as an error worth showing.
+        // receive loop reads as the stop it is, not as an error worth showing.
         asking = false
-        task.send(.string(#"{"type":"stop"}"#)) { _ in
-            task.cancel(with: .normalClosure, reason: nil)
+        socket.send(.string(#"{"type":"stop"}"#)) { [weak self] _ in
+            Task { @MainActor in
+                if wasLive { self?.stop() } else { socket.cancel(with: .normalClosure, reason: nil) }
+            }
         }
     }
 
@@ -660,7 +660,6 @@ final class VoiceSession {
     private func handle(_ json: String) {
         guard let data = json.data(using: .utf8),
               let event = try? JSONDecoder().decode(Event.self, from: data) else { return }
-        followSaw = true // any event is proof of life for a follow's bail
         switch event.type {
         case "user":
             // Speech arrives as the whole utterance so far, revised as it is spoken, so
@@ -687,7 +686,11 @@ final class VoiceSession {
             // because a relay too old to send this is a relay this app still works
             // against; against a current one they are no-ops.
             commit()
-            turnEnded = false
+            // Whatever text comes next starts its own line. On a turn this screen
+            // started, the instruction was just committed and the next line is new
+            // anyway; on a turn joined mid-way, the last line is a block the transcript
+            // already holds complete, and the stream must not run into it.
+            turnEnded = true
             waiting(true)
             pipe?.expectReply() // a new reply, so the played count starts from nothing
         case "model":

@@ -35,6 +35,7 @@
  */
 
 import { GoogleGenAI } from '@google/genai';
+import { latest } from './chats.ts';
 import { claim, DEFAULTS, release, type Claude, type ClaudeCallbacks, type PermissionMode } from './claude.ts';
 import { save as saveClip } from './clips.ts';
 import { correct, CORRECT_MODEL } from './correct.ts';
@@ -116,6 +117,11 @@ export class Session {
   // to disk by images.ts only so a chat reopened next week can still show them.
   private attached: { id: number; data: string }[] = [];
 
+  // The model text since the last tool call — the line the phone is drawing at the
+  // bottom right now. Kept for one moment: ears opening mid-turn, when the mic is
+  // tapped on a chat that is already working. See `listen`.
+  private lastLine = '';
+
   // What Claude has been asked to be. Kept here as well as in claude.ts so a turn that
   // never reaches a result — interrupted, or stopped — still records what it ran as.
   private model = DEFAULTS.model;
@@ -184,7 +190,7 @@ export class Session {
 
     // Claude is a session too, warm for the whole connection — claimed rather than
     // opened, so resuming a chat whose session is still working reattaches to it and
-    // the running turn is replayed through these callbacks. They always belong to
+    // the running turn streams on through these callbacks. They always belong to
     // the turn now running — claude.ts fences an interrupted turn's stragglers — so
     // no correlation guard is needed here. The object is kept: it is this session's
     // proof of attachment, which `release` requires so a socket that closed late
@@ -224,6 +230,7 @@ export class Session {
         this.arm(); // words are proof of life
         this.turn.claude_first_at ??= Date.now();
         this.turn.said += text;
+        this.lastLine += text;
         this.phone.event({ type: 'model', text });
         // Read aloud only to someone who spoke. A typed instruction wants its answer
         // on the screen it was typed on.
@@ -234,6 +241,7 @@ export class Session {
       // history and no magic word to compare against. `parent` says whose it is.
       onBlock: (block) => {
         this.arm(); // a fan-out works for minutes without a word, and is not stuck
+        if (block.name) this.lastLine = ''; // a tool call ends the line the phone was drawing
         // One event either way: an absent `text` is JSON's own way of saying no name,
         // so a tool starting and a tool finishing take the same line rather than two.
         this.phone.event({ type: 'tool', text: block.name ?? undefined, parent: block.parent });
@@ -276,6 +284,16 @@ export class Session {
       if (this.closed) return void ears.close();
       this.ears = ears;
       this.backlog.splice(0).forEach((pcm) => ears.send(pcm));
+      // Ears arriving mid-turn: the mic was tapped on a chat already working. The
+      // reply so far is on the screen and was never spoken, so the latest line is
+      // read now — the listener lands where Claude is — and the deltas that follow
+      // continue through the same buffer. The line is what this connection has heard
+      // since it attached; if that is nothing yet, it is the last thing Claude said,
+      // read from the transcript, which is the same state the phone is showing.
+      if (this.state === 'claude') {
+        const line = this.lastLine.trim() || (this.sessionId ? await latest(this.sessionId) : '');
+        if (line && this.ears && this.state === 'claude') this.voice.say(line);
+      }
     } catch (e) {
       this.log(`ears failed: ${e}`);
       this.phone.event({ type: 'error', text: `could not start listening: ${e}` });
@@ -411,10 +429,10 @@ export class Session {
     // A picture, picked. It says nothing about when the turn runs — see `attached`.
     else if (msg.type === 'attach' && typeof msg.data === 'string' && typeof msg.id === 'number') this.attach(msg.id, msg.data);
     else if (msg.type === 'approve') this.decide(true, msg.text);
-    // The stop button, as a frame — the spoken "stop" of a typed or followed turn.
-    // The phone closes the socket right after, but the two are separate acts on the
-    // wire on purpose: stopping the work and hanging up can be decoupled later.
-    else if (msg.type === 'stop') this.cancel('stop frame');
+    // The stop button, as a frame. Stop means everything in this chat: the turn, and
+    // the background tasks an interrupt deliberately spares. Hanging up is the
+    // phone's separate act, so stopping the work and leaving stay decoupled.
+    else if (msg.type === 'stop') { this.cancel('stop frame'); this.claude.stopTasks(); }
     else if (msg.type === 'claude') this.be(msg.model, msg.permission, msg.effort);
   }
 
@@ -647,6 +665,7 @@ export class Session {
     t.claude_start_at = t.claude_opens = t.claude_first_at = null;
     t.tts_sent_at = t.voice_out_at = t.reply_in_at = null;
     t.voice_ms = 0;
+    this.lastLine = '';
     this.state = 'user';
   }
 
@@ -669,6 +688,7 @@ export class Session {
     void this.record(this.turn).catch((e) => this.log(`record failed: ${e}`));
     this.turn = this.blank();
     this.attached = []; // the pictures were this turn's, and the turn is over
+    this.lastLine = '';
     this.state = 'user';
   }
 

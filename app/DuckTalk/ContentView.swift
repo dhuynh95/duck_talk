@@ -59,6 +59,15 @@ struct ContentView: View {
     @State private var deleting = false
 
     private var live: Bool { session.status != .idle }
+    /// Claude has work in flight in the chat on screen — a turn, or background tasks.
+    /// The relay's fact, read off the data socket it pushes the chat list on, so it is
+    /// true whether or not any microphone is open here. Live is the phone's fact and
+    /// this is the chat's; the two are drawn separately because they are separate.
+    ///
+    /// Until a new chat has been named — the relay says the id at its first `turn_end`
+    /// — there is no row in the list to read, and the only turn that can be running
+    /// is the one this screen typed, so that flag stands in for exactly that window.
+    private var working: Bool { current?.isWorking ?? session.asking }
     /// The stored strings as what they mean. A value from a version that named things
     /// differently falls back rather than crashing.
     private var mode: Mode { Mode(rawValue: modeName) ?? .direct }
@@ -93,7 +102,8 @@ struct ContentView: View {
                     chat = opened
                     session.show(messages, id: opened.id)
                     draft = ""  // what you were writing belonged to the chat you left
-                    if opened.isWorking, let url { session.follow(url: url) }
+                    // A working chat is watched, not just shown — the `.task` on
+                    // `working` below sees the change and attaches.
                 },
                 onNew: {
                     chat = nil
@@ -166,6 +176,18 @@ struct ContentView: View {
         // Client-only, so it reaches the session directly rather than riding a frame —
         // and mid-wait, so switching it off silences a loop already playing.
         .task(id: filler) { session.fillerEnabled = filler }
+        // Watch the chat on screen whenever the relay says it is working and nothing
+        // here is already attached to it. Declarative on purpose: the relay's word
+        // replaces the guess this used to make with a three-second timer, and coming
+        // back from live mode to a chat still working attaches the same way opening
+        // it does. Keyed on the chat too, so switching between two working chats
+        // re-attaches rather than staying on the old one.
+        .task(id: "\(chat?.id ?? "")|\(working)|\(live)") {
+            if working, !live, let url { session.follow(url: url) }
+            // Not working any more: whatever socket was watching has nothing left to
+            // watch, and a typed turn's own `turn_end` has landed or is landing.
+            else if !working, !live { session.detachAsk() }
+        }
         // The home screen's own socket to the relay, held for as long as the screen is
         // up: it is where the model list comes from, where a fork is sent, and — since
         // it is the one connection that is always supposed to be there — what the gear
@@ -279,8 +301,11 @@ struct ContentView: View {
     /// anything changed since would be stale there; the relay answers every change with
     /// the whole list, so it is never stale here.
     private var current: Chat? {
-        guard let chat else { return nil }
-        return relay.chats.first { $0.id == chat.id } ?? chat
+        // A chat opened from the drawer is `chat`; a new one has no `chat` until the
+        // relay names it at the first `turn_end`, and from then on the session knows
+        // the id. Either way the list is the fresh copy.
+        guard let id = chat?.id ?? session.chatId else { return nil }
+        return relay.chats.first { $0.id == id } ?? chat
     }
 
     /// Forget the conversation on screen. Deleting is the relay's half; this is the
@@ -509,8 +534,9 @@ struct ContentView: View {
     }
 
     /// What pressing the middle button does. The field's contents follow from the same
-    /// answer, which is why there is one of these and not two.
-    private enum Intent { case talk, send, stop }
+    /// answer, which is why there is one of these and not two. Stopping is not here:
+    /// there is one stop, on the right, and it stops whatever is running.
+    private enum Intent { case talk, send }
 
     private var intent: Intent {
         switch writer {
@@ -518,7 +544,7 @@ struct ContentView: View {
         case .you: if !draft.isEmpty { return .send }
         case .ears: break
         }
-        return session.asking ? .stop : .talk
+        return .talk
     }
 
     /// Who is writing the field. One field, three writers — you, the ears, and the
@@ -555,10 +581,6 @@ struct ContentView: View {
                     .accessibilityIdentifier("send")
                     // The same act either way, and the label says which one it is here.
                     .accessibilityLabel(held != nil ? "Accept" : "Send")
-            case .stop:
-                glyph("stop.fill", accent: false) { session.cancelAsk() }
-                    .accessibilityIdentifier("stop-reply")
-                    .accessibilityLabel("Stop")
             case .talk:
                 ListenButton(live: live, level: CGFloat(session.level), status: session.status.rawValue) {
                     if let url { session.connect(url: url) }
@@ -579,18 +601,24 @@ struct ContentView: View {
                     .accessibilityLabel("Model")
                     .accessibilityValue(modelLabel)
                 Spacer()
-                // Right of it is the session: how it will run, until it is running, and
-                // then how to quieten it or end it.
-                if live {
+                // Right of it is what is running: how it will run, until something is,
+                // and then the one way to stop. One stop, because there is one question
+                // — "make it stop" — and it should not matter whether what is running is
+                // the microphone, Claude, or both: it stops everything this screen is
+                // about. Shown for a working chat with no microphone open too, which is
+                // how a turn left running from another screen, or a typed one, is ended.
+                if live || working {
                     // Mute lit on the accent when it is on: the orange has left the
                     // border and the bars, and this is where it went. Same order as the
                     // lock-screen card, so the thumb learns one layout.
-                    glyph("mic.slash", accent: session.muted) { session.toggleMute() }
-                        .accessibilityIdentifier("mute")
-                        .accessibilityLabel(session.muted ? "Unmute" : "Mute")
-                    glyph("xmark", accent: false) { session.stop() }
-                        .accessibilityIdentifier("end")
-                        .accessibilityLabel("Stop listening")
+                    if live {
+                        glyph("mic.slash", accent: session.muted) { session.toggleMute() }
+                            .accessibilityIdentifier("mute")
+                            .accessibilityLabel(session.muted ? "Unmute" : "Mute")
+                    }
+                    glyph("stop.fill", accent: false) { live && !working ? session.stop() : session.stopAll() }
+                        .accessibilityIdentifier("stop")
+                        .accessibilityLabel(working ? (live ? "Stop Claude and listening" : "Stop Claude") : "Stop listening")
                 } else {
                     // Bound at connect time on the relay, so it is settled before a
                     // session starts and cannot change under one — which is why this one
@@ -732,6 +760,12 @@ struct ContentView: View {
     private var transcript: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
+                // First in the flipped stack is last on the screen: the row under the
+                // conversation that says Claude is still at it. From the relay's own
+                // word, not inferred from the last tool event seen, so it is right for
+                // a turn started on another screen and for tasks running after the
+                // answer — and it is here whether or not a microphone is open.
+                if working { workingRow.scaleEffect(x: 1, y: -1) }
                 ForEach(session.lines.reversed()) { line in
                     row(line).scaleEffect(x: 1, y: -1)
                 }
@@ -748,6 +782,21 @@ struct ContentView: View {
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .frame(maxHeight: .infinity)
+    }
+
+    /// Claude is working in this chat. The accent, because it is the one live thing
+    /// on a screen whose microphone may be off.
+    private var workingRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "asterisk")
+                .font(.caption.weight(.semibold))
+            Text("Working…")
+                .font(.callout)
+        }
+        .foregroundStyle(Brand.accent)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("working-row")
+        .accessibilityLabel("Working")
     }
 
     /// One line of the transcript: what you said, what Claude said, or the tools it

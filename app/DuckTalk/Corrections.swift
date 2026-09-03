@@ -126,6 +126,11 @@ final class RelayStore {
     }
 
     func openChat(_ id: String) {
+        // Forgotten before it is asked for again, so the answer is a change even when it
+        // is the same chat as last time. The drawer opens a chat when `loaded` changes;
+        // reopening the chat you left kept the old id, the fresh messages arrived to no
+        // effect, and the screen showed the transcript as it was the first time.
+        loaded = nil
         send(["type": "chat_open", "id": id])
     }
 

@@ -29,7 +29,6 @@
 
 import { fileURLToPath } from 'node:url';
 import { deleteSession, forkSession, getSessionMessages, listSessions, renameSession, tagSession, type SessionMessage } from '@anthropic-ai/claude-agent-sdk';
-import { inflight } from './claude.ts';
 // The directory claude.ts runs in, which is what scopes a session to this project.
 import { PROJECT as CWD } from './paths.ts';
 import { clips, images } from './turns.ts';
@@ -117,16 +116,21 @@ export async function chat(id: string): Promise<Message[]> {
     const pictures = role === 'user' ? shown.get(said) : undefined;
     all.push({ uuid: m.uuid, ...(after ? { after } : {}), role, text: said, ...(clip ? { clip } : {}), ...(pictures ? { images: pictures } : {}) });
   }
-  // A chat mid-turn is cut at the instruction now being answered: the CLI flushes
-  // reply blocks to the transcript as they complete, and the socket that attaches to
-  // the live session is replayed the whole reply — a snapshot that kept those blocks
-  // would say them twice. Matched by text, the same way turns.clips() finds audio.
-  const running = inflight(id);
-  if (running) {
-    const at = all.findLastIndex((m) => m.role === 'user' && m.text === running);
-    if (at >= 0) return all.slice(0, at + 1);
-  }
+  // A chat mid-turn is returned whole: the CLI flushes reply blocks to the transcript
+  // as they complete, so this is the state up to the last completed block, and the
+  // socket that attaches to the live session streams only what comes after.
   return all;
+}
+
+/** The last thing Claude said in this chat, or empty — read from the transcript, for
+ *  the moment a microphone opens on a turn already running. */
+export async function latest(id: string): Promise<string> {
+  const messages = await getSessionMessages(id, { dir: CWD });
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.type === 'assistant') { const said = text(m); if (said) return said; }
+  }
+  return '';
 }
 
 /**
@@ -166,7 +170,10 @@ export async function remove(id: string): Promise<void> {
 /** The words in a message, without the tool calls and the thinking. */
 function text(m: SessionMessage): string {
   const content = (m.message as { content?: unknown } | undefined)?.content;
-  if (typeof content === 'string') return content.trim();
+  // The CLI's own bookkeeping, filed as user messages: the interrupted-turn marker,
+  // and a slash command with its local output. Nobody said them, and a phone showing
+  // speech has no bubble for them.
+  if (typeof content === 'string') return /^\s*(\[Request interrupted by user|<command-|<local-command-)/.test(content) ? '' : content.trim();
   if (!Array.isArray(content)) return '';
   const parts: string[] = [];
   for (const b of content as { type?: string; text?: unknown }[]) {

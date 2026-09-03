@@ -10,7 +10,7 @@
  *             {"type":"mark","name","at"?,"note"?}    a moment only the phone can see
  *             {"type":"played","ms"}                  reply audio its speaker has played
  *             {"type":"approve","text"?}              run a held instruction, as edited
- *             {"type":"stop"}                         stop the running turn — the spoken "stop", as a button
+ *             {"type":"stop"}                         stop everything in this chat: the turn and its background tasks
  *             {"type":"attach","id","data"}            a picture, base64 JPEG, for the next instruction
  *             {"type":"claude","model"?,"permission"?,"effort"?} which model answers, what it may do, how hard it thinks
  *   ↓ binary  raw PCM Int16 LE, 24 kHz, mono          (Claude's voice)
@@ -34,9 +34,10 @@
  * instead of starting one — any session Claude Code has in this project, including
  * the ones you started in a terminal. A resumed chat whose Claude session is still
  * working is *attached to* rather than reopened — see claude.ts — and the running
- * turn's reply so far is replayed down the new socket before the rest streams live.
- * So a connection opened with `?resume=` and nothing to send is how the phone
- * watches a working chat: the same events as any turn, ending in `turn_end`.
+ * turn streams down the new socket from that moment on; what came before is in the
+ * transcript the phone loaded. So a connection opened with `?resume=` and nothing to
+ * send is how the phone watches a working chat: `turn_start`, then the same events
+ * as any turn, ending in `turn_end`.
  *
  * Which model answers, what it is allowed to do and how hard it thinks are deliberately
  * not in the URL: the CLI takes all three mid-session, so they arrive as a `claude`
