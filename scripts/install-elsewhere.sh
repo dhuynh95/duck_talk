@@ -31,15 +31,18 @@ echo "--help ok"
 
 GEMINI_API_KEY=not-a-real-key ./node_modules/.bin/duck-talk --port "$PORT" >relay.log 2>&1 &
 relay=$!
+# The relay says where a phone can reach it once the port is actually held — see
+# reach.ts — so the `simulator` row is the proof it listens. The columns are padded,
+# hence the `+`.
 for _ in $(seq 60); do
-  grep -q 'voice relay on' relay.log && break
+  grep -qE "simulator +ws://localhost:$PORT" relay.log && break
   sleep 0.25
 done
 { kill "$relay" && wait "$relay"; } 2>/dev/null || true
 
 sed 's/^/  /' relay.log
-grep -q "voice relay on ws://localhost:$PORT" relay.log
+grep -qE "simulator +ws://localhost:$PORT" relay.log
 # The folder it was started in is the folder it serves — the whole point of the
 # package, and the one thing a test run from inside the repo could never tell you.
-grep -q "project $work" relay.log
+grep -qE "project +$work" relay.log
 echo "started from $work"
