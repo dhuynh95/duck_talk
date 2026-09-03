@@ -879,51 +879,83 @@ struct ContentView: View {
                     .padding(.vertical, 10)
                     .background(Brand.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                     .frame(maxWidth: .infinity, alignment: .trailing)
+                glyphs(line)
             }
         case .model:
-            SelectableText(line.text) { menu(line) }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                SelectableText(line.text) { menu(line) }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                glyphs(line)
+            }
         }
     }
 
-    /// What you can do to a message, in the menu its own long press already raises.
-    ///
-    /// This used to be a row of glyphs drawn under every message, and the row was the
-    /// problem: it was read every time the eye passed it, it could never be labelled
-    /// without costing that width forever, and it sat beside a long press that offered
-    /// Copy — two ways to act on one message, in two places, one of them wordless. In a
-    /// menu there is room for words, so the verbs say what they do and the transcript
-    /// goes back to being only what was said.
-    ///
-    /// What is offered follows from the line, and every entry needs a `uuid`: it is the
-    /// proof that this message is in the conversation on disk, which is the only place a
-    /// branch can cut. A line you just spoke has none until the chat is opened again.
-    private func menu(_ line: VoiceSession.Line) -> [UIMenuElement] {
-        var items: [UIMenuElement] = []
+    /// One thing you can do to a message: the word, the glyph, and what it does.
+    /// Defined once and drawn twice — as a glyph under the line, where the eye finds it,
+    /// and as an entry in the menu the line's own long press raises, where there is room
+    /// for the word. Two doors, one list, so they cannot offer different things.
+    private struct Verb: Identifiable {
+        let id: String
+        let title: String
+        let symbol: String
+        let act: () -> Void
+    }
+
+    /// What can be done to this line. Everything that cuts the conversation needs a
+    /// `uuid`: the proof the message is in the store, which is the only place a branch
+    /// can cut. The relay stamps one on a line just said at `turn_end`, so the glyphs
+    /// appear the moment the turn is over.
+    private func verbs(_ line: VoiceSession.Line) -> [Verb] {
+        var out: [Verb] = []
         switch line.kind {
         case .user:
             if line.uuid != nil {
-                items.append(UIAction(title: "Edit", image: UIImage(systemName: "pencil")) { _ in edit(line) })
+                out.append(Verb(id: "edit", title: "Edit", symbol: "pencil") { edit(line) })
             }
             // Only a line that was heard has audio. Direct mode runs what it heard before
             // you can stop it, which makes this the only door to a correction that Review
             // was not on for.
             if let clip = line.clip {
-                items.append(UIAction(title: "Fix what was heard", image: UIImage(systemName: "waveform")) { _ in
+                out.append(Verb(id: "fix", title: "Fix what was heard", symbol: "waveform") {
                     sheet = .corrections(Correction(at: Date().timeIntervalSince1970 * 1000,
                                                     heard: line.text, meant: line.text, clip: clip))
                 })
             }
         case .model:
             if line.uuid != nil {
-                items.append(UIAction(title: "Fork from here", image: UIImage(systemName: "arrow.branch")) { _ in
-                    forkFrom(line.uuid)
-                })
+                out.append(Verb(id: "fork", title: "Fork from here", symbol: "arrow.branch") { forkFrom(line.uuid) })
             }
         case .tools:
             break
         }
-        return items
+        return out
+    }
+
+    /// The verbs as the long-press menu sees them.
+    private func menu(_ line: VoiceSession.Line) -> [UIMenuElement] {
+        verbs(line).map { v in UIAction(title: v.title, image: UIImage(systemName: v.symbol)) { _ in v.act() } }
+    }
+
+    /// The verbs as a row of glyphs under the line. Small and tertiary, because they are
+    /// always there and must never compete with the words — and **never labelled with
+    /// words**: a glyph is read every time the eye passes, and a word beside it earns its
+    /// width once and costs it forever. The word is in the menu, and in the label said
+    /// to someone who asked.
+    @ViewBuilder
+    private func glyphs(_ line: VoiceSession.Line) -> some View {
+        let verbs = verbs(line)
+        if !verbs.isEmpty {
+            HStack(spacing: 18) {
+                ForEach(verbs) { v in
+                    Button(action: v.act) { Image(systemName: v.symbol) }
+                        .accessibilityIdentifier(v.id)
+                        .accessibilityLabel(v.title)
+                }
+            }
+            .font(.footnote)
+            .foregroundStyle(Brand.tertiaryText)
+            .buttonStyle(.plain)
+        }
     }
 }
 
