@@ -106,7 +106,8 @@ final class VoiceSession {
     /// review card can play what it is asking about, and the line can be corrected.
     private(set) var heardClip: Double?
     /// What the next instruction will be given with — pictures and pasted texts. Held
-    /// until the turn is over rather than until it is sent, so a retract keeps them.
+    /// until the instruction is committed to the transcript, and gone from the composer
+    /// with the words; a retract puts them back along with the words.
     private(set) var attached: [Attachment] = []
     /// The last id minted. Ids are the moment a picture was picked, and picking several
     /// at once would otherwise mint one name for all of them.
@@ -272,7 +273,7 @@ final class VoiceSession {
     func send(_ text: String) {
         let said = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !said.isEmpty else { return }
-        lines.append(Line(kind: .user, text: said, given: attached.map(Piece.init)))
+        lines.append(Line(kind: .user, text: said, given: take()))
         inFlight = true
         reconcile()
         send(["type": "text", "text": said])
@@ -445,14 +446,19 @@ final class VoiceSession {
     /// Keep a picture or a pasted text for the next instruction, and tell the socket if
     /// there is one. The id is minted here because it has to exist before any socket does.
     func attach(_ content: Attachment.Content) {
-        let now = (Date().timeIntervalSince1970 * 1000).rounded()
-        lastAttachId = max(now, lastAttachId + 1)
-        let attachment = Attachment(id: lastAttachId, content: content)
+        let attachment = Attachment(id: mint(), content: content)
         attached.append(attachment)
         // Only onto a socket that is up. Attachments are state, not events: every socket
         // opening is told all of them by `sendAttachments`, so queueing this one in the
         // outbox as well sent it twice — and Claude was shown the same picture twice.
         if socket != nil { sendAttachment(attachment) }
+    }
+
+    /// A fresh id: the moment, nudged past the last one so two picks in one millisecond
+    /// stay two.
+    private func mint() -> Double {
+        lastAttachId = max((Date().timeIntervalSince1970 * 1000).rounded(), lastAttachId + 1)
+        return lastAttachId
     }
 
     /// Take one back, before it has been sent. Afterwards there is nothing to take back:
@@ -508,10 +514,19 @@ final class VoiceSession {
         utterance = nil
         heardClip = nil
         guard let said, !said.isEmpty else { return }
-        // Copied, not moved: the pictures belong to the turn, and a retract puts this
-        // line back in the composer's hands. `turn_end` is what lets go of them.
-        lines.append(Line(kind: .user, text: said, clip: clip, given: attached.map(Piece.init)))
+        lines.append(Line(kind: .user, text: said, clip: clip, given: take()))
         committed = true
+    }
+
+    /// The pending pieces, handed to the line being committed — moved, not copied, so
+    /// the composer empties the way it does for the words. Any not yet sent go into the
+    /// outbox here, ahead of the frame that follows, so a socket opening later replays
+    /// them in order; the relay then holds them for the turn, and a retract costs nothing
+    /// there — see `interrupted`, which hands the line's pieces back.
+    private func take() -> [Piece] {
+        if socket == nil { attached.forEach(sendAttachment) }
+        defer { attached = [] }
+        return attached.map(Piece.init)
     }
 
     /// A turn is in flight, or over — and while one is, the filler chimes cover
@@ -613,7 +628,6 @@ final class VoiceSession {
         case "turn_end":
             commit() // a turn that answered nothing still ran
             committed = false
-            attached = [] // the pictures were this turn's, exactly as the relay has it
             turnEnded = true
             replied = false
             pending = nil
@@ -640,7 +654,10 @@ final class VoiceSession {
             // committed may come off.
             if event.retract == true, committed {
                 while let last = lines.last, last.kind != .user { lines.removeLast() }
-                if !lines.isEmpty { lines.removeLast() }
+                // The line's pieces come back to the composer with the words: the relay
+                // still holds them for the re-run, so none is sent again — and a socket
+                // that reconnects meanwhile is told them like anything else pending.
+                if let line = lines.popLast() { attached = line.given.compactMap { Attachment($0) }.map { Attachment(id: mint(), content: $0.content) } }
                 committed = false
             }
             endToolRun()

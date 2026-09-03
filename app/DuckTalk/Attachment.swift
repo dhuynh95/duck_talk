@@ -75,6 +75,19 @@ enum Piece {
     }
 }
 
+extension Attachment {
+    /// A piece back in hand — for a retract, which returns a just-sent line to the
+    /// composer. Nil for a stored picture, which no just-sent line has. Id 0: the caller
+    /// mints one.
+    init?(_ piece: Piece) {
+        switch piece {
+        case .picked(let data): self.init(id: 0, content: .image(data))
+        case .text(let text): self.init(id: 0, content: .text(text))
+        case .stored: return nil
+        }
+    }
+}
+
 /// One piece, small — in the composer while it waits to be sent, and in the transcript
 /// once it has been. Tapping it shows it full size, which is the whole reason a thumbnail
 /// is worth drawing: a 62-point screenshot is a rectangle, and a 62-point paste is a tag.
