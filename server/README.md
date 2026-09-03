@@ -109,12 +109,14 @@ run this?", which nothing here can, so every action under them is denied. `effor
 one of the levels the model's own row in the `models` list offers, or `default` to
 hand the choice back to the CLI.
 
-`attach` is a picture, and it names no turn on purpose. A typed instruction could carry
-its own, but a spoken one cannot — the instruction is made here from the ears, long after
-the picture was chosen — so the relay holds what has been attached and gives it to
-whichever instruction runs next, typed, spoken or approved. The id is minted by the phone,
-because it has to exist before a socket does; the relay files the picture under it and
-the turn record names it, which is how a chat reopened next week still shows it.
+`attach` is a picture or a pasted text, and it names no turn on purpose. A typed
+instruction could carry its own, but a spoken one cannot — the instruction is made here
+from the ears, long after the picture was chosen — so the relay holds what has been
+attached and gives it to whichever instruction runs next, typed, spoken or approved, as
+`image` and `document` blocks in the one user message. The id is minted by the phone,
+because it has to exist before a socket does. A picture is filed under it and the turn
+record names it, which is how a chat reopened next week still shows it; a paste is filed
+nowhere, because the transcript keeps the block and `chat` reads it back from there.
 
 `?data=1` opens a connection that edits what the relay owns and nothing else — no
 voice session, no Gemini, no Claude:
