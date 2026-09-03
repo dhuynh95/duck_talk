@@ -1,0 +1,15 @@
+stateDiagram-v2
+    [*] --> Idle: open(chat) · ~2 s, or 0 with a warm spare
+    Idle --> Turn: send(uuid) → lifecycle started
+    Turn --> Idle: result → turn_end
+    Turn --> Idle: interrupt() → receipt {still_queued} · turn_cancelled
+    Idle --> Closed: unwatched & idle 60 s · or DRAIN_MS with tasks
+    Turn --> Dead: process died → exit
+    Idle --> Dead: process died → exit
+    Dead --> [*]: Supervisor recovers (see recovery)
+    Closed --> [*]
+    note right of Turn
+        one uuid joins everything:
+        the send · the transcript entry ·
+        command_lifecycle · user_message_uuid
+    end note

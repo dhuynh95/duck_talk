@@ -124,22 +124,13 @@ struct AttachThumb: View {
         return nil
     }
 
-    /// One socket, one question, one frame back — the shape `ClipChip` uses, for the same
-    /// reason: a picture is a blob asked for on demand, not state to be kept in step, so
-    /// it does not belong in `RelayStore` and a thumbnail nobody scrolls to costs nothing.
+    /// One socket, one question, one frame back — `Relay.ask`, the same door `ClipChip`
+    /// uses, for the same reason: a picture is a blob asked for on demand, not state to be
+    /// kept in step, so it does not belong in `RelayStore` and a thumbnail nobody scrolls
+    /// to costs nothing.
     private func load() async {
         guard case .stored(let id) = source, fetched == nil else { return }
-        guard let url = URL(string: serverURL + "?data=1") else { return }
-        let task = URLSession.shared.webSocketTask(with: url)
-        task.resume()
-        defer { task.cancel(with: .normalClosure, reason: nil) }
-        guard let json = try? JSONSerialization.data(withJSONObject: ["type": "image_get", "id": id]),
-              let text = String(data: json, encoding: .utf8),
-              (try? await task.send(.string(text))) != nil else { return }
-        // The relay answers a picture ahead of the state frames, so the first frame back
-        // is the whole answer: binary is the picture, text means there was none.
-        guard case .data(let jpeg) = try? await task.receive() else { return }
-        fetched = jpeg
+        fetched = await Relay.ask(serverURL, ["type": "image_get", "id": id])
     }
 
     /// The picture, as big as the screen. Tap anywhere to put it away — there is one

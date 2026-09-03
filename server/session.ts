@@ -205,6 +205,10 @@ export class Session {
           // background task's narration — this cannot see, so it does not say.
           this.log(`claude opened ${kind} with nothing sent`);
           this.state = 'claude';
+          // Said with the event that already means it: a turn is running here. A
+          // socket that attached to watch now knows there is something to watch,
+          // rather than inferring it from whether any words happen to arrive.
+          this.phone.event({ type: 'turn_start' });
           this.arm();
         }
         this.turn.claude_start_at ??= Date.now();
@@ -436,6 +440,11 @@ export class Session {
     this.closed = true;
     this.disarm();
     if (this.gap) { clearTimeout(this.gap); this.gap = null; }
+    // A turn in flight outlives its socket — claude.ts keeps it working — but its
+    // record dies with this object, so what is known is written now. The reply's
+    // tail and the cost land after the detach, in nobody's record: a partial line
+    // beats none, and the sink's log holds the rest.
+    if (this.state !== 'user') void this.record(this.turn).catch((e) => this.log(`record failed: ${e}`));
     // Released, not closed: a busy session stays in the pool and finishes its work,
     // reattachable by the next `?resume=` — see claude.ts.
     if (this.claude) release(this.claude, this.audience);

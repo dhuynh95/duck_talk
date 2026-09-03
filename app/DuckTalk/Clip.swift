@@ -7,11 +7,11 @@ import SwiftUI
 /// "meant" is a guess until you have heard what you said; with this, the pair is made
 /// against the sound.
 ///
-/// It fetches itself, over a `?data=1` socket it opens for the one message and closes
-/// — the same shape as `ServerView.Probe.dial`. That is deliberate: a clip is a blob
-/// asked for on demand, not state to be kept in step, so it does not belong in
-/// `RelayStore`, which exists to hold everything the relay has and answer with all of
-/// it. Here there is nothing to drift, and a chip that is never tapped costs nothing.
+/// It fetches itself, with `Relay.ask` — a socket opened for the one message and closed.
+/// That is deliberate: a clip is a blob asked for on demand, not state to be kept in
+/// step, so it does not belong in `RelayStore`, which exists to hold everything the relay
+/// has and answer with all of it. Here there is nothing to drift, and a chip that is never
+/// tapped costs nothing.
 struct ClipChip: View {
     let clip: Double
     let serverURL: String
@@ -78,29 +78,12 @@ struct ClipChip: View {
         }
         loading = true
         Task {
-            let data = await fetch()
+            let data = await Relay.ask(serverURL, ["type": "clip_get", "id": clip])
             loading = false
             guard let data, let player = try? AVAudioPlayer(data: data) else { return gone = true }
             self.player = player
             player.play()
             playing = true
         }
-    }
-
-    /// One socket, one question, one frame back.
-    ///
-    /// The relay sends the audio before the state frames every message is answered
-    /// with, so the first frame is the whole answer: binary is the clip, text means
-    /// there was none. Nothing is counted and nothing is waited out.
-    private func fetch() async -> Data? {
-        guard let url = URL(string: serverURL + "?data=1") else { return nil }
-        let task = URLSession.shared.webSocketTask(with: url)
-        task.resume()
-        defer { task.cancel(with: .normalClosure, reason: nil) }
-        guard let json = try? JSONSerialization.data(withJSONObject: ["type": "clip_get", "id": clip]),
-              let text = String(data: json, encoding: .utf8),
-              (try? await task.send(.string(text))) != nil else { return nil }
-        guard case .data(let wav) = try? await task.receive() else { return nil }
-        return wav
     }
 }

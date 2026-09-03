@@ -129,13 +129,6 @@ export interface Claude {
 
 export interface ClaudeCallbacks {
   /**
-   * A past session to carry on instead of starting a new one. Claude Code keeps the
-   * transcript, so this is the whole of resuming: the same warm-session machinery
-   * runs, it just starts already knowing what was said. All sessions share one `cwd`,
-   * so any id this relay recorded can be resumed.
-   */
-  resume?: string;
-  /**
    * Claude opened its first block of this turn, and what kind: `text` means it is
    * answering, `thinking` or `tool_use` mean the wait before any words is its own
    * doing rather than the API's. Once per turn.
@@ -245,7 +238,15 @@ export async function billingMode(): Promise<string> {
   return who ? `${who} — ${how}` : how;
 }
 
-function openClaude(cb: ClaudeCallbacks): Claude {
+/**
+ * `resume` is a past session to carry on instead of starting a new one. Claude Code
+ * keeps the transcript, so this is the whole of resuming: the same warm-session
+ * machinery runs, it just starts already knowing what was said. A parameter rather
+ * than a field on `cb` on purpose: `cb` is the caller's proof of attachment — `detach`
+ * compares it by identity — so it must arrive here as the object the caller holds,
+ * never wrapped or copied.
+ */
+function openClaude(cb: ClaudeCallbacks, resume?: string): Claude {
   // Where the output goes right now. Starts on the opener's callbacks; `attach` points
   // it at whoever looks next, and `detach` at the sink below — so every consumer of a
   // frame reads through this, and swapping the audience is one assignment.
@@ -303,7 +304,7 @@ function openClaude(cb: ClaudeCallbacks): Claude {
   // input, not the turn — measured, a turn cut off at 1s ran its tools and finished.
   // The id is null until the CLI's first frame names it, which the loop below reads.
   const live = track();
-  let sessionId: string | null = cb.resume ?? null;
+  let sessionId: string | null = resume ?? null;
   const busy = () => wanted !== null || ambient || tasks > 0;
   const report = () => live.update(sessionId, busy());
   // Nobody attached: nothing to show, but the work goes on and so does its log —
@@ -387,7 +388,7 @@ function openClaude(cb: ClaudeCallbacks): Claude {
     stderr: (line: string) => { if (process.env['DEBUG']) console.debug('sdk:', line.trimEnd()); },
   };
   if (MODEL) options.model = MODEL;
-  if (cb.resume) { options.resume = cb.resume; log(`resuming ${cb.resume}`); }
+  if (resume) { options.resume = resume; log(`resuming ${resume}`); }
 
   const q: Query = query({ prompt: input(), options });
   // Assigned at the bottom of this function, before anything asynchronous can run —
@@ -627,7 +628,7 @@ const pool = new Map<string, {
  */
 export function claim(resume: string | undefined, cb: ClaudeCallbacks): Claude {
   const found = resume ? pool.get(resume) : undefined;
-  if (!found) return openClaude({ ...cb, resume });
+  if (!found) return openClaude(cb, resume); // the object itself: it is the proof `detach` compares
   if (found.parked) { clearTimeout(found.parked); found.parked = undefined; }
   cb.log?.(`attached to the live session ${resume}`);
   found.claude.attach(cb);

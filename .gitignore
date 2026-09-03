@@ -19,3 +19,4 @@ app/DuckTalkWidget/Info.plist
 xcuserdata/
 # SourceKit-LSP build context — absolute paths, one per machine; `./dt gen` writes it
 app/buildServer.json
+.probe/

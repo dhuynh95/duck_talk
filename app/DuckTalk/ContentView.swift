@@ -67,7 +67,7 @@ struct ContentView: View {
     /// being carried on is the session's own business — it appends `resume` itself, so
     /// a turn typed after one spoken lands in the same conversation.
     private var url: URL? {
-        URL(string: serverURL + "?mode=\(mode.rawValue)" + (autocorrect ? "&correct=1" : ""))
+        Relay.url(serverURL, query: "?mode=\(mode.rawValue)" + (autocorrect ? "&correct=1" : ""))
     }
 
     var body: some View {
@@ -92,11 +92,13 @@ struct ContentView: View {
                     // the reply streams in mid-sentence.
                     chat = opened
                     session.show(messages, id: opened.id)
+                    draft = ""  // what you were writing belonged to the chat you left
                     if opened.isWorking, let url { session.follow(url: url) }
                 },
                 onNew: {
                     chat = nil
                     session.show([], id: nil)
+                    draft = ""
                 },
             )
         }
@@ -114,7 +116,7 @@ struct ContentView: View {
                 switch which {
                 case .prompts: PromptsView(serverURL: serverURL)
                 case .corrections(let seed): CorrectionsView(serverURL: serverURL, seed: seed)
-                case .server: ServerView(serverURL: $serverURL)
+                case .server: ServerView(serverURL: $serverURL, relay: relay)
                 case .mode: ChoiceSheet(title: "Mode", choices: Mode.choices, picked: $modeName)
                 // What you add to the turn besides words — a picture, and what Claude
                 // may do with it. Permission lives here rather than in the bar: you
@@ -239,16 +241,37 @@ struct ContentView: View {
         }
     }
 
-    /// Branch the conversation at this answer and land on the result.
+    /// Branch the conversation at one of its messages and land on the result.
     ///
     /// A session is stopped first, never left running beside the new chat: there is
     /// one session, and it belongs to whatever is on screen. What is left is the fork,
     /// idle — so the listen button starts it, exactly as opening a chat does.
-    private func forkFrom(_ line: VoiceSession.Line) {
-        guard let source = chat, let at = line.uuid else { return }
+    ///
+    /// Takes the cut point rather than the line, because the two things that branch cut
+    /// in different places: forking an answer keeps it (`uuid`, which cuts inclusive),
+    /// and editing an instruction drops it (`after`, the entry before it). One verb,
+    /// two points.
+    private func forkFrom(_ at: String?) {
+        guard let source = chat, let at else { return }
         if live { session.stop() }
         relay.connect(to: serverURL)
         relay.fork(source.id, at: at)
+    }
+
+    /// Say it differently.
+    ///
+    /// An edit is a fork you get to retype: branch just before the message, put what you
+    /// said in the composer, and the arrow that is already there runs it. Nothing new
+    /// happens on the wire and no turn is started behind your back — you see the words
+    /// before they go, which is what anyone editing a message wanted anyway. The chat you
+    /// edited is untouched beside it, so this is a counterfactual and not a rewrite.
+    ///
+    /// The first message of a chat has nothing before it to branch from, and needs
+    /// nothing: a conversation with its opening line changed is a new conversation.
+    private func edit(_ line: VoiceSession.Line) {
+        draft = line.text
+        if line.after == nil { clear() } else { forkFrom(line.after) }
+        typing = true
     }
 
     /// The conversation on screen as the relay last described it — the title it has now,
@@ -291,7 +314,7 @@ struct ContentView: View {
                     // conversation, which is what forking one from its title means —
                     // and it is the fork the transcript already knows how to do.
                     if let last = session.lines.last(where: { $0.uuid != nil }) {
-                        Button { forkFrom(last) } label: {
+                        Button { forkFrom(last.uuid) } label: {
                             Label("Fork conversation", systemImage: "arrow.branch")
                         }
                     }
@@ -730,9 +753,10 @@ struct ContentView: View {
     /// One line of the transcript: what you said, what Claude said, or the tools it
     /// used in between.
     ///
-    /// The two that are speech are `SelectableText`, so a long press grabs a word and
-    /// the handles widen it. The tool line stays a plain `Text` — it is a run of tool
-    /// names, and nobody lifts a phrase out of one.
+    /// The two that are speech are `SelectableText`, so a long press grabs a word, the
+    /// handles widen it, and the menu that comes up carries what you can do to the
+    /// message as well as Copy. The tool line stays a plain `Text` — it is a run of tool
+    /// names, nobody lifts a phrase out of one, and there is nothing to do to it.
     @ViewBuilder
     private func row(_ line: VoiceSession.Line) -> some View {
         switch line.kind {
@@ -758,66 +782,56 @@ struct ContentView: View {
                 // alternation is what makes a long transcript scannable — the eye finds
                 // the turns without reading them, so neither side needs a name on it.
                 // The bubble hugs its own text, which is why the width comes after it.
-                SelectableText(line.text)
+                SelectableText(line.text) { menu(line) }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(Brand.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                     .frame(maxWidth: .infinity, alignment: .trailing)
-                actions(line)
             }
         case .model:
-            VStack(alignment: .leading, spacing: 6) {
-                SelectableText(line.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                actions(line)
-            }
+            SelectableText(line.text) { menu(line) }
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    /// What you can do to a message, under every one of them. Small and tertiary: they
-    /// are always there, so they must never compete with the words.
+    /// What you can do to a message, in the menu its own long press already raises.
     ///
-    /// **Never label these with words.** A glyph in a transcript is read every time the
-    /// eye passes the row, and a word beside it earns its width once and costs it
-    /// forever — the row stops being a margin and becomes a second thing to read. The
-    /// word belongs in `accessibilityLabel`, where it is said only to someone who
-    /// asked. This is the rule for every icon under a message, not just these two.
+    /// This used to be a row of glyphs drawn under every message, and the row was the
+    /// problem: it was read every time the eye passed it, it could never be labelled
+    /// without costing that width forever, and it sat beside a long press that offered
+    /// Copy — two ways to act on one message, in two places, one of them wordless. In a
+    /// menu there is room for words, so the verbs say what they do and the transcript
+    /// goes back to being only what was said.
     ///
-    /// One row, and what is in it follows from the line: the only thing to do with
-    /// what you said is fix what was misheard, and the thing to do with an answer is
-    /// branch from it. Taking the words is not here any more — a long press on the
-    /// words themselves selects them, and it works on your own lines too, which a
-    /// button on Claude's never did.
-    private func actions(_ line: VoiceSession.Line) -> some View {
-        HStack(spacing: 18) {
-            // Only a line that was heard has audio, so this is also what says the line
-            // is yours. Direct mode runs what it heard before you can stop it, which
-            // makes this the only door to a correction that Review was not on for.
+    /// What is offered follows from the line, and every entry needs a `uuid`: it is the
+    /// proof that this message is in the conversation on disk, which is the only place a
+    /// branch can cut. A line you just spoke has none until the chat is opened again.
+    private func menu(_ line: VoiceSession.Line) -> [UIMenuElement] {
+        var items: [UIMenuElement] = []
+        switch line.kind {
+        case .user:
+            if line.uuid != nil {
+                items.append(UIAction(title: "Edit", image: UIImage(systemName: "pencil")) { _ in edit(line) })
+            }
+            // Only a line that was heard has audio. Direct mode runs what it heard before
+            // you can stop it, which makes this the only door to a correction that Review
+            // was not on for.
             if let clip = line.clip {
-                Button {
+                items.append(UIAction(title: "Fix what was heard", image: UIImage(systemName: "waveform")) { _ in
                     sheet = .corrections(Correction(at: Date().timeIntervalSince1970 * 1000,
                                                     heard: line.text, meant: line.text, clip: clip))
-                } label: {
-                    Image(systemName: "pencil")
-                }
-                .accessibilityIdentifier("fix")
-                .accessibilityLabel("Fix what was heard")
+                })
             }
-            if line.kind == .model {
-                // A reply just spoken is not on disk yet, so there is nothing to
-                // branch from — which is why this is not the same condition as copy.
-                if line.uuid != nil {
-                    Button { forkFrom(line) } label: {
-                        Image(systemName: "arrow.branch")
-                    }
-                    .accessibilityIdentifier("fork")
-                    .accessibilityLabel("Fork from here")
-                }
+        case .model:
+            if line.uuid != nil {
+                items.append(UIAction(title: "Fork from here", image: UIImage(systemName: "arrow.branch")) { _ in
+                    forkFrom(line.uuid)
+                })
             }
+        case .tools:
+            break
         }
-        .font(.footnote)
-        .foregroundStyle(Brand.tertiaryText)
-        .buttonStyle(.plain)
+        return items
     }
 }
 
@@ -880,10 +894,16 @@ private struct ComposerHeight: PreferenceKey {
 /// your thumb — rather than a screen later, or worse, a reply from yesterday's relay
 /// about some other folder. Where the address comes from is the relay's own startup
 /// lines: it is the one process that knows every way it can be reached.
+///
+/// Checked by the connection the home screen already holds, rather than by a socket of
+/// this sheet's own. `serverURL` is bound straight to the field, so every keystroke
+/// re-aims that connection — which is the whole of reconnecting — and `connected` is
+/// already "a relay answered", the same fact the gear's Offline pill draws. A second
+/// dialler here was a second answer to one question, and the two could disagree.
 struct ServerView: View {
     @Binding var serverURL: String
+    let relay: RelayStore
     @Environment(\.dismiss) private var dismiss
-    @State private var probe = Probe.idle
 
     var body: some View {
         NavigationStack {
@@ -894,9 +914,9 @@ struct ServerView: View {
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                         .accessibilityLabel("Server URL")
-                    Label(probe.text, systemImage: probe.symbol)
+                    Label(reach.text, systemImage: reach.symbol)
                         .font(.footnote)
-                        .foregroundStyle(probe.color)
+                        .foregroundStyle(reach.color)
                         .accessibilityIdentifier("reach")
                 } footer: {
                     Text("Copy one of the addresses the relay prints when it starts: `localhost` for the simulator, your Mac\u{2019}s Wi-Fi address for a phone on the same network, or its `wss://\u{2026}ts.net` name to reach it from anywhere, cellular included.")
@@ -914,62 +934,16 @@ struct ServerView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
-            // Checked on arrival and on every edit, half a second after the last
-            // keystroke so a URL being typed is not dialled once per character.
-            .task(id: serverURL) {
-                probe = .checking
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !Task.isCancelled else { return }
-                probe = await Probe.dial(serverURL)
-            }
         }
     }
 
-    /// One WebSocket opened and closed: the cheapest question the relay can answer.
-    enum Probe {
-        case idle, checking, reachable, unreachable(String)
-
-        static func dial(_ text: String) async -> Probe {
-            guard let url = URL(string: text), let scheme = url.scheme, ["ws", "wss"].contains(scheme), url.host != nil else {
-                return .unreachable("Needs a ws:// or wss:// address")
-            }
-            let task = URLSession.shared.webSocketTask(with: url)
-            task.resume()
-            defer { task.cancel(with: .normalClosure, reason: nil) }
-            do {
-                // A ping is answered only once the handshake is complete, so it is the
-                // proof of a relay and not just of a host that accepted the TCP connection.
-                try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-                    task.sendPing { error in error.map { c.resume(throwing: $0) } ?? c.resume() }
-                }
-                return .reachable
-            } catch {
-                return .unreachable(error.localizedDescription)
-            }
-        }
-
-        var text: String {
-            switch self {
-            case .idle: return " "
-            case .checking: return "Checking\u{2026}"
-            case .reachable: return "Reachable"
-            case .unreachable(let why): return why
-            }
-        }
-        var symbol: String {
-            switch self {
-            case .idle, .checking: return "circle.dotted"
-            case .reachable: return "checkmark.circle.fill"
-            case .unreachable: return "xmark.circle.fill"
-            }
-        }
-        var color: Color {
-            switch self {
-            case .idle, .checking: return Brand.secondaryText
-            case .reachable: return .green
-            case .unreachable: return .red
-            }
-        }
+    /// The held connection, as one line under the field: it answered, it has said why
+    /// not, or it is still trying. Nothing here dials anything — every keystroke has
+    /// already re-aimed the connection the home screen holds.
+    private var reach: (text: String, symbol: String, color: Color) {
+        if relay.connected { return ("Reachable", "checkmark.circle.fill", .green) }
+        if let why = relay.error { return (why, "xmark.circle.fill", .red) }
+        return ("Checking\u{2026}", "circle.dotted", Brand.secondaryText)
     }
 }
 

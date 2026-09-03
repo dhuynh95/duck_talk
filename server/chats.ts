@@ -37,6 +37,19 @@ import { clips, images } from './turns.ts';
 /** One exchange, as it would be spoken. `uuid` is where a fork can cut. */
 export interface Message {
   uuid: string;
+  /**
+   * The chain entry this message follows — where a fork has to cut to *replace* it.
+   *
+   * `uuid` cuts inclusive, so branching there keeps the message; branching here keeps
+   * everything up to it and drops the message and its reply, which is the whole of
+   * editing one. Absent on the first message of a chat, where there is nothing before
+   * it and the edit is simply a new conversation.
+   *
+   * It is the previous entry of the raw chain rather than the previous *shown* message,
+   * because a turn's last entry is often a tool result or a thinking block, and cutting
+   * at the last thing that had words in it would take the rest of that turn with it.
+   */
+  after?: string;
   role: 'user' | 'model';
   text: string;
   /** The audio this was heard from, when it was spoken and the clip is still kept.
@@ -86,7 +99,11 @@ export async function chat(id: string): Promise<Message[]> {
   const heard = clips();
   const shown = images();
   const all: Message[] = [];
+  // Every entry the chain has, kept or not — see `Message.after`.
+  let prev: string | null = null;
   for (const m of messages) {
+    const after = prev;
+    prev = m.uuid;
     if (m.type !== 'user' && m.type !== 'assistant') continue;
     const said = text(m);
     // An assistant turn that only called tools has no words in it, and a phone shows
@@ -98,7 +115,7 @@ export async function chat(id: string): Promise<Message[]> {
     // stores the picture too, but as base64 inside the message, which is the one thing
     // not worth sending to a phone that only wants a thumbnail.
     const pictures = role === 'user' ? shown.get(said) : undefined;
-    all.push({ uuid: m.uuid, role, text: said, ...(clip ? { clip } : {}), ...(pictures ? { images: pictures } : {}) });
+    all.push({ uuid: m.uuid, ...(after ? { after } : {}), role, text: said, ...(clip ? { clip } : {}), ...(pictures ? { images: pictures } : {}) });
   }
   // A chat mid-turn is cut at the instruction now being answered: the CLI flushes
   // reply blocks to the transcript as they complete, and the socket that attaches to

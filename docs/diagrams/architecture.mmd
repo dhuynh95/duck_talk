@@ -1,0 +1,16 @@
+flowchart LR
+    clients["any client<br/>phone · web · probe · tests<br/>(one wire protocol)"]
+    sup["Supervisor<br/>chat → Runner<br/>decides when a process lives"]
+    run["Runner<br/>one process, one chat<br/>send · interrupt · set · stopTask<br/>fan-out to N subscribers"]
+    cli["claude<br/>(SDK's bundled binary)"]
+    wal[("transcript<br/>~/.claude/projects/&lt;cwd&gt;/&lt;chat&gt;.jsonl<br/>the write-ahead log")]
+    pids[("runners.json<br/>chat → pid")]
+
+    clients -- "claim · subscribe · release" --> sup
+    sup -- "open / close" --> run
+    run -- "events" --> clients
+    run <-- "messages ↕ frames" --> cli
+    cli -- "writes as blocks complete" --> wal
+    sup -. "inspect on claim / at boot" .-> wal
+    run -. "pid" .-> pids
+    sup -. "at boot" .-> pids

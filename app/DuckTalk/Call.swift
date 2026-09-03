@@ -26,10 +26,12 @@ final class Call: NSObject {
     /// The system decided the mute state — from the stem, the call UI, or our own
     /// `setMuted` coming back around. The one place the bit actually flips.
     var onMute: ((Bool) -> Void)?
-    /// The call is over: a stem double press, the call UI's red button, our own
-    /// `end()`, or a provider reset. Idempotent on the caller's side, because it
-    /// arrives however the call died.
-    var onEnded: (() -> Void)?
+    /// The call is over, and whose decision that was. `byUser` is true for the acts
+    /// a person performs — a stem double press, the call UI's red button, our own
+    /// `end()` — and false for a provider reset, which is the system taking the call
+    /// away from a user who still wants it. The caller treats the first as Stop and
+    /// the second as damage to heal. Idempotent on the caller's side either way.
+    var onEnded: ((_ byUser: Bool) -> Void)?
     /// The system took the audio session away (a real call, hold) or gave it back.
     /// Only fired after the first activation — that one is `begin()` returning.
     var onAudioSession: ((Bool) -> Void)?
@@ -52,7 +54,7 @@ final class Call: NSObject {
         guard live else { return }
         live = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        onEnded?()
+        onEnded?(true)
     }
 
     func setMuted(_ on: Bool) {
@@ -179,7 +181,7 @@ extension Call: CXProviderDelegate {
         action.fulfill()
         starting?.resume(throwing: CancellationError()) // ended before it ever activated
         starting = nil
-        onEnded?()
+        onEnded?(true)
     }
 
     /// A real phone call taking precedence. Nothing to do: the system deactivates
@@ -202,7 +204,7 @@ extension Call: CXProviderDelegate {
         uuid = nil
         starting?.resume(throwing: CancellationError())
         starting = nil
-        onEnded?()
+        onEnded?(false) // nobody hung up; the system dropped the call
     }
 }
 #endif

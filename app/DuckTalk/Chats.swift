@@ -28,6 +28,10 @@ struct Chat: Identifiable, Codable, Hashable {
 /// chat can be forked from, and lines just spoken cannot.
 struct ChatMessage: Codable, Hashable {
     let uuid: String
+    /// The chain entry this message follows — where a fork cuts to *replace* it, which
+    /// is the whole of editing one. Nil on the first message of a chat, and on a relay
+    /// too old to send it; both read the same way, and both mean edit starts a new chat.
+    let after: String?
     let role: String  // "user" or "model"
     let text: String
     /// The audio it was heard from, when the relay still has it — a week, unless a

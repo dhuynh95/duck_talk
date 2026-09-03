@@ -1,0 +1,14 @@
+flowchart TD
+    a(["CLI died mid-turn<br/>(iterator threw)"]) --> claim
+    b(["relay restarted<br/>boot()"]) --> orphan{"pid in runners.json alive<br/>and its command line names the chat?"}
+    orphan -- "yes: it is finishing the turn" --> wait["wait for it to exit"] --> claim
+    orphan -- "no" --> claim
+    c(["client claims a chat<br/>with no live Runner"]) --> claim
+
+    claim["inspect(chat): read the transcript tail"] --> last{"last entry?"}
+    last -- "assistant" --> ok["turn finished · just resume"]
+    last -- "user (unanswered)" --> rec["resume with<br/>resumeSessionAt = previous entry<br/>resumeDropsTurn = that user uuid<br/>then send the same content again"]
+    rec --> same["same chat id · no duplicate · turn re-runs"]
+
+    style ok fill:#e8f5e9,stroke:#2e7d32
+    style rec fill:#fff8e1,stroke:#f9a825

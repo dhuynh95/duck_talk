@@ -56,6 +56,11 @@ final class VoiceSession {
         /// cut. Only lines loaded from a past chat have one — a line just spoken is
         /// not in the transcript on disk yet, so there is nothing to branch from.
         var uuid: String?
+        /// Where a fork has to cut to replace this line — see `ChatMessage.after`. It is
+        /// what makes a message editable, so a line without one offers no Edit: one just
+        /// spoken is not in the transcript on disk yet, and the first line of a chat has
+        /// nothing before it to branch from.
+        var after: String?
         /// The audio this line was heard from, when it was spoken rather than typed.
         /// It is what makes a mishearing fixable after the fact — see `fix` on the
         /// home screen.
@@ -64,8 +69,8 @@ final class VoiceSession {
         /// read back out of a stored chat. See `Picture`.
         var images: [Picture] = []
 
-        init(kind: Kind, text: String = "", tools: [String] = [], running: Bool = false, uuid: String? = nil, clip: Double? = nil, images: [Picture] = []) {
-            self.kind = kind; self.text = text; self.tools = tools; self.running = running; self.uuid = uuid; self.clip = clip; self.images = images
+        init(kind: Kind, text: String = "", tools: [String] = [], running: Bool = false, uuid: String? = nil, after: String? = nil, clip: Double? = nil, images: [Picture] = []) {
+            self.kind = kind; self.text = text; self.tools = tools; self.running = running; self.uuid = uuid; self.after = after; self.clip = clip; self.images = images
         }
 
         /// One message of a stored chat, as a line of the transcript.
@@ -74,6 +79,7 @@ final class VoiceSession {
                 kind: message.role == "user" ? .user : .model,
                 text: message.text,
                 uuid: message.uuid,
+                after: message.after,
                 clip: message.clip,
                 images: (message.images ?? []).map(Picture.stored),
             )
@@ -152,8 +158,8 @@ final class VoiceSession {
         call.onMute = { [weak self] on in
             Task { @MainActor in self?.applyMute(on) }
         }
-        call.onEnded = { [weak self] in
-            Task { @MainActor in self?.stop() }
+        call.onEnded = { [weak self] byUser in
+            Task { @MainActor in self?.callEnded(byUser: byUser) }
         }
         call.onAudioSession = { [weak self] active in
             Task { @MainActor in active ? self?.pipe?.resume() : self?.pipe?.suspend() }
@@ -251,14 +257,15 @@ final class VoiceSession {
             sendAttachments(to: task) // and so is anything picked before it opened
             status = .live
             error = nil
+            if notice == Self.healing { notice = nil } // healed; only this one is ours to clear
             call.reportConnected() // the lock screen stops saying "connecting"; once only
 
             let openedAt = ContinuousClock.now
-            do {
-                try await receiveLoop(task)
-            } catch {
-                if wantLive { self.error = error.localizedDescription }
-            }
+            // A socket error while the user still wants the session is not news for
+            // the screen — the loop below is already the answer. Raw errno text
+            // ("Software caused connection abort") explains nothing anyone can act
+            // on, and red means "this needs your hands", which a heal does not.
+            try? await receiveLoop(task)
 
             task.cancel(with: .normalClosure, reason: nil)
             self.task = nil
@@ -271,10 +278,46 @@ final class VoiceSession {
             // A connection that lasted is not a failing one; only a fast drop backs off.
             if openedAt.duration(to: .now) > .seconds(5) { backoff = .milliseconds(250) }
             status = .reconnecting
+            // Silent unless it lasts: a drop healed inside a breath is not an event.
+            // Only a heal still running after a few seconds earns its one grey line,
+            // and the next successful connect takes it back down.
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, self.wantLive, self.status == .reconnecting else { return }
+                self.notice = Self.healing
+            }
             try? await Task.sleep(for: backoff)
             backoff = min(backoff * 2, .seconds(5))
         }
         stop()
+    }
+
+    /// The call is over — but only a person ending it means Stop. The system dropping
+    /// it (a provider reset) is damage to a session the user still wants, so it is
+    /// healed instead: the socket may well still be alive under it.
+    private func callEnded(byUser: Bool) {
+        if byUser || !wantLive { return stop() }
+        Task { await healCall() }
+    }
+
+    /// One try to get the call — and with it the audio session — back. Failing that,
+    /// the conversation is kept and only the voice is given up: the reply still
+    /// streams as text over a follow socket, and the mic button starts voice again.
+    private func healCall() async {
+        do {
+            try await call.begin()
+            // The reset deactivated the session and suspended the engine; a re-begin's
+            // first activation resolves `begin` itself rather than firing
+            // `onAudioSession`, so the engine is told here.
+            pipe?.resume()
+        } catch {
+            stop()
+            notice = "Voice lost — tap the mic to reconnect."
+            // Watch rather than assume: if a turn is running, the relay announces it
+            // the moment this socket attaches, and if nothing is, the follow puts
+            // itself down quietly.
+            if chatId != nil, let url { follow(url: url) }
+        }
     }
 
     /// Stop being heard, or start again. A request, not a flip: it goes up through
@@ -307,11 +350,19 @@ final class VoiceSession {
     }
 
     /// Something worth saying that is not a failure, so it is not `error` and is not
-    /// drawn in red. There is one so far: the session was muted by something other
-    /// than this screen.
+    /// drawn in red: a mute this screen did not ask for, a heal taking long enough
+    /// to notice, a voice that could not be brought back.
     private(set) var notice: String?
 
+    /// The one notice this class clears on its own, so it can never take down a
+    /// message someone else put up.
+    private static let healing = "Reconnecting — Claude keeps working."
+
     func stop() {
+        // Idempotent: the run loop's own teardown lands here after a stop that
+        // already ran, and must not erase what the stopper said — a notice, or the
+        // follow it started.
+        guard wantLive || status != .idle else { return }
         wantLive = false
         call.end() // hang up however we got here; a no-op if the call already ended
         task?.cancel(with: .normalClosure, reason: nil)
@@ -408,17 +459,32 @@ final class VoiceSession {
     func follow(url: URL) {
         guard status == .idle, !asking, chatId != nil else { return }
         asking = true
-        let before = lines.count
+        followSaw = false
         Task { await converse(nil, url: resuming(url)) }
         // The pill can be stale — a restarted relay forgets its live sessions — and a
-        // follow that finds nothing running would wear the stop face forever. A real
-        // attach replays synchronously, so a screen still untouched after this long
-        // means there is nothing to watch, and the socket is put down.
+        // follow that finds nothing running would wear the stop face forever. A live
+        // turn announces itself the moment the relay attaches this socket
+        // (`turn_start`), so silence this long means there is nothing to watch — and
+        // the socket is put down without a stop, because watching must never kill
+        // the work it is watching.
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(3))
-            guard let self, self.asking, self.lines.count == before else { return }
-            self.cancelAsk()
+            guard let self, self.asking, !self.followSaw else { return }
+            self.detachAsk()
+            self.notice = "Nothing running here — the relay may have restarted."
         }
+    }
+
+    /// Any event has arrived on the follow socket — proof there is something to
+    /// watch, which is all the bail above needs to stand down.
+    private var followSaw = false
+
+    /// Put the ask socket down without touching the turn: watching is not owning,
+    /// so unlike `cancelAsk` this sends nothing.
+    private func detachAsk() {
+        guard let task = askTask else { return }
+        asking = false
+        task.cancel(with: .normalClosure, reason: nil)
     }
 
     /// Stop the turn and put the socket down. Coupled today — the `stop` frame ends
@@ -594,6 +660,7 @@ final class VoiceSession {
     private func handle(_ json: String) {
         guard let data = json.data(using: .utf8),
               let event = try? JSONDecoder().decode(Event.self, from: data) else { return }
+        followSaw = true // any event is proof of life for a follow's bail
         switch event.type {
         case "user":
             // Speech arrives as the whole utterance so far, revised as it is spoken, so

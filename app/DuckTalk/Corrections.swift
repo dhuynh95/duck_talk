@@ -66,6 +66,10 @@ final class RelayStore {
     func connect(to serverURL: String) {
         guard wanted != serverURL else { return }
         wanted = serverURL
+        // Nothing has answered at the new address yet, and the old answer is not evidence
+        // about it — so the pill and the Server sheet go back to not knowing until a frame
+        // comes back, rather than calling a fresh address reachable on the last one's word.
+        connected = false
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         Task { await hold(serverURL) }
@@ -79,8 +83,8 @@ final class RelayStore {
     }
 
     private func hold(_ serverURL: String) async {
-        guard let url = URL(string: serverURL + "?data=1") else {
-            error = "Needs a ws:// or wss:// address"
+        guard let url = Relay.url(serverURL, query: "?data=1") else {
+            error = Relay.badAddress
             return
         }
         var backoff: Duration = .milliseconds(250)
