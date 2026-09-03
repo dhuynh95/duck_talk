@@ -1,9 +1,10 @@
 # app/ — Duck Talk iOS client
 
-SwiftUI, iOS 17+, no external Swift packages. Two targets: the app, and a widget
-extension holding the lock-screen Live Activity. The home screen is the conversation —
-a voice session against `server/` (mic → relay → Gemini → speaker) — with past chats
-behind the drawer on the left.
+SwiftUI, iOS 17+, no external Swift packages, one target. The home screen is the
+conversation — one socket to `server/` per chat on screen, with the microphone as
+something that flows on it rather than a different connection — and past chats behind
+the drawer on the left. A running session is a CallKit call, which is what puts it on the
+lock screen and lets AirPods stem presses reach it (`Call.swift`).
 
 The bar under the composer splits at the microphone: what you are adding to the turn on
 the left (`+`, then the model), the session itself on the right (Direct/Review until it
@@ -20,22 +21,21 @@ rather than carried by the frame that starts one (`Attachment.swift`, `VoiceSess
 so typing, talking and approving are one path and a retract keeps them. A line just sent
 draws the bytes it still has; a chat reopened later draws by id over `image_get`.
 
-You can also type. A typed instruction is a socket of its own that lives for one turn,
-and the relay opens ears only for a connection that sends audio, so typing costs no
-Gemini session and gets no spoken reply. Typing `/` offers the project's skills,
-filtered on-device as you type from the list the data socket already holds; sending
-`/name` runs one, because the CLI expands it into the turn itself. The two are exclusive: touching the field while
-listening stops the session. Both carry `resume`, so a typed turn and a spoken one are
-the same conversation. The earlier chat client (session list, SSE against the web app's
-Express backend, now at the `web-app` tag) is parked on the `ios/wired-mvp` branch;
-pull pieces over from there rather than rewriting them.
+Typing and talking are frames on the same socket (`VoiceSession.swift`). The relay opens
+ears only once audio arrives and closes them when it stops, so a typed turn costs no
+Gemini session and gets no spoken reply, and tapping the mic mid-turn joins the turn
+rather than starting a chat beside it. The socket is held while there is a reason to —
+the mic is open, a turn this screen sent is running, or the relay says the chat is
+working — and closes otherwise; the relay keeps the chat's work going without it. Typing
+`/` offers the project's skills, filtered on-device from the list the data socket already
+holds; sending `/name` runs one, because the CLI expands it into the turn itself. The
+earlier chat client (session list, SSE against the web app's Express backend, now at the
+`web-app` tag) is parked on the `ios/wired-mvp` branch; pull pieces over from there
+rather than rewriting them.
 
-Two things the phone does that the simulator cannot show you. `UIBackgroundModes:
-audio` keeps the microphone open once the screen locks — iOS will not let a
-backgrounded app *start* recording, so a session always begins in the foreground. The
-Live Activity is what makes a running session visible without unlocking — and mutable
-and stoppable, through App Intents that run in the app; it buys no background time of
-its own.
+One thing the phone does that the simulator cannot show you: `UIBackgroundModes: audio`
+and `voip` keep the microphone and the call alive once the screen locks — iOS will not
+let a backgrounded app *start* recording, so a session always begins in the foreground.
 
 ## Working loop — the `ios-sim` MCP
 
@@ -149,13 +149,11 @@ paths) so SourceKit-LSP reads the generated project instead of compiling each fi
 alone for macOS — which is what "Cannot find 'Brand' in scope" in an editor means:
 run `./dt gen`, or `brew install xcode-build-server` if it is not on the machine.
 
-Sources are globbed from `DuckTalk/` (the app), `DuckTalkWidget/` (the Live Activity)
-and `Shared/` (compiled into both — a Live Activity is two processes agreeing on a
-shape), so a new `.swift` file needs no project edit. Never hand-edit `.pbxproj`.
+Sources are globbed from `DuckTalk/` and `Shared/`, so a new `.swift` file needs no
+project edit. Never hand-edit `.pbxproj`.
 
-The brand is in `Shared/` for the same reason the shape is: `Brand.swift` for the
-palette, `Brand.xcassets` for the mark (`Image("Logo")`) and the `AccentColor` the
-system tints with. Both targets draw them. `scripts/app-icon.sh` writes that mark and
+The brand is in `Shared/`: `Brand.swift` for the palette, `Brand.xcassets` for the mark
+(`Image("Logo")`) and the `AccentColor` the system tints with. `scripts/app-icon.sh` writes that mark and
 the app icon from the one drawing in `assets/`, so neither is edited by hand — and
 `scripts/filler-sound.py` writes `DuckTalk/Resources/chimes.wav`, the loop the app
 plays while a reply is owed, the same way: synthesized from numbers, never edited.

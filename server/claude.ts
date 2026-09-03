@@ -90,6 +90,8 @@ export interface Block {
 }
 
 export interface Claude {
+  /** The chat this session is — known from birth, minted here or brought by `resume`. */
+  readonly chat: string;
   /**
    * Start a turn. Only one runs at a time; call after the previous ended or was
    * interrupted.
@@ -100,7 +102,7 @@ export interface Claude {
    * on purpose: this file is the SDK boundary and knows nothing about where a picture
    * is kept.
    */
-  send(instruction: string, images?: string[]): void;
+  send(instruction: string, images?: string[], pastes?: string[]): void;
   /**
    * What Claude is: which model answers, what it is allowed to do, and how hard it
    * thinks. `effort` is one of the levels the model's own ModelInfo lists, or
@@ -527,7 +529,8 @@ function openClaude(cb: ClaudeCallbacks, resume?: string): Claude {
   })();
 
   self = {
-    send(instruction, images) {
+    chat: sessionId,
+    send(instruction, images, pastes) {
       wanted = randomUUID();
       ambient = false; // the user's turn outranks a narration
       opened = false; // this turn announces its own first block
@@ -535,9 +538,10 @@ function openClaude(cb: ClaudeCallbacks, resume?: string): Claude {
       // A plain string when there are no pictures, so the ordinary turn is byte for byte
       // the message it has always been. With pictures it is blocks, text last — the
       // model reads what it was shown before what it was asked about it.
-      const content = images?.length
+      const content = images?.length || pastes?.length
         ? [
-            ...images.map((data) => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/jpeg' as const, data } })),
+            ...(images ?? []).map((data) => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/jpeg' as const, data } })),
+            ...(pastes ?? []).map((data) => ({ type: 'document' as const, source: { type: 'text' as const, media_type: 'text/plain' as const, data }, title: 'Pasted text' })),
             { type: 'text' as const, text: instruction },
           ]
         : instruction;
@@ -644,8 +648,8 @@ const pool = new Map<string, {
 /**
  * The one door to a Claude session: the live one for this chat, reattached — or a
  * fresh open, resumed from the transcript. The caller cannot tell which, and that is
- * the point: a socket landing on a working chat is replayed the turn in flight and
- * then streams the rest, and lands on a warm process rather than paying a cold start.
+ * the point: a socket landing on a working chat is told a turn is running and streams
+ * the rest, and lands on a warm process rather than paying a cold start.
  */
 export function claim(resume: string | undefined, cb: ClaudeCallbacks): Claude {
   const found = resume ? pool.get(resume) : undefined;
@@ -689,9 +693,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // reads off disk, so the half that cannot be seen in a simulator can be proven here.
   const at = argv.indexOf('--image');
   const picture = at >= 0 ? argv.splice(at, 2)[1] : undefined;
+  const pasteAt = argv.indexOf('--paste');
+  const paste = pasteAt >= 0 ? argv.splice(pasteAt, 2)[1] : undefined;
   const instruction = argv.join(' ');
-  if (!instruction) { console.error('usage: node claude.ts [--image shot.jpg] "instruction"'); process.exit(1); }
-  const images = picture ? [(await import('node:fs')).readFileSync(picture).toString('base64')] : undefined;
+  if (!instruction) { console.error('usage: node claude.ts [--image shot.jpg] [--paste text.txt] "instruction"'); process.exit(1); }
+  const fs = await import('node:fs');
+  const images = picture ? [fs.readFileSync(picture).toString('base64')] : undefined;
+  const pastes = paste ? [fs.readFileSync(paste, 'utf8')] : undefined;
   const t0 = performance.now();
   let first = 0;
   const claude = openClaude({
@@ -706,5 +714,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       process.exit(0);
     },
   });
-  claude.send(instruction, images);
+  claude.send(instruction, images, pastes);
 }

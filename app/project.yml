@@ -67,7 +67,7 @@ targets:
         ENABLE_PREVIEWS: YES
         # DuckTalk/Assets.xcassets, generated from the logo by scripts/app-icon.sh —
         # one drawing of the duck, and the icon derived from it. The mark itself lives
-        # in Shared/Brand.xcassets, because the lock-screen card draws it too.
+        # in Shared/Brand.xcassets, and the call UI draws it too.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # The brand orange, as the colour the *system* tints with: a text cursor, a
         # toolbar button, a list checkmark are drawn by iOS, not by us, and this is the

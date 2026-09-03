@@ -17,7 +17,9 @@
  *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"turn_start"|"interrupted"|"turn_end"|"error","text"?}
  *             a `turn_start` is the instruction reaching Claude — the turn is running
  *             a `user` event also carries `partial`: true replaces the line, false ends it
- *             a `turn_end` carries `session`: which chat this connection is in
+ *             a `turn_end` carries `session`: which chat this connection is in — and `user`
+ *               and `model`: where the turn's two messages sit in the store ({uuid, after?}),
+ *               so a line just said can be forked or edited without reopening the chat
  *             a finished `user` carries `clip`: that utterance's audio, by id
  *             a `tool` carries `parent`: the Agent call it ran inside, null for Claude's own
  *             an `interrupted` may carry `retract`: the turn was taken back, un-show it

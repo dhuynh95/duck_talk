@@ -1,46 +1,44 @@
 import Foundation
 import Observation
 
-/// One conversation with Claude, reached two ways: by talking, or by typing.
+/// One conversation with Claude, on one socket, reached by talking or by typing.
 ///
-///   talking   mic → pipe.onChunk → socket (binary) ─┐
-///             socket (binary) → pipe.play           ├─ socket (text JSON) → transcript
-///   typing    one socket, one text frame ───────────┘
+///   socket  ?resume=<chat> ──▶ relay ──▶ the chat's Claude session
+///     typing    a text frame on it
+///     talking   mic → AudioPipe → binary frames on it; reply PCM → AudioPipe
+///     watching  just being connected — a working chat streams its turn as it goes
 ///
-/// The two are exclusive, and the difference is only how the instruction is made — the
-/// relay, Claude, and the events that come back are the same either way, so `handle`
-/// is shared and `ask` is a connection that opens for one turn and closes. The relay
-/// opens ears only for a connection that sends audio, so typing costs no Gemini
-/// session and no spoken reply; it needs no flag to say so.
+/// There is one socket because there is one chat on screen. What varies is whether
+/// audio is flowing on it: the relay opens its ears on the first microphone buffer and
+/// closes them when the buffers stop, so talking is a property of the connection rather
+/// than a different connection. Switching from typing to talking, or coming back to a
+/// chat mid-turn, is therefore not a switch at all.
 ///
-/// `chatId` is what makes them one conversation: the relay names the chat at every
-/// `turn_end`, and every connection opened after that resumes it.
+/// The socket is held while there is a reason to — `wantSocket`: the microphone is
+/// open, a turn this screen sent is in flight, or the relay says the chat is working.
+/// When none is true it closes, and the relay keeps the chat's work going without it.
 ///
-/// What Claude *is* — which model answers, what it is allowed to do, and how hard it
-/// thinks — travels the same way but as a frame rather than in the URL, because the
-/// relay puts all three on the session it already has running. So it is sent whenever a
-/// socket opens and whenever the choice changes, and it holds from the next turn either
-/// way.
+/// `chatId` is what makes every socket land in the same conversation. The relay names
+/// the chat at `turn_start`, so even the first turn of a new chat has an id before it is
+/// over, and a microphone opened in the middle of it resumes it rather than starting one.
 ///
-/// Pictures travel the same way and for the same reason: the relay puts them on the turn
-/// it is about to run, so one `attach` frame serves talking, typing and approving alike.
-/// They are held here until the turn they were given with ends — which is what lets a
-/// retract re-run with them, and why they are cleared on `turn_end` and not on send.
+/// What Claude *is* — model, permission, effort — and the pictures for the next
+/// instruction ride the socket as frames, sent when it opens and when they change.
 ///
-/// What you are saying and what has been said are kept apart, because the screen
-/// keeps them apart: `utterance` is the sentence being transcribed right now, and
-/// `lines` is everything already sent. An utterance joins `lines` at the moment the
-/// relay shows it was actually sent — Claude answering it, or you accepting it in
-/// review — so nothing appears in the history that never ran.
+/// What you are saying and what has been said are kept apart, because the screen keeps
+/// them apart: `utterance` is the sentence being transcribed right now, and `lines` is
+/// everything already sent. An utterance joins `lines` when the relay shows it was
+/// actually sent, so nothing appears in the history that never ran.
 @Observable
 @MainActor
 final class VoiceSession {
-    /// There is one session, and this is it. The screen shows it and the lock
-    /// screen's Stop button ends it — two views of one running thing, which only
-    /// works while there is no second one for them to disagree about.
+    /// There is one session, and this is it — the screen shows it and the call UI's
+    /// buttons act on it, which only works while there is no second one.
     static let shared = VoiceSession()
 
-    enum Status: String { case idle, connecting, live, reconnecting }
+    /// The microphone, and only the microphone. `connecting` is the call being placed.
+    /// The test harness reads this off the listen button.
+    enum Status: String { case idle, connecting, live }
 
     /// One entry in the transcript, appended in the order it happened: what you said,
     /// what Claude said, and the run of tools it used in between.
@@ -52,18 +50,13 @@ final class VoiceSession {
         var text = ""
         var tools: [String] = []  // kind == .tools
         var running = false
-        /// Where this line sits in the stored conversation, and so where a fork can
-        /// cut. Only lines loaded from a past chat have one — a line just spoken is
-        /// not in the transcript on disk yet, so there is nothing to branch from.
+        /// Where this line sits in the stored conversation, and so where a fork can cut.
+        /// Set for a loaded line, and for a line just said once `turn_end` names it.
         var uuid: String?
         /// Where a fork has to cut to replace this line — see `ChatMessage.after`. It is
-        /// what makes a message editable, so a line without one offers no Edit: one just
-        /// spoken is not in the transcript on disk yet, and the first line of a chat has
-        /// nothing before it to branch from.
+        /// what makes a message editable; the first line of a chat has none.
         var after: String?
         /// The audio this line was heard from, when it was spoken rather than typed.
-        /// It is what makes a mishearing fixable after the fact — see `fix` on the
-        /// home screen.
         var clip: Double?
         /// The pictures it was given with — in hand for a line just sent, by id for one
         /// read back out of a stored chat. See `Picture`.
@@ -86,9 +79,8 @@ final class VoiceSession {
         }
 
         /// What the run did, collapsed. Names are all the relay sends, so this summary
-        /// is the whole story and there is nothing to expand into. Whether Claude is
-        /// still at it is not said here: the Working row under the transcript says so,
-        /// from the relay's own word rather than from the last tool event seen.
+        /// is the whole story. Whether Claude is still at it is not said here: the
+        /// Working row under the transcript says so, from the relay's own word.
         var toolLabel: String {
             var counted: [(name: String, n: Int)] = []
             for tool in tools {
@@ -99,62 +91,218 @@ final class VoiceSession {
         }
     }
 
+    // MARK: - What the screen reads
+
     private(set) var status: Status = .idle
     private(set) var lines: [Line] = []
     private(set) var error: String?
     private(set) var level: Float = 0  // 0…1 live loudness, for the waveform
-    /// The microphone is sending silence. The session, the ears and Claude stay warm;
-    /// only what they hear changes. `AudioPipe.muted` is the bit that does it — this is
-    /// that bit as the screen and the lock screen read it.
+    /// The microphone is sending silence. The socket, the ears and Claude stay warm;
+    /// only what they hear changes.
     private(set) var muted = false
     /// What is being said right now, revised as it is spoken. Not yet history.
     private(set) var utterance: String?
-    /// The audio it was heard from, held until the utterance becomes a line — so a
-    /// line in the transcript can be played back and corrected, and so the review card
-    /// can play what it is asking you about. One holder, because there is one utterance
-    /// in flight and the review card is that utterance waiting to be sent.
+    /// The audio it was heard from, held until the utterance becomes a line — so the
+    /// review card can play what it is asking about, and the line can be corrected.
     private(set) var heardClip: Double?
-    /// The pictures the next instruction will be given with, whether it ends up spoken,
-    /// typed or approved. Held until the turn is over rather than until it is sent, so a
-    /// retract keeps them — the relay's own holder has exactly this lifetime.
+    /// The pictures the next instruction will be given with. Held until the turn is
+    /// over rather than until it is sent, so a retract keeps them.
     private(set) var attached: [Attachment] = []
     /// The last id minted. Ids are the moment a picture was picked, and picking several
     /// at once would otherwise mint one name for all of them.
     private var lastAttachId: Double = 0
-    /// The instruction the server is holding for a yes/no/edit, in review mode.
+    /// The instruction the relay is holding for a yes/no/edit, in review mode.
     private(set) var pending: String?
-    /// A typed instruction is running: sent, and the reply has not finished arriving.
-    private(set) var asking = false
-    /// The conversation this screen is in, named by the relay and carried into every
-    /// connection opened after it — which is what makes a typed turn and a spoken one
-    /// the same chat.
+    /// A turn this screen sent is running, from the send until its `turn_end`. One of
+    /// the three reasons to hold the socket, and the only one that can be true for a
+    /// new chat before the relay's list has a row to say so.
+    private(set) var inFlight = false
+    /// The conversation this screen is in. Named by the relay at `turn_start`, and
+    /// carried into every socket opened after — which is what makes a typed turn, a
+    /// spoken one and a reconnect the same chat.
     private(set) var chatId: String?
+    /// Something worth saying that is not a failure, so it is not `error` and not red.
+    private(set) var notice: String?
 
-    private var task: URLSessionWebSocketTask?
-    /// The socket of a typed turn, which lives exactly as long as that turn.
-    private var askTask: URLSessionWebSocketTask?
-    /// What Claude should be: which model answers, what it is allowed to do, and how
-    /// hard it thinks. Held here rather than taken as arguments at connect, because the
-    /// relay puts all three on the session already running — so they are sent on every
-    /// socket this class opens, and again the moment any of them changes.
-    private var model = ""
-    private var permission = ""
-    private var effort = ""
+    // MARK: - What the screen tells
+
+    /// The relay's word that this chat has work in flight, read off the home screen's
+    /// data socket and handed in here — the third reason to hold the socket. A working
+    /// chat is watched: its turn streams onto the screen as it goes.
+    var working = false { didSet { if working != oldValue { reconcile() } } }
+
+    /// Where the relay is and how this chat runs — `?mode=`, `?correct=` ride the URL.
+    /// Set by the screen; a change reconnects, since a socket is one of these.
+    var url: URL? { didSet { if url != oldValue { drop(); reconcile() } } }
+
+    /// The gear menu's "Filler sound", handed in like the model choice so this class
+    /// reads no settings. Off takes effect mid-wait: a loop already playing stops.
+    var fillerEnabled = true {
+        didSet { if !fillerEnabled { pipe?.waiting = false } }
+    }
+
+    // MARK: - The one socket
+
+    private var socket: URLSessionWebSocketTask?
+    /// The loop that holds it, or nil when nothing wants one.
+    private var holding: Task<Void, Never>?
+    private var wantSocket: Bool { status != .idle || inFlight || working }
+
+    /// Open or close the socket to match `wantSocket`. Every path that changes one of
+    /// its three inputs lands here, so one place decides.
+    private func reconcile() {
+        if wantSocket, holding == nil { holding = Task { await hold() } }
+        if !wantSocket, holding != nil { drop() }
+    }
+
+    /// Close the socket now. The relay keeps the chat's work going without it.
+    private func drop() {
+        holding?.cancel()
+        holding = nil
+        socket?.cancel(with: .normalClosure, reason: nil)
+        socket = nil
+        outbox.removeAll() // said to the chat being left, not the next one
+        pending = nil
+        utterance = nil
+        heardClip = nil
+        replied = false
+    }
+
+    /// The chat this screen is in, added to the URL about to be dialled — so every way
+    /// in carries the conversation without being told to.
+    private func resumed(_ base: URL) -> URL {
+        guard let chatId else { return base }
+        return URL(string: base.absoluteString + "&resume=\(chatId)") ?? base
+    }
+
+    /// Hold the socket for as long as something wants it. A relay restart, a dropped
+    /// network or a sleeping laptop cost a reconnect, not the conversation — and the
+    /// reconnect carries the chat, so a turn in flight is picked up where it is.
+    private func hold() async {
+        var backoff: Duration = .milliseconds(250)
+        while !Task.isCancelled, wantSocket, let base = url {
+            let task = URLSession.shared.webSocketTask(with: resumed(base))
+            socket = task
+            task.resume()
+            sendClaude()      // what Claude should be, before anything is said on it
+            sendAttachments() // and the pictures picked before the socket existed
+            let queued = outbox // then what was said while there was no socket
+            outbox.removeAll()
+            queued.forEach(send)
+            error = nil
+            if notice == Self.healing { notice = nil }
+            call.reportConnected() // the call UI stops saying "connecting"; once only
+
+            let openedAt = ContinuousClock.now
+            do {
+                while !Task.isCancelled {
+                    switch try await task.receive() {
+                    case .data(let pcm):
+                        markFirstReply()
+                        pipe?.play(pcm)
+                    case .string(let json):
+                        handle(json)
+                    @unknown default:
+                        break
+                    }
+                }
+            } catch {
+                // A dropped socket while something still wants one is not news for the
+                // screen; the loop is the answer. Raw errno text explains nothing.
+            }
+            task.cancel(with: .normalClosure, reason: nil)
+            if socket === task { socket = nil }
+            guard !Task.isCancelled, wantSocket else { break }
+
+            // A connection that lasted is not a failing one; only a fast drop backs off.
+            if openedAt.duration(to: .now) > .seconds(5) { backoff = .milliseconds(250) }
+            // Silent unless it lasts: a drop healed inside a breath is not an event.
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, self.holding != nil, self.socket == nil else { return }
+                self.notice = Self.healing
+            }
+            try? await Task.sleep(for: backoff)
+            backoff = min(backoff * 2, .seconds(5))
+        }
+        holding = nil
+    }
+
+    /// The one notice this class clears on its own, so it can never take down a
+    /// message someone else put up.
+    private static let healing = "Reconnecting — Claude keeps working."
+
+    /// Anything this screen says to the relay. `Any` rather than `String` because some
+    /// frames carry numbers, and one trip through JSONSerialization keeps a quote inside
+    /// a value from ending the value.
+    ///
+    /// `reconcile()` opens the socket on a task, so the frame that made it want one — a
+    /// typed instruction, a stop — arrives here before there is a socket to put it on.
+    /// It waits in the outbox and goes out the moment `hold` has one, after the frames
+    /// that say what Claude should be. Measured: without this the relay saw the
+    /// `claude` frame and never the instruction.
+    private var outbox: [[String: Any]] = []
+
+    private func send(_ msg: [String: Any]) {
+        guard let socket else { outbox.append(msg); return }
+        guard let data = try? JSONSerialization.data(withJSONObject: msg),
+              let json = String(data: data, encoding: .utf8) else { return }
+        socket.send(.string(json)) { _ in }
+    }
+
+    // MARK: - The conversation on screen
+
+    /// Put a conversation on screen without starting one — opening a past chat, or
+    /// clearing for a new one. Leaving a chat mid-turn is detaching, never stopping:
+    /// the relay runs the turn to the end, and the drawer's pill says so.
+    func show(_ past: [ChatMessage], id: String?) {
+        stopListening()
+        inFlight = false
+        working = false // the new chat's own word arrives with the next list
+        drop()
+        lines = past.map(Line.init)
+        chatId = id
+        attached = [] // picked for the conversation you were in, not this one
+        error = nil
+        reconcile()
+    }
+
+    /// Type an instruction. Nothing has to prove it was sent — you wrote it — so it is
+    /// history at once, and the socket opens if nothing held it.
+    func send(_ text: String) {
+        let said = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !said.isEmpty else { return }
+        lines.append(Line(kind: .user, text: said, images: attached.map { .picked($0.data) }))
+        inFlight = true
+        reconcile()
+        send(["type": "text", "text": said])
+    }
+
+    /// Run the held instruction, as edited on screen. An edit teaches the relay what
+    /// was really said. There is no opposite: say something else, or stop listening.
+    func approve(_ text: String) {
+        guard pending != nil else { return }
+        pending = nil
+        commit(text) // accepting is what sends it, so that is when it becomes history
+        send(["type": "approve", "text": text])
+    }
+
+    /// Stop everything this screen is about: Claude's work in this chat — the turn and
+    /// its background tasks, which is what the relay makes of `stop` — and the
+    /// microphone if it is open. One button, whatever is running.
+    func stopAll() {
+        send(["type": "stop"])
+        stopListening()
+    }
+
+    // MARK: - The microphone
+
     private var pipe: AudioPipe?
     /// The session as the system sees it. What buys the AirPods stem: a single press
     /// arrives through `call.onMute`, a double press through `call.onEnded`.
     private let call = Call()
-    private var turnEnded = false
-    /// This turn has already put lines in the history — what a retract has to undo,
-    /// and all it may undo. See the `interrupted` case.
-    private var committed = false
-    private var replied = false  // a reply byte has been marked for this turn
-    private var wantLive = false // the user's intent, which outlives any one socket
-    private var url: URL?
 
     init() {
-        // The three things the system can say about the call, wired once. Every mute
-        // — stem, call UI, or our own button coming back around — lands in the first.
         call.onMute = { [weak self] on in
             Task { @MainActor in self?.applyMute(on) }
         }
@@ -166,75 +314,31 @@ final class VoiceSession {
         }
     }
 
-    func connect(url: URL) {
+    /// Start talking. The socket opens if nothing held it, the microphone feeds
+    /// whichever socket is current, and the relay opens its ears on the first buffer —
+    /// mid-turn included, in which case it reads the latest line and carries on.
+    func listen() {
         guard status == .idle else { return }
-        // A turn is being watched, or was typed: the live socket takes over the same
-        // chat and the relay streams on from where the old one left off, so what is on
-        // the screen stays.
-        if asking { detachAsk() }
-        self.url = url
-        wantLive = true
-        error = nil
-        utterance = nil
-        Task { await run() }
-    }
-
-    /// The chat this screen is in, added to a connection about to be opened. Written
-    /// here rather than by the caller so that every way in — talking, typing, a
-    /// reconnect — carries the conversation without being told to.
-    private func resuming(_ url: URL) -> URL {
-        guard let chatId else { return url }
-        return URL(string: url.absoluteString + "&resume=\(chatId)") ?? url
-    }
-
-    /// Put a conversation on screen without starting one — opening a past chat, or
-    /// clearing for a new one.
-    ///
-    /// The transcript is what is on screen, live session or not, which is why
-    /// `connect` no longer empties it: a resumed chat has to survive being connected
-    /// to, and emptying it is something only "New chat" ever means.
-    ///
-    /// A conversation mid-turn is left, never guarded against: closing the socket
-    /// does not stop the turn — the relay runs it to the end, and the drawer's
-    /// working pill is what says so — so switching away is detaching, and the
-    /// finished answer is in the chat when it is next opened. Refusing here instead
-    /// let the header change chats while the transcript could not follow it.
-    func show(_ past: [ChatMessage], id: String?) {
-        if status != .idle { stop() }
-        if asking { asking = false; askTask?.cancel(with: .normalClosure, reason: nil) }
-        lines = past.map(Line.init)
-        chatId = id
-        attached = [] // picked for the conversation you were in, not this one
-        utterance = nil
-        pending = nil
-        error = nil
-    }
-
-    /// Hold a socket to the relay for as long as the user wants one. A relay restart,
-    /// a dropped network or a sleeping laptop should cost a reconnect, not the
-    /// session — so only Stop ends this, and the mic keeps running throughout
-    /// (restarting the audio session is what actually breaks, and it is expensive).
-    private func run() async {
-        let pipe = AudioPipe()
-        pipe.onLevel = { [weak self] l in
-            Task { @MainActor in self?.level = l }
-        }
-        // What the speaker really played, which is the relay's only way to tell a reply
-        // that was heard from one that was cut off. Sent when it runs dry, so a normal
-        // turn reports once.
-        pipe.onDrained = { [weak self] ms in
-            Task { @MainActor in self?.send(played: ms) }
-        }
-        // What the audio system did, in its own terms, on the one clock — so a cut
-        // reply has the notification that caused it in the log beside it rather than
-        // looking like the relay going quiet.
-        pipe.onAudio = { [weak self] what in
-            Task { @MainActor in self?.mark("audio", note: what) }
-        }
-        pipe.onProblem = { [weak self] why in
-            Task { @MainActor in self?.error = why }
-        }
         status = .connecting
+        error = nil
+        reconcile()
+        Task { await startMic() }
+    }
+
+    private func startMic() async {
+        let pipe = AudioPipe()
+        pipe.onLevel = { [weak self] l in Task { @MainActor in self?.level = l } }
+        // What the speaker really played — the relay's only way to tell a reply that
+        // was heard from one that was cut off. Sent when it runs dry.
+        pipe.onDrained = { [weak self] ms in Task { @MainActor in self?.send(["type": "played", "ms": Int(ms)]) } }
+        // What the audio system did, in its own terms, on the one clock.
+        pipe.onAudio = { [weak self] what in Task { @MainActor in self?.mark("audio", note: what) } }
+        pipe.onProblem = { [weak self] why in Task { @MainActor in self?.error = why } }
+        // Whichever socket is current when the buffer arrives: a reconnect needs no
+        // rebinding, and a buffer with no socket is simply not sent.
+        pipe.onChunk = { [weak self] data in
+            Task { @MainActor in self?.socket?.send(.data(data)) { _ in } }
+        }
         do {
             // In this order: the mic, or no call UI; the call, which is the system
             // configuring and activating the audio session; then the engine on it.
@@ -243,84 +347,49 @@ final class VoiceSession {
             try pipe.start()
         } catch {
             self.error = error.localizedDescription
-            stop()
+            stopListening()
             return
         }
+        guard status == .connecting else { pipe.stop(); return } // stopped while starting
         self.pipe = pipe
-
-        var backoff: Duration = .milliseconds(250)
-        while wantLive, let base = url {
-            // Resolved per attempt, not once: by the time a dropped session reconnects
-            // the chat has a name, and reconnecting means carrying it on.
-            let task = URLSession.shared.webSocketTask(with: resuming(base))
-            self.task = task
-            // The mic feeds whichever socket is current, so a reconnect rebinds it.
-            pipe.onChunk = { data in task.send(.data(data)) { _ in } }
-            task.resume()
-            sendClaude(to: task) // before anything is said on it
-            sendAttachments(to: task) // and so is anything picked before it opened
-            status = .live
-            error = nil
-            if notice == Self.healing { notice = nil } // healed; only this one is ours to clear
-            call.reportConnected() // the lock screen stops saying "connecting"; once only
-
-            let openedAt = ContinuousClock.now
-            // A socket error while the user still wants the session is not news for
-            // the screen — the loop below is already the answer. Raw errno text
-            // ("Software caused connection abort") explains nothing anyone can act
-            // on, and red means "this needs your hands", which a heal does not.
-            try? await receiveLoop(task)
-
-            task.cancel(with: .normalClosure, reason: nil)
-            self.task = nil
-            pending = nil
-            utterance = nil
-            heardClip = nil
-            replied = false
-            guard wantLive else { break }
-
-            // A connection that lasted is not a failing one; only a fast drop backs off.
-            if openedAt.duration(to: .now) > .seconds(5) { backoff = .milliseconds(250) }
-            status = .reconnecting
-            // Silent unless it lasts: a drop healed inside a breath is not an event.
-            // Only a heal still running after a few seconds earns its one grey line,
-            // and the next successful connect takes it back down.
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(3))
-                guard let self, self.wantLive, self.status == .reconnecting else { return }
-                self.notice = Self.healing
-            }
-            try? await Task.sleep(for: backoff)
-            backoff = min(backoff * 2, .seconds(5))
-        }
-        stop()
+        status = .live
+        call.reportConnected()
     }
 
-    /// The call is over — but only a person ending it means Stop. The system dropping
+    /// Stop talking. The socket stays if a turn is running — the reply keeps arriving
+    /// as text — and closes otherwise. The relay hears the audio stop and closes its
+    /// ears, which is what ends the spoken reply. Idempotent.
+    func stopListening() {
+        guard status != .idle else { return }
+        call.end() // hang up however we got here; a no-op if the call already ended
+        pipe?.stop()
+        pipe = nil
+        level = 0
+        muted = false // the next session starts hearing
+        notice = nil
+        status = .idle
+        reconcile()
+    }
+
+    /// The call is over — but only a person ending it means stop. The system dropping
     /// it (a provider reset) is damage to a session the user still wants, so it is
-    /// healed instead: the socket may well still be alive under it.
+    /// healed instead; the socket is alive under it either way.
     private func callEnded(byUser: Bool) {
-        if byUser || !wantLive { return stop() }
+        if byUser || status == .idle { return stopListening() }
         Task { await healCall() }
     }
 
     /// One try to get the call — and with it the audio session — back. Failing that,
-    /// the conversation is kept and only the voice is given up: the reply still
-    /// streams as text over a follow socket, and the mic button starts voice again.
+    /// only the voice is given up: the reply still streams as text on the socket.
     private func healCall() async {
         do {
             try await call.begin()
-            // The reset deactivated the session and suspended the engine; a re-begin's
-            // first activation resolves `begin` itself rather than firing
+            // A re-begin's first activation resolves `begin` itself rather than firing
             // `onAudioSession`, so the engine is told here.
             pipe?.resume()
         } catch {
-            stop()
+            stopListening()
             notice = "Voice lost — tap the mic to reconnect."
-            // Watch rather than assume: if a turn is running, the relay announces it
-            // the moment this socket attaches, and if nothing is, the follow puts
-            // itself down quietly.
-            if chatId != nil, let url { follow(url: url) }
         }
     }
 
@@ -334,12 +403,9 @@ final class VoiceSession {
     }
 
     /// Whether the mute about to arrive is the answer to our own request. Every other
-    /// mute was volunteered by the system — a stem press, the call UI, or the cleanup
-    /// one iOS fires as a call winds down — and telling those apart is the difference
-    /// between a log that explains why the room went quiet and one that guesses.
+    /// mute was volunteered by the system, and the log should say which.
     private var weAsked = false
 
-    /// The mute bit actually flipping, wherever the request came from.
     private func applyMute(_ on: Bool) {
         guard let pipe, muted != on else { return }
         let byUs = weAsked
@@ -347,63 +413,43 @@ final class VoiceSession {
         muted = on
         pipe.muted = on
         mark(on ? "mute" : "unmute", note: byUs ? "you" : "system")
-        // A mute nobody on this screen asked for is worth a word: the mic button turns
-        // orange either way, and "why can it not hear me" is not a question the colour
-        // answers on its own. Anything else makes it untrue, so anything else clears it.
+        // A mute nobody on this screen asked for is worth a word; anything else makes
+        // it untrue, so anything else clears it.
         notice = !byUs && on ? "Muted by your headphones or the call screen." : nil
     }
 
-    /// Something worth saying that is not a failure, so it is not `error` and is not
-    /// drawn in red: a mute this screen did not ask for, a heal taking long enough
-    /// to notice, a voice that could not be brought back.
-    private(set) var notice: String?
+    // MARK: - Frames out
 
-    /// The one notice this class clears on its own, so it can never take down a
-    /// message someone else put up.
-    private static let healing = "Reconnecting — Claude keeps working."
+    private var model = ""
+    private var permission = ""
+    private var effort = ""
 
-    func stop() {
-        // Idempotent: the run loop's own teardown lands here after a stop that
-        // already ran, and must not erase what the stopper said — a notice, or the
-        // follow it started.
-        guard wantLive || status != .idle else { return }
-        wantLive = false
-        call.end() // hang up however we got here; a no-op if the call already ended
-        task?.cancel(with: .normalClosure, reason: nil)
-        task = nil
-        pipe?.stop()
-        pipe = nil
-        level = 0
-        muted = false // a new session starts hearing
-        notice = nil
-        pending = nil
-        utterance = nil
-        heardClip = nil
-        status = .idle
-    }
-
-    /// Say what Claude should be. Reaches whatever socket is open now, and every socket
-    /// opened after it — so a choice made while typing still holds when you start
-    /// talking, and one made mid-conversation holds from the next turn.
+    /// Say what Claude should be. Reaches the socket open now and every one after.
     func use(model: String, permission: String, effort: String) {
         self.model = model
         self.permission = permission
         self.effort = effort
-        sendClaude(to: task)
-        sendClaude(to: askTask)
+        sendClaude()
     }
 
-    /// Keep a picture for the next instruction, and tell whatever socket is open now.
-    ///
-    /// The id is minted here because it has to exist before any socket does — a picture
-    /// picked with nothing running is still that picture when you press send, and every
-    /// socket opened after this one is handed the whole pending set.
+    /// The one frame that carries it, whether a socket has just opened or the choice
+    /// has just changed. Empty only before `use` has been called at all, and then the
+    /// relay's own defaults hold.
+    private func sendClaude() {
+        guard !model.isEmpty, !permission.isEmpty else { return }
+        var msg = ["type": "claude", "model": model, "permission": permission]
+        if !effort.isEmpty { msg["effort"] = effort }
+        send(msg)
+    }
+
+    /// Keep a picture for the next instruction, and tell the socket if there is one.
+    /// The id is minted here because it has to exist before any socket does.
     func attach(_ jpeg: Data) {
         let now = (Date().timeIntervalSince1970 * 1000).rounded()
         lastAttachId = max(now, lastAttachId + 1)
-        attached.append(Attachment(id: lastAttachId, data: jpeg))
-        sendAttachments(to: task)
-        sendAttachments(to: askTask)
+        let attachment = Attachment(id: lastAttachId, data: jpeg)
+        attached.append(attachment)
+        sendAttachment(attachment)
     }
 
     /// Take one back, before it has been sent. Afterwards there is nothing to take back:
@@ -412,136 +458,40 @@ final class VoiceSession {
         attached.removeAll { $0.id == attachment.id }
     }
 
-    /// Everything still pending, onto one socket — the twin of `sendClaude`, and called
-    /// from the same places, because it answers the same question: what does a socket
-    /// need to be told before anything is said on it.
-    private func sendAttachments(to task: URLSessionWebSocketTask?) {
-        guard let task else { return }
-        for attachment in attached {
-            guard let data = try? JSONSerialization.data(withJSONObject: [
-                "type": "attach", "id": attachment.id, "data": attachment.data.base64EncodedString(),
-            ]),
-                let json = String(data: data, encoding: .utf8) else { continue }
-            task.send(.string(json)) { _ in }
-        }
+    /// Everything still pending, onto the socket just opened — the twin of `sendClaude`,
+    /// answering the same question: what does a socket need to be told first.
+    private func sendAttachments() { attached.forEach(sendAttachment) }
+
+    private func sendAttachment(_ a: Attachment) {
+        send(["type": "attach", "id": a.id, "data": a.data.base64EncodedString()])
     }
 
-    /// The one frame that carries it — the same message whether a socket has just opened
-    /// or the choice has just changed, so there is no separate first-time path to keep in
-    /// step with this one.
-    private func sendClaude(to task: URLSessionWebSocketTask?) {
-        // Empty only before `use` has been called at all, which is a socket opening
-        // during launch — the relay's own defaults hold until the next one is sent.
-        guard let task, !model.isEmpty, !permission.isEmpty else { return }
-        var msg = ["type": "claude", "model": model, "permission": permission]
-        if !effort.isEmpty { msg["effort"] = effort }
-        guard let data = try? JSONSerialization.data(withJSONObject: msg),
-              let json = String(data: data, encoding: .utf8) else { return }
-        task.send(.string(json)) { _ in }
+    /// A `mark`: a moment only the phone can see. `reply_in` and `speech_end` carry
+    /// `at` and are stamped into the turn record; everything else carries a `note` and
+    /// is only narrated in the log. A note says what was observed, never what it means.
+    private func mark(_ name: String, at ms: Double? = nil, note: String? = nil) {
+        var msg: [String: Any] = ["type": "mark", "name": name]
+        if let ms { msg["at"] = Int(ms) }
+        if let note { msg["note"] = note }
+        send(msg)
     }
 
-    // MARK: - Typing
-    //
-    // One turn, one socket. There is no microphone to keep alive between turns and
-    // nothing to reconnect to, so the connection is the turn: it opens with the
-    // instruction and closes when the reply is done. Everything in between is the
-    // same events a spoken turn produces, so `handle` is the whole of it.
+    private var replied = false
 
-    func ask(_ text: String, url: URL) {
-        let said = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !said.isEmpty, status == .idle, !asking else { return }
-        // Nothing has to prove this was sent — you wrote it — so it is history at once.
-        lines.append(Line(kind: .user, text: said, images: attached.map { .picked($0.data) }))
-        asking = true
-        Task { await converse(said, url: resuming(url)) }
+    /// The first byte of a reply arrived. The relay knows when it sent it, and the two
+    /// clocks are one Mac's in the simulator, so it subtracts. Once per turn.
+    private func markFirstReply() {
+        guard !replied else { return }
+        replied = true
+        mark("reply_in", at: Date().timeIntervalSince1970 * 1000)
     }
 
-    /// Watch a turn already running in this chat: the same socket as a typed turn,
-    /// with nothing to send. The relay attaches it to the live session, replays the
-    /// reply so far, and streams the rest — so opening a chat that is working picks
-    /// the answer up mid-sentence. Ends the way a typed turn does.
-    ///
-    /// Called only while the relay says the chat is working — the home screen reads
-    /// that off its data socket — so there is nothing to time out: a relay that has
-    /// nothing running here never said it had.
-    func follow(url: URL) {
-        guard status == .idle, !asking, chatId != nil else { return }
-        asking = true
-        Task { await converse(nil, url: resuming(url)) }
-    }
+    // MARK: - Frames in
 
-    /// Put the ask socket down without touching the turn: watching is not owning,
-    /// so this sends nothing. Called when the relay says the chat has stopped working
-    /// — the turn this socket was watching is over, whether or not its `turn_end`
-    /// reached here — and before a live socket takes over the same chat.
-    func detachAsk() {
-        guard let task = askTask else { return }
-        asking = false
-        task.cancel(with: .normalClosure, reason: nil)
-    }
-
-    /// Stop everything this screen is about: Claude's work in this chat — the turn and
-    /// its background tasks, which is what the relay makes of `stop` — and, if the
-    /// microphone is open, the session too. One button, whatever is running.
-    ///
-    /// The frame goes on whichever socket is up: the live one, or the one watching or
-    /// typing. The hang-up waits for the send to leave, or the frame dies with the
-    /// socket and Claude keeps working.
-    func stopAll() {
-        guard let socket = task ?? askTask else { return }
-        let wasLive = status != .idle
-        // No longer waiting — said before the close so the socket dropping under the
-        // receive loop reads as the stop it is, not as an error worth showing.
-        asking = false
-        socket.send(.string(#"{"type":"stop"}"#)) { [weak self] _ in
-            Task { @MainActor in
-                if wasLive { self?.stop() } else { socket.cancel(with: .normalClosure, reason: nil) }
-            }
-        }
-    }
-
-    /// One turn watched to its end — sent by us, or already running on the relay.
-    private func converse(_ said: String?, url: URL) async {
-        let task = URLSession.shared.webSocketTask(with: url)
-        askTask = task
-        task.resume()
-        sendClaude(to: task) // ahead of the instruction, so the turn runs as asked
-        sendAttachments(to: task) // and the pictures ahead of the instruction they go with
-        defer {
-            task.cancel(with: .normalClosure, reason: nil)
-            askTask = nil
-            asking = false
-            endToolRun()
-        }
-        do {
-            if let said {
-                guard let data = try? JSONSerialization.data(withJSONObject: ["type": "text", "text": said]),
-                      let json = String(data: data, encoding: .utf8) else { return }
-                try await task.send(.string(json))
-            }
-            // `turn_end` clears `asking`, so the relay ending the turn is what ends the
-            // loop; a cancel throws out of `receive`, which is the other way it ends.
-            while asking {
-                guard case .string(let json) = try await task.receive() else { continue }
-                handle(json)
-            }
-        } catch {
-            if asking, !Task.isCancelled { self.error = error.localizedDescription }
-        }
-    }
-
-    /// Run the held instruction, as edited on screen. An edit teaches the server what
-    /// was really said, so the same mishearing stops repeating.
-    ///
-    /// There is no opposite. Refusing one is not doing anything with it: say something
-    /// else, or stop listening. A button for that would be a third thing to aim at in
-    /// the one place the screen is asking you a yes-or-no question.
-    func approve(_ text: String) {
-        guard pending != nil else { return }
-        pending = nil
-        commit(text) // accepting is what sends it, so that is when it becomes history
-        send(["type": "approve", "text": text])
-    }
+    private var turnEnded = false
+    /// This turn has already put lines in the history — what a retract may undo, and
+    /// all it may undo. See the `interrupted` case.
+    private var committed = false
 
     /// Move what was said into the history, now that it has actually been sent — with
     /// the audio it was heard from, which is what makes the line correctable later.
@@ -557,81 +507,11 @@ final class VoiceSession {
         committed = true
     }
 
-    /// Anything this screen says to the relay over the live socket. `Any` rather than
-    /// `String` because two of the frames carry numbers, and one round trip through
-    /// JSONSerialization is what keeps a quote inside a value from ending the value.
-    private func send(_ msg: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: msg),
-              let json = String(data: data, encoding: .utf8) else { return }
-        task?.send(.string(json)) { _ in }
-    }
-
-    // MARK: - Receive
-
-    private func receiveLoop(_ task: URLSessionWebSocketTask) async throws {
-        while wantLive {
-            switch try await task.receive() {
-            case .data(let pcm):
-                markFirstReply()
-                pipe?.play(pcm)
-            case .string(let json):
-                handle(json)
-            @unknown default:
-                break
-            }
-        }
-    }
-
-    /// Tell the relay the moment the first byte of a reply arrived. The relay already
-    /// knows when it sent that byte, and on the simulator both clocks are this Mac's,
-    /// so the two timestamps subtract into the real cost of the hop. Once per turn.
-    private func markFirstReply() {
-        guard !replied else { return }
-        replied = true
-        mark("reply_in", at: Date().timeIntervalSince1970 * 1000)
-    }
-
     /// A turn is in flight, or over — and while one is, the filler chimes cover
-    /// whatever the speaker has nothing to play for: the head of the turn, and the
-    /// lulls where the voice runs out because Claude went back to its tools.
-    ///
-    /// On means proof, never prediction: it is asserted only by a silent sign of
-    /// work arriving — a tool, or reply text — because a turn that provably runs is
-    /// guaranteed a closer (`turn_end`, or `interrupted`), where an utterance the
-    /// relay shrugs off (a bare "stop" said to an idle session) would start a loop
-    /// nothing ever stops. Whether the wait *sounds* right now is not decided here:
-    /// AudioPipe owns the speaker, so only it knows dry from playing — see
-    /// `AudioPipe.waiting`. A typed turn has no pipe, so audio keeps buying audio
-    /// without being told to.
+    /// whatever the speaker has nothing to play for. On means proof, never prediction:
+    /// asserted only by a sign of work arriving, so a turn that provably runs is
+    /// guaranteed a closer. AudioPipe decides whether the wait *sounds* right now.
     private func waiting(_ on: Bool) { pipe?.waiting = on && fillerEnabled }
-
-    /// The gear menu's "Filler sound", handed in like the model choice so this class
-    /// reads no settings. Off takes effect mid-wait: a loop already playing stops.
-    var fillerEnabled = true {
-        didSet { if !fillerEnabled { pipe?.waiting = false } }
-    }
-
-    /// A `mark`: a moment only the phone can see. Two kinds, and the relay tells them
-    /// apart by name — `reply_in` and `speech_end` carry `at` and are stamped into the
-    /// turn record, everything else carries a `note` and is only narrated in the log.
-    ///
-    /// A note says what was observed, never what it is thought to mean: it is read in
-    /// the log months later, beside lines from the relay's own clock, by someone
-    /// working out what happened.
-    private func mark(_ name: String, at ms: Double? = nil, note: String? = nil) {
-        var msg: [String: Any] = ["type": "mark", "name": name]
-        if let ms { msg["at"] = Int(ms) }
-        if let note { msg["note"] = note }
-        send(msg)
-    }
-
-    /// How much of this turn's reply the speaker has played. The relay knows what it
-    /// sent and nothing more, so this is the half of the subtraction only the phone
-    /// can supply — and what lets it end a turn on the audio being over rather than on
-    /// its own arithmetic about when it should have been.
-    private func send(played ms: Double) {
-        send(["type": "played", "ms": Int(ms)])
-    }
 
     /// The tools stop running when speech resumes or the turn ends.
     private func endToolRun() {
@@ -646,15 +526,21 @@ final class VoiceSession {
         /// Live transcription revises its guess as you speak, so each update carries the
         /// whole utterance and replaces the last one instead of extending it.
         let partial: Bool?
-        /// On `turn_end`: which chat this connection turned out to be in.
+        /// On `turn_start` and `turn_end`: which chat this connection is in.
         let session: String?
-        /// On `tool`: the Agent call this tool ran inside, nil for Claude's own. A
-        /// subagent finishing a tool must not end the Agent's run, and this is what
-        /// tells the two apart.
+        /// On `tool`: the Agent call this tool ran inside, nil for Claude's own.
         let parent: String?
-        /// On `interrupted`: the turn was taken back because you are still speaking
-        /// the instruction — what it put in the history comes off.
+        /// On `interrupted`: the turn was taken back; what it put in the history comes off.
         let retract: Bool?
+        /// On `turn_end`: where the turn's two messages now sit in the stored chat —
+        /// what makes a line just said forkable and editable without reopening it.
+        let user: Saved?
+        let model: Saved?
+
+        struct Saved: Decodable {
+            let uuid: String
+            let after: String?
+        }
     }
 
     private func handle(_ json: String) {
@@ -667,53 +553,44 @@ final class VoiceSession {
             // sent — barging in over a reply replaces it, and a rejected one is dropped.
             utterance = event.text
             turnEnded = false
-            // The audio arrives with the finished text, never with a revision of it.
             if event.partial != true {
                 heardClip = event.clip
-                // A finished transcript proves there was an utterance to time, and
-                // when the mic last crossed the meter's floor is when it actually
-                // stopped — the one number only the phone can know, and the relay's
-                // `stt` column is the difference. Not sent over an approval card: the
-                // utterance that just finished was the decision being spoken, and the
-                // instruction it decides about already marked its own end.
+                // When the mic last crossed the meter's floor is when speech actually
+                // stopped — the one number only the phone can know. Not sent over an
+                // approval card: that utterance was the decision, not the instruction.
                 if pending == nil, let at = pipe?.lastLoudAt, at > 0 { mark("speech_end", at: at) }
             }
         case "turn_start":
-            // The instruction reached Claude. That is proof enough — and about a
-            // second and a half earlier than the first block, which is the longest
-            // silence in a turn and used to be the one stretch with no chime and no
-            // movement on screen. Everything below still commits and still waits,
-            // because a relay too old to send this is a relay this app still works
-            // against; against a current one they are no-ops.
+            // The turn is running — one this screen sent, or one it is watching. The
+            // chat now has a name, so every socket after this one carries it: a mic
+            // opened mid-turn on a new chat resumes it rather than starting another.
+            if let session = event.session { chatId = session }
+            inFlight = true
             commit()
-            // Whatever text comes next starts its own line. On a turn this screen
-            // started, the instruction was just committed and the next line is new
-            // anyway; on a turn joined mid-way, the last line is a block the transcript
-            // already holds complete, and the stream must not run into it.
+            // Whatever text comes next starts its own line: on a turn joined mid-way,
+            // the last line is a block the transcript already holds complete.
             turnEnded = true
             waiting(true)
             pipe?.expectReply() // a new reply, so the played count starts from nothing
         case "model":
             commit() // Claude answering is proof the instruction went
-            waiting(true) // and words with no voice for them yet are still the wait
+            waiting(true)
             if !turnEnded, let last = lines.last, last.kind == .model {
-                lines[lines.count - 1].text += event.text ?? ""   // Claude's reply joins up
+                lines[lines.count - 1].text += event.text ?? ""
             } else {
                 turnEnded = false
                 lines.append(Line(kind: .model, text: event.text ?? ""))
             }
         case "approval":
-            // Held for a decision: the box stops being a transcript and becomes a
-            // question, so only one of the two is ever on screen.
+            // Held for a decision: the box stops being a transcript and becomes a question.
             utterance = nil
             pending = event.text
         case "tool":
-            // A name starts a tool, no name ends it. Consecutive tools join one line,
-            // so a burst of them reads as a single step and speech breaks the group —
-            // and a subagent's tools join the Agent's line, which is where they belong.
+            // A name starts a tool, no name ends it. Consecutive tools join one line, and
+            // a subagent's tools join the Agent's line, which is where they belong.
             if let name = event.text {
-                commit() // a tool running is proof too, and it can come before any text
-                waiting(true) // the longest waits are exactly here, under the tools
+                commit()
+                waiting(true)
                 turnEnded = false
                 if let i = lines.indices.last, lines[i].kind == .tools {
                     lines[i].tools.append(name)
@@ -723,36 +600,37 @@ final class VoiceSession {
                 }
             } else if event.parent == nil {
                 // A subagent finishing a tool says nothing about the Agent that started
-                // it, which is usually still working — often for minutes. Ending the run
-                // here stopped the spinner on the first subagent's first result.
+                // it, which is usually still working — often for minutes.
                 endToolRun()
             }
         case "turn_end":
-            // A turn that answered nothing still ran, so whatever is still uncommitted
-            // belongs in the history now.
-            commit()
-            committed = false // history now, not this turn's to take back
+            commit() // a turn that answered nothing still ran
+            committed = false
             attached = [] // the pictures were this turn's, exactly as the relay has it
             turnEnded = true
             replied = false
             pending = nil
-            waiting(false) // a turn that never produced a reply byte still ended
-            // Now the conversation has a name, so the next connection can carry it on.
+            waiting(false)
             if let session = event.session { chatId = session }
-            asking = false // a typed turn is its socket, and this closes it
+            // The turn's two messages have a place in the store now, so the lines just
+            // said get the handles a loaded line has: Edit on yours, Fork on Claude's.
+            if let saved = event.user, let i = lines.lastIndex(where: { $0.kind == .user }) {
+                lines[i].uuid = saved.uuid
+                lines[i].after = saved.after
+            }
+            if let saved = event.model, let i = lines.lastIndex(where: { $0.kind == .model }) {
+                lines[i].uuid = saved.uuid
+            }
             endToolRun()
+            inFlight = false
+            reconcile() // nothing else holding the socket → it closes
         case "interrupted":
-            // Sent whenever a held instruction is decided — by voice or by the buttons —
-            // so the card goes away however the decision was made. What is being said
-            // now is the barge-in, and it stays in the box.
+            // Sent whenever a held instruction is decided, and on a barge-in.
             pending = nil
-            waiting(false) // whatever was being waited for is not coming
-            // A retract: you are still speaking the instruction, and a warm Claude can
-            // answer the fragment inside the pause that made it. That answer must not
-            // sit beside the real one, so the turn's lines come off — back to the last
-            // user line inclusive — and the composer, still receiving partials, is the
-            // only trace. Only what this turn committed may come off; a retract before
-            // any reply has nothing to undo.
+            waiting(false)
+            // A retract: you are still speaking the instruction, and what Claude said to
+            // the fragment must not sit beside the real answer. Only what this turn
+            // committed may come off.
             if event.retract == true, committed {
                 while let last = lines.last, last.kind != .user { lines.removeLast() }
                 if !lines.isEmpty { lines.removeLast() }

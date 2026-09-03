@@ -1,7 +1,7 @@
 # Claude Code session orchestration: what the SDK is, and the smallest reliable design on top of it
 
 Written 2026-09-03 against `@anthropic-ai/claude-agent-sdk` 0.3.259, which bundles Claude Code 2.1.259.
-Every fact marked **(probe N)** was measured with the scripts in `.probe/` against `/tmp/probe-cwd`.
+Every fact marked **(probe N)** was measured that day with throwaway scripts against a scratch project, not from the docs.
 Everything else is read from `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`.
 
 ## 1. The SDK, as a mental model
@@ -301,12 +301,12 @@ flowchart TD
 | `turn_start` | no fields | `session` (chat id), `turn` (uuid) — known at `claim`, not only at `turn_end` |
 | `interrupted` | `retract?` | plus `turn` (uuid), so the phone drops the right lines by id |
 | `chats[].working` | from `live.ts` | from `state.working`; also `recovering: true` while a re-drive is in flight |
-| `state` | none; the phone guesses with `follow()` and a 3 s timer | `{ working, turn, tasks, recovering }` on attach and on change, for the home screen's "Working…" pill |
+| `state` | `chats[].working` on the data socket, which the phone already reads | `{ working, turn, tasks, recovering }` on attach and on change, adding `tasks` and `recovering` |
 
 ## 6. Open items
 
 1. ~~**First message dangling.**~~ Answered: `deleteSession(chat, { dir })` then `open` with the same `sessionId` and a re-send. The id is kept, the transcript comes back clean — one user entry, then the reply, no duplicate — and `getSessionMessages` reads empty in between. **(probe 9)** So recovery has one shape after all: with a `prev` entry, truncate; without one, delete. (A `deleteSession` on a chat whose file is missing throws `Session <id> not found`, so the delete belongs behind the `inspect` that found the dangling entry.)
-2. **Narration turns and lifecycle frames.** The types say uuid-less commands such as task notifications produce no lifecycle frame. Confirm that an ambient turn shows no `command_lifecycle`, so the runner's "frames with no open turn" rule is the right one.
+2. ~~**Narration turns and lifecycle frames.**~~ Confirmed: the sent turn got `queued`/`started` and, after its `result`, `completed`, all stamped with its uuid; the narration turn that followed the task's `task_notification` 2.4 s later got **no `command_lifecycle` at all**, and its `result` carried `user_message_uuid: undefined`. **(probe 10)** So "frames with no open turn open an ambient turn" is the right rule — there is nothing else to key it on.
 3. ~~**`claude` on PATH.**~~ Answered by reading: nothing in `server/` shells out to `claude`. The only `execFile` callers are `lab.ts` and `probe.ts` (`say`, `afconvert`) and `reach.ts` (`tailscale`), and the SDK spawns its own bundled binary. What the README must still ask for is the *login*, not the binary: credentials come from `~/.claude`, so "Claude Code, signed in" stays and "on your PATH" goes.
 4. **`snapshot: true` and the phone-edited prompt.** With the prompt recorded per conversation, an edit reaches only new chats, not the next session of an existing chat. `prompts.ts` says "takes effect the next time you press listen"; that text must change.
 5. **`inspect` cost at boot.** `getSessionMessages` reads the whole file. Only chats listed in `runners.json` are inspected, so this is a handful, not the drawer's 200.

@@ -37,6 +37,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { latest } from './chats.ts';
 import { claim, DEFAULTS, release, type Claude, type ClaudeCallbacks, type PermissionMode } from './claude.ts';
+import { chat } from './chats.ts';
 import { save as saveClip } from './clips.ts';
 import { correct, CORRECT_MODEL } from './correct.ts';
 import { add, load, type Correction } from './corrections.ts';
@@ -46,6 +47,14 @@ import { append, type Mode, type Turn } from './turns.ts';
 import { openVoice, type Voice } from './voice.ts';
 
 export type { Mode, Turn };
+
+/** Where a message the turn just made sits in the store — what a fork cuts at. Rides
+ *  on `turn_end` as `user` and `model`, so a line just said is forkable and editable
+ *  without reopening the chat. `after` is the entry before it, see chats.ts. */
+export interface Saved {
+  uuid: string;
+  after?: string;
+}
 
 /** The phone side of the socket — the only thing this file knows about the network. */
 export interface Phone {
@@ -62,7 +71,7 @@ export interface Phone {
    *  in the transcript beside the real one. `turn_start` carries nothing at all: it
    *  is the instruction having been dispatched, which is the earliest anything can
    *  honestly say the turn is running — see `run`. */
-  event(msg: { type: string; text?: string; partial?: boolean; session?: string | null; clip?: number | null; parent?: string | null; retract?: boolean }): void;
+  event(msg: { type: string; text?: string; partial?: boolean; session?: string | null; clip?: number | null; parent?: string | null; retract?: boolean; user?: Saved; model?: Saved }): void;
 }
 
 // A turn that never returns to `listening` — Claude died, the voice stalled, or a
@@ -199,7 +208,7 @@ export class Session {
       log: this.log,
       onStart: (kind) => {
         // A turn this connection never sent: a background task's narration, or a
-        // turn replayed by attaching to a session mid-turn. Claiming the floor is
+        // turn joined by attaching to a session mid-turn. Claiming the floor is
         // the whole of handling either: everything downstream (the voice, the
         // phone, turn_end, the record that skips an instructionless turn) already
         // treats a claimed floor as a turn, barge-in included. A held floor is not
@@ -214,7 +223,7 @@ export class Session {
           // Said with the event that already means it: a turn is running here. A
           // socket that attached to watch now knows there is something to watch,
           // rather than inferring it from whether any words happen to arrive.
-          this.phone.event({ type: 'turn_start' });
+          this.phone.event({ type: 'turn_start', session: this.sessionId });
           this.arm();
         }
         this.turn.claude_start_at ??= Date.now();
@@ -266,6 +275,9 @@ export class Session {
       },
     };
     this.claude = claim(this.resume, this.audience);
+    // Known from birth — the relay mints the id — so the first turn of a new chat can
+    // tell the phone which chat it is in at `turn_start`, not only at `turn_end`.
+    this.sessionId = this.claude.chat;
   }
 
   /**
@@ -390,6 +402,13 @@ export class Session {
       // the first time it mattered: the phone was rebuilding its audio graph and came
       // back. What is known here is how long no bytes have arrived for.
       this.log(`no audio for ${(AUDIO_GAP_MS / 1000).toFixed(1)}s`);
+      // Audio is what buys audio, in both directions: with no microphone there is
+      // nobody to read to, so the ears close and the voice stops being fed — what was
+      // already queued drains, so a turn still ends the way it always did. The next
+      // buffer reopens them through `listen`, backlog and all. This is how the phone
+      // stops listening without hanging up: it simply stops sending.
+      this.ears?.close();
+      this.ears = null;
     }, AUDIO_GAP_MS);
   }
 
@@ -620,7 +639,9 @@ export class Session {
     // phone's cue to commit the utterance and start the filler. Safe here where it
     // was not on the final transcript: a keyword-only final never reaches this line,
     // and every turn that does is guaranteed a closer (turn_end or interrupted).
-    this.phone.event({ type: 'turn_start' });
+    // Carries the chat, so a socket opened mid-turn — a microphone tapped while a
+    // typed turn runs — resumes this chat rather than starting one beside it.
+    this.phone.event({ type: 'turn_start', session: this.sessionId });
     this.arm();
     // Recorded rather than consumed: the pictures belong to the turn, and a retract
     // re-runs this same turn with them still in hand. `endTurn` is what lets go.
@@ -682,14 +703,44 @@ export class Session {
   private endTurn(): void {
     if (this.state === 'user') return; // nothing in flight
     this.disarm();
-    // Which chat this turned out to be, so the next connection the phone opens can
-    // carry it on — including one it opens to type into.
-    this.phone.event({ type: 'turn_end', session: this.sessionId });
-    void this.record(this.turn).catch((e) => this.log(`record failed: ${e}`));
+    const t = this.turn;
     this.turn = this.blank();
     this.attached = []; // the pictures were this turn's, and the turn is over
     this.lastLine = '';
     this.state = 'user';
+    // Which chat this turned out to be, so the next connection the phone opens can
+    // carry it on — and where the turn's two messages now sit in the store, so a line
+    // just said can be forked or edited without reopening the chat. Read back through
+    // the same function that loads a chat, so a live line and a loaded one cannot
+    // disagree about where a cut goes. The lookup is a file read, milliseconds; a
+    // failure costs the fork handles and not the turn_end.
+    void this.saved(t.said.length > 0)
+      .catch((e) => { this.log(`turn_end lookup failed: ${e}`); return {}; })
+      .then((saved) => this.phone.event({ type: 'turn_end', session: this.sessionId, ...saved }));
+    void this.record(t).catch((e) => this.log(`record failed: ${e}`));
+  }
+
+  /**
+   * The last user and model messages of this chat, as the store has them now.
+   *
+   * `replied` says a reply was produced, so its entry is expected: the CLI writes it
+   * a beat after the result frame — measured, missing on the first read — so this
+   * waits for it, briefly. A turn with no words (stopped, or barge-in) has nothing to
+   * wait for and is read once.
+   */
+  private async saved(replied: boolean): Promise<{ user?: Saved; model?: Saved }> {
+    if (!this.sessionId) return {};
+    let messages = await chat(this.sessionId);
+    for (let tries = 0; replied && messages.at(-1)?.role !== 'model' && tries < 15; tries++) {
+      await new Promise((r) => setTimeout(r, 100));
+      messages = await chat(this.sessionId);
+    }
+    const user = messages.findLast((m) => m.role === 'user');
+    const model = messages.findLast((m) => m.role === 'model');
+    return {
+      ...(user ? { user: { uuid: user.uuid, ...(user.after ? { after: user.after } : {}) } } : {}),
+      ...(model ? { model: { uuid: model.uuid } } : {}),
+    };
   }
 
   private blank(): Turn {

@@ -67,7 +67,7 @@ struct ContentView: View {
     /// Until a new chat has been named — the relay says the id at its first `turn_end`
     /// — there is no row in the list to read, and the only turn that can be running
     /// is the one this screen typed, so that flag stands in for exactly that window.
-    private var working: Bool { current?.isWorking ?? session.asking }
+    private var working: Bool { current?.isWorking ?? session.inFlight }
     /// The stored strings as what they mean. A value from a version that named things
     /// differently falls back rather than crashing.
     private var mode: Mode { Mode(rawValue: modeName) ?? .direct }
@@ -182,12 +182,15 @@ struct ContentView: View {
         // back from live mode to a chat still working attaches the same way opening
         // it does. Keyed on the chat too, so switching between two working chats
         // re-attaches rather than staying on the old one.
-        .task(id: "\(chat?.id ?? "")|\(working)|\(live)") {
-            if working, !live, let url { session.follow(url: url) }
-            // Not working any more: whatever socket was watching has nothing left to
-            // watch, and a typed turn's own `turn_end` has landed or is landing.
-            else if !working, !live { session.detachAsk() }
-        }
+        // The relay's word that this chat is working, handed to the session — one of the
+        // three reasons it holds its socket. A working chat is watched: its turn streams
+        // in whether or not the microphone is open, so coming back to one, or coming
+        // back from live mode to one, needs nothing else.
+        .task(id: working) { session.working = working }
+        // Where the relay is and how this chat runs. Both ride the socket's URL, so the
+        // session reconnects when either changes — which is why the mode capsule is
+        // hidden while anything is running.
+        .task(id: "\(serverURL)|\(mode.rawValue)|\(autocorrect)") { session.url = url }
         // The home screen's own socket to the relay, held for as long as the screen is
         // up: it is where the model list comes from, where a fork is sent, and — since
         // it is the one connection that is always supposed to be there — what the gear
@@ -274,10 +277,13 @@ struct ContentView: View {
     /// and editing an instruction drops it (`after`, the entry before it). One verb,
     /// two points.
     private func forkFrom(_ at: String?) {
-        guard let source = chat, let at else { return }
-        if live { session.stop() }
+        // The chat opened from the drawer, or the one this screen has been having —
+        // which the relay named at its first `turn_end`, and whose lines it has since
+        // been stamping with their place in the store.
+        guard let source = chat?.id ?? session.chatId, let at else { return }
+        session.stopListening()
         relay.connect(to: serverURL)
-        relay.fork(source.id, at: at)
+        relay.fork(source, at: at)
     }
 
     /// Say it differently.
@@ -311,7 +317,7 @@ struct ContentView: View {
     /// Forget the conversation on screen. Deleting is the relay's half; this is the
     /// screen's, and it is the same clearing "New chat" does.
     private func clear() {
-        if live { session.stop() }
+        session.stopListening()
         chat = nil
         session.show([], id: nil)
     }
@@ -478,7 +484,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        session.stop()
+                        session.stopListening()
                         // The draft field does not exist yet — it is the next branch of
                         // this switch — so ask for focus on the next turn of the run
                         // loop, once stopping has been drawn.
@@ -565,8 +571,8 @@ struct ContentView: View {
         if let instruction = held {
             session.approve(instruction)
             held = nil
-        } else if let url {
-            session.ask(draft, url: url)
+        } else {
+            session.send(draft)
             draft = ""
         }
     }
@@ -583,7 +589,7 @@ struct ContentView: View {
                     .accessibilityLabel(held != nil ? "Accept" : "Send")
             case .talk:
                 ListenButton(live: live, level: CGFloat(session.level), status: session.status.rawValue) {
-                    if let url { session.connect(url: url) }
+                    session.listen()
                 }
             }
             HStack(spacing: 8) {
@@ -610,13 +616,13 @@ struct ContentView: View {
                 if live || working {
                     // Mute lit on the accent when it is on: the orange has left the
                     // border and the bars, and this is where it went. Same order as the
-                    // lock-screen card, so the thumb learns one layout.
+                    // call UI, so the thumb learns one layout.
                     if live {
                         glyph("mic.slash", accent: session.muted) { session.toggleMute() }
                             .accessibilityIdentifier("mute")
                             .accessibilityLabel(session.muted ? "Unmute" : "Mute")
                     }
-                    glyph("stop.fill", accent: false) { live && !working ? session.stop() : session.stopAll() }
+                    glyph("stop.fill", accent: false) { session.stopAll() }
                         .accessibilityIdentifier("stop")
                         .accessibilityLabel(working ? (live ? "Stop Claude and listening" : "Stop Claude") : "Stop listening")
                 } else {

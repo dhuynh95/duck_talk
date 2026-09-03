@@ -49,20 +49,24 @@ published package, which cannot assume that of a stranger's Node.
 |---|---|---|
 | phone → server | binary | raw PCM Int16 LE, 16 kHz, mono |
 | phone → server | text | `{"type":"text","text"}` — an instruction, typed |
-| phone → server | text | `{"type":"mark","name","at"}` — a moment only the phone can see |
+| phone → server | text | `{"type":"mark","name","at"?,"note"?}` — a moment only the phone can see |
+| phone → server | text | `{"type":"played","ms"}` — reply audio its speaker has played |
 | phone → server | text | `{"type":"approve","text"?}` — run a held instruction, as edited |
-| phone → server | text | `{"type":"stop"}` — stop the running turn: the spoken "stop", as a button |
+| phone → server | text | `{"type":"stop"}` — stop everything in this chat: the turn and its background tasks |
 | phone → server | text | `{"type":"attach","id","data"}` — a picture, base64 JPEG, for the next instruction |
 | phone → server | text | `{"type":"claude","model"?,"permission"?,"effort"?}` — which model answers, what it may do, how hard it thinks |
 | server → phone | binary | raw PCM Int16 LE, 24 kHz, mono (Claude's voice) |
-| server → phone | text | `{"type":"user"\|"model"\|"tool"\|"approval"\|"interrupted"\|"turn_end"\|"error","text"?}` |
+| server → phone | text | `{"type":"user"\|"model"\|"tool"\|"approval"\|"turn_start"\|"interrupted"\|"turn_end"\|"error","text"?}` |
 
 `user` is the utterance as currently heard — it carries the whole thing each time and
 replaces what came before, because the guess is revised while you speak; its `partial`
-is false on the last one. `model` is Claude's answer as it is spoken and does join up,
+is false on the last one. `turn_start` is the instruction reaching Claude, and carries
+`session`: the chat this connection is in, known from the first turn because the relay
+mints the id. `model` is Claude's answer as it is spoken and does join up,
 `tool` names a tool Claude used, `approval` (review mode) offers a held instruction
 for a yes/no, `turn_end` says the reply is finished — the only such signal — and
-carries `session`, the chat this connection turned out to be in. `interrupted` flushes
+carries `session` again, plus `user` and `model`: where the turn's two messages sit in
+the store, so a line just said can be forked or edited. `interrupted` flushes
 what is playing; with `retract` it also takes the turn off the screen, because the
 instruction is still being spoken and Claude may already have answered the front half
 of it.
@@ -75,10 +79,13 @@ showing a fan-out as running the moment the first subagent's first tool returns.
 `Thinking` arrives as a `tool` too: a model that thinks before it speaks says nothing
 for as long as it thinks, and that is the one opening with no other sign of itself.
 
-Audio is what buys audio. The ears open on the first microphone buffer and the voice
-speaks only where there are ears, so a connection that only ever sends `text` frames
-reaches Claude and never Gemini, and nothing in the URL has to say so. A typed
-instruction is also never corrected and never held: it cannot have been misheard.
+Audio is what buys audio, both ways. The ears open on the first microphone buffer and
+close when the buffers stop for two seconds, and the voice speaks only where there are
+ears — so a connection that only ever sends `text` frames reaches Claude and never
+Gemini, a phone stops listening by simply not sending, and nothing in the URL has to
+say which kind of connection it is. Ears that open mid-turn are read the latest line
+first, so the listener lands where Claude is. A typed instruction is never corrected
+and never held: it cannot have been misheard.
 
 Connect to `ws://<mac>:8765`. One `?mode=`: `direct` (default) runs each instruction
 at once, `review` holds it until it is approved — by an `approve` frame, or by saying
@@ -88,10 +95,10 @@ at once, `review` holds it until it is approved — by an `approve` frame, or by
 on a past conversation instead of starting one — any session Claude Code has in this
 project, including the ones you started in a terminal. A Claude session belongs to its
 chat, not to a socket: resuming a chat whose session is still working *attaches* to it
-— the running turn's reply so far is replayed down the new socket, then the rest
-streams live, ending in `turn_end` as ever. So `?resume=` with nothing to send is how
-a phone watches a working chat, and `chat_open` on one cuts its snapshot at the
-instruction being answered, because the replay carries the reply.
+— `turn_start` says a turn is running, and the rest streams live, ending in `turn_end`
+as ever. Nothing is replayed: `chat_open` returns the transcript up to the last block
+the turn completed, which the CLI writes as it goes, and that is the state the stream
+continues from. So `?resume=` with nothing to send is how a phone watches a working chat.
 
 Which model answers, what it may do and how hard it thinks are deliberately not URL
 parameters. The CLI takes all three mid-session, so they arrive as a `claude` frame —
