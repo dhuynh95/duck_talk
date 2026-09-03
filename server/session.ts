@@ -22,10 +22,11 @@
  * connection that is only typed to never opens a Gemini session in either direction,
  * and nothing has to be told which kind of connection it is.
  *
- * A picture is neither spoken nor typed: it is picked before there is an instruction to
- * give it with, so it is held on the turn rather than carried by the frame that starts
- * one. That is what makes typed, spoken and approved-in-review a single path — and what
- * makes a retract free, since the turn it re-runs still holds them. See `attached`.
+ * A picture — or a pasted text — is neither spoken nor typed: it is picked before there
+ * is an instruction to give it with, so it is held on the turn rather than carried by the
+ * frame that starts one. That is what makes typed, spoken and approved-in-review a single
+ * path — and what makes a retract free, since the turn it re-runs still holds them. See
+ * `attached`.
  *
  * ears is a long-lived session for the connection and claude one for the *chat* —
  * claimed on open, released on close, and still working after the socket is gone —
@@ -117,14 +118,16 @@ export class Session {
 
   private corrections: Correction[] = [];
 
-  // The pictures this turn was given, held from the moment they are picked until the
-  // turn they belong to is over. Not a field on the frame that starts the turn, because
-  // there is no such frame when you speak: the instruction is made here, from the ears,
-  // long after the picture was chosen. Held, all three ways of instructing are one path.
+  // What this turn was given — pictures and pasted texts — held from the moment they
+  // are picked until the turn they belong to is over. Not a field on the frame that
+  // starts the turn, because there is no such frame when you speak: the instruction is
+  // made here, from the ears, long after the picture was chosen. Held, all three ways of
+  // instructing are one path.
   //
-  // The bytes arrive once and are used twice — sent to Claude from memory here, written
-  // to disk by images.ts only so a chat reopened next week can still show them.
-  private attached: { id: number; data: string }[] = [];
+  // A picture's bytes arrive once and are used twice — sent to Claude from memory here,
+  // written to disk by images.ts only so a chat reopened next week can still show it. A
+  // paste is used once: the transcript keeps it as a block, and chats.ts reads it there.
+  private attached: ({ id: number; data: string } | { id: number; text: string })[] = [];
 
   // The model text since the last tool call — the line the phone is drawing at the
   // bottom right now. Kept for one moment: ears opening mid-turn, when the mic is
@@ -445,8 +448,9 @@ export class Session {
       this.voice.heard(msg.ms);
     }
     else if (msg.type === 'text' && typeof msg.text === 'string') this.typed(msg.text);
-    // A picture, picked. It says nothing about when the turn runs — see `attached`.
-    else if (msg.type === 'attach' && typeof msg.data === 'string' && typeof msg.id === 'number') this.attach(msg.id, msg.data);
+    // A picture picked, or a text pasted. Says nothing about when the turn runs — see `attached`.
+    else if (msg.type === 'attach' && typeof msg.id === 'number' && typeof msg.data === 'string') this.attach(msg.id, msg.data);
+    else if (msg.type === 'attach' && typeof msg.id === 'number' && typeof msg.text === 'string') this.paste(msg.id, msg.text);
     else if (msg.type === 'approve') this.decide(true, msg.text);
     // The stop button, as a frame. Stop means everything in this chat: the turn, and
     // the background tasks an interrupt deliberately spares. Hanging up is the
@@ -535,6 +539,7 @@ export class Session {
    * than the answer you are waiting for.
    */
   private attach(id: number, data: string): void {
+    if (this.attached.some((a) => a.id === id)) return; // the same pick, said again
     try {
       saveImage(Buffer.from(data, 'base64'), id);
     } catch (e) {
@@ -542,6 +547,15 @@ export class Session {
     }
     this.attached.push({ id, data });
     this.log(`attached image ${id} (${Math.round((data.length * 3) / 4 / 1024)} KB)`);
+  }
+
+  /** Hold a pasted text for the turn it will be given with. Nothing is filed: it reaches
+   *  Claude as a document block and the transcript keeps the block, which is where a
+   *  reopened chat reads it from. */
+  private paste(id: number, text: string): void {
+    if (this.attached.some((a) => a.id === id)) return;
+    this.attached.push({ id, text });
+    this.log(`attached paste ${id} (${text.length} chars)`);
   }
 
   /**
@@ -643,10 +657,11 @@ export class Session {
     // typed turn runs — resumes this chat rather than starting one beside it.
     this.phone.event({ type: 'turn_start', session: this.sessionId });
     this.arm();
-    // Recorded rather than consumed: the pictures belong to the turn, and a retract
-    // re-runs this same turn with them still in hand. `endTurn` is what lets go.
-    this.turn.images = this.attached.map((a) => a.id);
-    this.claude.send(instruction, this.attached.map((a) => a.data)); // the callbacks wired in open() carry the reply
+    // Recorded rather than consumed: what was attached belongs to the turn, and a
+    // retract re-runs this same turn with it still in hand. `endTurn` is what lets go.
+    // Only pictures are recorded by id — a paste has no file to be found under one.
+    this.turn.images = this.attached.flatMap((a) => ('data' in a ? [a.id] : []));
+    this.claude.send(instruction, this.attached.map((a) => ('data' in a ? { image: a.data } : { paste: a.text }))); // the callbacks wired in open() carry the reply
   }
 
   // --- Watchdog: the turn is alive, or nothing is arriving --------------------
@@ -705,7 +720,7 @@ export class Session {
     this.disarm();
     const t = this.turn;
     this.turn = this.blank();
-    this.attached = []; // the pictures were this turn's, and the turn is over
+    this.attached = []; // what was attached was this turn's, and the turn is over
     this.lastLine = '';
     this.state = 'user';
     // Which chat this turned out to be, so the next connection the phone opens can

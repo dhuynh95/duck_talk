@@ -53,7 +53,7 @@ published package, which cannot assume that of a stranger's Node.
 | phone → server | text | `{"type":"played","ms"}` — reply audio its speaker has played |
 | phone → server | text | `{"type":"approve","text"?}` — run a held instruction, as edited |
 | phone → server | text | `{"type":"stop"}` — stop everything in this chat: the turn and its background tasks |
-| phone → server | text | `{"type":"attach","id","data"}` — a picture, base64 JPEG, for the next instruction |
+| phone → server | text | `{"type":"attach","id","data"\|"text"}` — a picture (base64 JPEG) or a pasted text, for the next instruction |
 | phone → server | text | `{"type":"claude","model"?,"permission"?,"effort"?}` — which model answers, what it may do, how hard it thinks |
 | server → phone | binary | raw PCM Int16 LE, 24 kHz, mono (Claude's voice) |
 | server → phone | text | `{"type":"user"\|"model"\|"tool"\|"approval"\|"turn_start"\|"interrupted"\|"turn_end"\|"error","text"?}` |

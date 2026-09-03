@@ -11,7 +11,7 @@
  *             {"type":"played","ms"}                  reply audio its speaker has played
  *             {"type":"approve","text"?}              run a held instruction, as edited
  *             {"type":"stop"}                         stop everything in this chat: the turn and its background tasks
- *             {"type":"attach","id","data"}            a picture, base64 JPEG, for the next instruction
+ *             {"type":"attach","id","data"|"text"}     a picture (base64 JPEG) or a pasted text, for the next instruction
  *             {"type":"claude","model"?,"permission"?,"effort"?} which model answers, what it may do, how hard it thinks
  *   ↓ binary  raw PCM Int16 LE, 24 kHz, mono          (Claude's voice)
  *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"turn_start"|"interrupted"|"turn_end"|"error","text"?}

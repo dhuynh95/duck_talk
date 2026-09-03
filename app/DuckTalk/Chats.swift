@@ -42,6 +42,9 @@ struct ChatMessage: Codable, Hashable {
     /// Optional on the wire for the reason `starred` and `working` are: a relay that
     /// predates them must cost a thumbnail, not the whole chat.
     let images: [Double]?
+    /// The texts pasted with it, whole — small enough to come down with the chat rather
+    /// than be fetched. Optional on the wire for the same reason.
+    let pastes: [String]?
 }
 
 /// The chats, over the drawer's left edge.

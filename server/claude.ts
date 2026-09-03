@@ -89,6 +89,9 @@ export interface Block {
   parent: string | null;
 }
 
+/** One thing an instruction was given with: a picture, or a pasted text. */
+export type Given = { image: string } | { paste: string };
+
 export interface Claude {
   /** The chat this session is — known from birth, minted here or brought by `resume`. */
   readonly chat: string;
@@ -96,13 +99,14 @@ export interface Claude {
    * Start a turn. Only one runs at a time; call after the previous ended or was
    * interrupted.
    *
-   * `images` are base64 JPEGs — the pictures the instruction was given with. They ride
-   * *in* the user message as content blocks rather than as paths for Claude to go and
-   * read, so a turn with a screenshot in it is still one turn. Base64 rather than ids
-   * on purpose: this file is the SDK boundary and knows nothing about where a picture
-   * is kept.
+   * `given` is what the instruction came with — pictures as base64 JPEG, pasted texts as
+   * themselves — in the order they were picked. They ride *in* the user message as
+   * content blocks (`image`, `document`) rather than as paths for Claude to go and
+   * read, so a turn with a screenshot or a pasted page in it is still one turn. Bytes
+   * rather than ids on purpose: this file is the SDK boundary and knows nothing about
+   * where a picture is kept — and a paste is kept nowhere but the transcript.
    */
-  send(instruction: string, images?: string[], pastes?: string[]): void;
+  send(instruction: string, given?: Given[]): void;
   /**
    * What Claude is: which model answers, what it is allowed to do, and how hard it
    * thinks. `effort` is one of the levels the model's own ModelInfo lists, or
@@ -530,18 +534,22 @@ function openClaude(cb: ClaudeCallbacks, resume?: string): Claude {
 
   self = {
     chat: sessionId,
-    send(instruction, images, pastes) {
+    send(instruction, given) {
       wanted = randomUUID();
       ambient = false; // the user's turn outranks a narration
       opened = false; // this turn announces its own first block
       opens = null;
-      // A plain string when there are no pictures, so the ordinary turn is byte for byte
-      // the message it has always been. With pictures it is blocks, text last — the
-      // model reads what it was shown before what it was asked about it.
-      const content = images?.length || pastes?.length
+      // A plain string when nothing came with it, so the ordinary turn is byte for byte
+      // the message it has always been. Otherwise it is blocks, text last — the model
+      // reads what it was shown before what it was asked about it. A paste is the
+      // API's own `document` block, the same way Claude.ai sends one: whole, as text,
+      // and written to the transcript as a block, so chats.ts reads it back without
+      // parsing anything out of the instruction.
+      const content = given?.length
         ? [
-            ...(images ?? []).map((data) => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/jpeg' as const, data } })),
-            ...(pastes ?? []).map((data) => ({ type: 'document' as const, source: { type: 'text' as const, media_type: 'text/plain' as const, data }, title: 'Pasted text' })),
+            ...given.map((g) => 'image' in g
+              ? { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/jpeg' as const, data: g.image } }
+              : { type: 'document' as const, source: { type: 'text' as const, media_type: 'text/plain' as const, data: g.paste }, title: 'Pasted text' }),
             { type: 'text' as const, text: instruction },
           ]
         : instruction;
@@ -691,6 +699,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const argv = process.argv.slice(2);
   // The whole picture path, from a terminal: what the phone sends as base64 is what this
   // reads off disk, so the half that cannot be seen in a simulator can be proven here.
+  // `--paste` is the same for a pasted text, which is how the document block was proven.
   const at = argv.indexOf('--image');
   const picture = at >= 0 ? argv.splice(at, 2)[1] : undefined;
   const pasteAt = argv.indexOf('--paste');
@@ -698,8 +707,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const instruction = argv.join(' ');
   if (!instruction) { console.error('usage: node claude.ts [--image shot.jpg] [--paste text.txt] "instruction"'); process.exit(1); }
   const fs = await import('node:fs');
-  const images = picture ? [fs.readFileSync(picture).toString('base64')] : undefined;
-  const pastes = paste ? [fs.readFileSync(paste, 'utf8')] : undefined;
+  const given: Given[] = [];
+  if (picture) given.push({ image: fs.readFileSync(picture).toString('base64') });
+  if (paste) given.push({ paste: fs.readFileSync(paste, 'utf8') });
   const t0 = performance.now();
   let first = 0;
   const claude = openClaude({
@@ -714,5 +724,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       process.exit(0);
     },
   });
-  claude.send(instruction, images, pastes);
+  claude.send(instruction, given);
 }

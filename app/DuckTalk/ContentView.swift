@@ -131,7 +131,7 @@ struct ContentView: View {
                 // What you add to the turn besides words — a picture, and what Claude
                 // may do with it. Permission lives here rather than in the bar: you
                 // glance at the model every turn and set the permission once.
-                case .context: ContextSheet(permissionName: $permissionName) { session.attach($0) }
+                case .context: ContextSheet(permissionName: $permissionName) { session.attach(.image($0)) }
                 // The only list the phone does not know by heart: which models this Mac
                 // can offer is the relay's to say, so the rows come down the socket.
                 // Effort rides along as a row under the models rather than a fourth
@@ -434,13 +434,14 @@ struct ContentView: View {
                     }
                 }
             }
-            // The pictures this turn will be given, until it has been. Above the field
-            // like the review clip, because both are what the instruction is *about*.
+            // What this turn will be given, until it has been — pictures, and texts too
+            // long for the field. Above the field like the review clip, because all of
+            // them are what the instruction is *about*.
             if !session.attached.isEmpty {
                 ScrollView(.horizontal) {
                     HStack(spacing: 10) {
                         ForEach(session.attached) { attachment in
-                            AttachThumb(source: .picked(attachment.data), serverURL: serverURL) {
+                            AttachThumb(source: Piece(attachment), serverURL: serverURL) {
                                 session.drop(attachment)
                             }
                         }
@@ -499,6 +500,7 @@ struct ContentView: View {
                     .focused($typing)
                     .accessibilityIdentifier("message")
                     .accessibilityLabel("Message")
+                    .onChange(of: draft) { was, now in lift(pasteInto: was, becoming: now) }
             case .relay:
                 TextField("Message", text: Binding(get: { held ?? "" }, set: { held = $0 }), axis: .vertical)
                     .textFieldStyle(.plain)
@@ -527,6 +529,28 @@ struct ContentView: View {
         .animation(.easeOut(duration: 0.2), value: live)
         .animation(.easeOut(duration: 0.2), value: session.muted)
         .onChange(of: session.pending) { held = session.pending }
+    }
+
+    /// A long paste leaves the field and becomes a chip, the way Claude.ai and Claude
+    /// Code both do it: the instruction stays a sentence you can read, and the text goes
+    /// to Claude whole, as a document block on the same holder a picture rides.
+    ///
+    /// One rule, and no paste event needed: a single change that adds more than this
+    /// many characters is a paste — nobody types 800 in one keystroke. Shorter pastes
+    /// stay in the field, editable, which is what you want for a sentence. What was there
+    /// before the paste stays; only the inserted span is lifted.
+    private static let pasteChars = 800
+
+    private func lift(pasteInto was: String, becoming now: String) {
+        guard now.count - was.count > Self.pasteChars else { return }
+        // The inserted span is what `now` has that `was` does not, around a shared head
+        // and tail — a paste lands at the cursor, which is not always the end.
+        let head = zip(was, now).prefix { $0 == $1 }.count
+        let tail = zip(was.reversed(), now.reversed()).prefix { $0 == $1 }.count
+        let start = now.index(now.startIndex, offsetBy: head)
+        let end = now.index(now.endIndex, offsetBy: -min(tail, was.count - head))
+        session.attach(.text(String(now[start..<end])))
+        draft = was
     }
 
     /// The skills matching what is typed after "/" — the whole of autocomplete. A tap
@@ -792,12 +816,25 @@ struct ContentView: View {
 
     /// Claude is working in this chat. The accent, because it is the one live thing
     /// on a screen whose microphone may be off.
+    ///
+    /// It moves, because a still row cannot say "still". The dots are the `ellipsis`
+    /// symbol, whose three layers the system lights in turn; the asterisk breathes. Both
+    /// are symbol effects — no timer, no state, and Reduce Motion is honoured without
+    /// this file knowing it exists.
     private var workingRow: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .lastTextBaseline, spacing: 6) {
             Image(systemName: "asterisk")
                 .font(.caption.weight(.semibold))
-            Text("Working…")
+                .symbolEffect(.pulse, options: .repeating)
+            Text("Working")
                 .font(.callout)
+            Image(systemName: "ellipsis")
+                .font(.callout.weight(.semibold))
+                .symbolEffect(.variableColor.iterative.dimInactiveLayers, options: .repeating)
+                // The symbol is drawn mid-height; a typed "…" sits on the baseline. Its
+                // centre is the baseline, then, and the row aligns on baselines.
+                .alignmentGuide(.lastTextBaseline) { $0[VerticalAlignment.center] }
+                .accessibilityHidden(true)
         }
         .foregroundStyle(Brand.accent)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -824,12 +861,12 @@ struct ContentView: View {
             VStack(alignment: .trailing, spacing: 6) {
                 // What the turn was shown, above what it was asked — the order they were
                 // given in, and the order Claude reads them in.
-                if !line.images.isEmpty {
+                if !line.given.isEmpty {
                     HStack(spacing: 6) {
                         // By position, not by value: the same photo sent twice is two
                         // pictures, and two equal ones would be one row under `id: \.self`.
-                        ForEach(Array(line.images.enumerated()), id: \.offset) { _, picture in
-                            AttachThumb(source: picture, serverURL: serverURL)
+                        ForEach(Array(line.given.enumerated()), id: \.offset) { _, piece in
+                            AttachThumb(source: piece, serverURL: serverURL)
                         }
                     }
                 }

@@ -19,7 +19,10 @@ photos for the rest, and Permission — which lives there rather than in the bar
 glance at the model every turn and set the permission once. A picture is held on the turn
 rather than carried by the frame that starts one (`Attachment.swift`, `VoiceSession.attached`),
 so typing, talking and approving are one path and a retract keeps them. A line just sent
-draws the bytes it still has; a chat reopened later draws by id over `image_get`.
+draws the bytes it still has; a chat reopened later draws by id over `image_get`. A paste
+over 800 characters leaves the field and rides the same holder as a TXT chip: it reaches
+Claude whole as a `document` block, the way Claude.ai sends one, and comes back with the
+chat inline as `pastes` — the transcript is its only store.
 
 Typing and talking are frames on the same socket (`VoiceSession.swift`). The relay opens
 ears only once audio arrives and closes them when it stops, so a typed turn costs no

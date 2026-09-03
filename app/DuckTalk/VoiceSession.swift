@@ -58,12 +58,12 @@ final class VoiceSession {
         var after: String?
         /// The audio this line was heard from, when it was spoken rather than typed.
         var clip: Double?
-        /// The pictures it was given with — in hand for a line just sent, by id for one
-        /// read back out of a stored chat. See `Picture`.
-        var images: [Picture] = []
+        /// What it was given with — pictures in hand for a line just sent and by id for
+        /// one read back out of a stored chat, pasted texts whole either way. See `Piece`.
+        var given: [Piece] = []
 
-        init(kind: Kind, text: String = "", tools: [String] = [], running: Bool = false, uuid: String? = nil, after: String? = nil, clip: Double? = nil, images: [Picture] = []) {
-            self.kind = kind; self.text = text; self.tools = tools; self.running = running; self.uuid = uuid; self.after = after; self.clip = clip; self.images = images
+        init(kind: Kind, text: String = "", tools: [String] = [], running: Bool = false, uuid: String? = nil, after: String? = nil, clip: Double? = nil, given: [Piece] = []) {
+            self.kind = kind; self.text = text; self.tools = tools; self.running = running; self.uuid = uuid; self.after = after; self.clip = clip; self.given = given
         }
 
         /// One message of a stored chat, as a line of the transcript.
@@ -74,7 +74,7 @@ final class VoiceSession {
                 uuid: message.uuid,
                 after: message.after,
                 clip: message.clip,
-                images: (message.images ?? []).map(Picture.stored),
+                given: (message.images ?? []).map(Piece.stored) + (message.pastes ?? []).map(Piece.text),
             )
         }
 
@@ -105,8 +105,8 @@ final class VoiceSession {
     /// The audio it was heard from, held until the utterance becomes a line — so the
     /// review card can play what it is asking about, and the line can be corrected.
     private(set) var heardClip: Double?
-    /// The pictures the next instruction will be given with. Held until the turn is
-    /// over rather than until it is sent, so a retract keeps them.
+    /// What the next instruction will be given with — pictures and pasted texts. Held
+    /// until the turn is over rather than until it is sent, so a retract keeps them.
     private(set) var attached: [Attachment] = []
     /// The last id minted. Ids are the moment a picture was picked, and picking several
     /// at once would otherwise mint one name for all of them.
@@ -272,7 +272,7 @@ final class VoiceSession {
     func send(_ text: String) {
         let said = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !said.isEmpty else { return }
-        lines.append(Line(kind: .user, text: said, images: attached.map { .picked($0.data) }))
+        lines.append(Line(kind: .user, text: said, given: attached.map(Piece.init)))
         inFlight = true
         reconcile()
         send(["type": "text", "text": said])
@@ -442,14 +442,17 @@ final class VoiceSession {
         send(msg)
     }
 
-    /// Keep a picture for the next instruction, and tell the socket if there is one.
-    /// The id is minted here because it has to exist before any socket does.
-    func attach(_ jpeg: Data) {
+    /// Keep a picture or a pasted text for the next instruction, and tell the socket if
+    /// there is one. The id is minted here because it has to exist before any socket does.
+    func attach(_ content: Attachment.Content) {
         let now = (Date().timeIntervalSince1970 * 1000).rounded()
         lastAttachId = max(now, lastAttachId + 1)
-        let attachment = Attachment(id: lastAttachId, data: jpeg)
+        let attachment = Attachment(id: lastAttachId, content: content)
         attached.append(attachment)
-        sendAttachment(attachment)
+        // Only onto a socket that is up. Attachments are state, not events: every socket
+        // opening is told all of them by `sendAttachments`, so queueing this one in the
+        // outbox as well sent it twice — and Claude was shown the same picture twice.
+        if socket != nil { sendAttachment(attachment) }
     }
 
     /// Take one back, before it has been sent. Afterwards there is nothing to take back:
@@ -462,8 +465,12 @@ final class VoiceSession {
     /// answering the same question: what does a socket need to be told first.
     private func sendAttachments() { attached.forEach(sendAttachment) }
 
+    /// One frame either way; which field it carries says which kind it is.
     private func sendAttachment(_ a: Attachment) {
-        send(["type": "attach", "id": a.id, "data": a.data.base64EncodedString()])
+        switch a.content {
+        case .image(let jpeg): send(["type": "attach", "id": a.id, "data": jpeg.base64EncodedString()])
+        case .text(let text): send(["type": "attach", "id": a.id, "text": text])
+        }
     }
 
     /// A `mark`: a moment only the phone can see. `reply_in` and `speech_end` carry
@@ -503,7 +510,7 @@ final class VoiceSession {
         guard let said, !said.isEmpty else { return }
         // Copied, not moved: the pictures belong to the turn, and a retract puts this
         // line back in the composer's hands. `turn_end` is what lets go of them.
-        lines.append(Line(kind: .user, text: said, clip: clip, images: attached.map { .picked($0.data) }))
+        lines.append(Line(kind: .user, text: said, clip: clip, given: attached.map(Piece.init)))
         committed = true
     }
 

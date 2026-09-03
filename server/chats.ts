@@ -57,6 +57,10 @@ export interface Message {
   /** The pictures it was given with. Ids only, for the reason `clip` is: a thumbnail is
    *  fetched when it is drawn, so a long chat costs its words and not its megabytes. */
   images?: number[];
+  /** The texts pasted with it, whole. Inline where a picture is an id, because a paste
+   *  is kilobytes and lives nowhere but the message itself — read off its `document`
+   *  blocks, so there is no index and nothing to parse out of the words. */
+  pastes?: string[];
 }
 
 export interface Chat {
@@ -114,7 +118,8 @@ export async function chat(id: string): Promise<Message[]> {
     // stores the picture too, but as base64 inside the message, which is the one thing
     // not worth sending to a phone that only wants a thumbnail.
     const pictures = role === 'user' ? shown.get(said) : undefined;
-    all.push({ uuid: m.uuid, ...(after ? { after } : {}), role, text: said, ...(clip ? { clip } : {}), ...(pictures ? { images: pictures } : {}) });
+    const pasted = role === 'user' ? pastes(m) : [];
+    all.push({ uuid: m.uuid, ...(after ? { after } : {}), role, text: said, ...(clip ? { clip } : {}), ...(pictures ? { images: pictures } : {}), ...(pasted.length ? { pastes: pasted } : {}) });
   }
   // A chat mid-turn is returned whole: the CLI flushes reply blocks to the transcript
   // as they complete, so this is the state up to the last completed block, and the
@@ -182,6 +187,17 @@ function text(m: SessionMessage): string {
   return parts.join('\n\n');
 }
 
+/** The texts pasted with a message: its `document` blocks, as claude.ts writes them. */
+function pastes(m: SessionMessage): string[] {
+  const content = (m.message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return [];
+  const out: string[] = [];
+  for (const b of content as { type?: string; source?: { type?: string; data?: unknown } }[]) {
+    if (b.type === 'document' && b.source?.type === 'text' && typeof b.source.data === 'string') out.push(b.source.data);
+  }
+  return out;
+}
+
 // --- CLI: run alone ---------------------------------------------------------
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -199,7 +215,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const messages = await chat(first);
     console.error(`${messages.length} messages`);
     for (const m of messages) {
-      console.log(`${m.uuid}  ${m.clip ? '♪' : ' '}${m.images ? '▣' : ' '}${m.role === 'user' ? '›' : ' '} ${m.text.slice(0, 120)}`);
+      console.log(`${m.uuid}  ${m.clip ? '♪' : ' '}${m.images ? '▣' : ' '}${m.pastes ? '¶' : ' '}${m.role === 'user' ? '›' : ' '} ${m.text.slice(0, 120)}`);
     }
   } else {
     const all = await chats();
