@@ -36,7 +36,6 @@
  */
 
 import { GoogleGenAI } from '@google/genai';
-import { latest } from './chats.ts';
 import { claim, DEFAULTS, release, type Claude, type ClaudeCallbacks, type PermissionMode } from './claude.ts';
 import { chat } from './chats.ts';
 import { save as saveClip } from './clips.ts';
@@ -128,11 +127,6 @@ export class Session {
   // written to disk by images.ts only so a chat reopened next week can still show it. A
   // paste is used once: the transcript keeps it as a block, and chats.ts reads it there.
   private attached: ({ id: number; data: string } | { id: number; text: string })[] = [];
-
-  // The model text since the last tool call — the line the phone is drawing at the
-  // bottom right now. Kept for one moment: ears opening mid-turn, when the mic is
-  // tapped on a chat that is already working. See `listen`.
-  private lastLine = '';
 
   // What Claude has been asked to be. Kept here as well as in claude.ts so a turn that
   // never reaches a result — interrupted, or stopped — still records what it ran as.
@@ -242,7 +236,6 @@ export class Session {
         this.arm(); // words are proof of life
         this.turn.claude_first_at ??= Date.now();
         this.turn.said += text;
-        this.lastLine += text;
         this.phone.event({ type: 'model', text });
         // Read aloud only to someone who spoke. A typed instruction wants its answer
         // on the screen it was typed on.
@@ -253,7 +246,6 @@ export class Session {
       // history and no magic word to compare against. `parent` says whose it is.
       onBlock: (block) => {
         this.arm(); // a fan-out works for minutes without a word, and is not stuck
-        if (block.name) this.lastLine = ''; // a tool call ends the line the phone was drawing
         // One event either way: an absent `text` is JSON's own way of saying no name,
         // so a tool starting and a tool finishing take the same line rather than two.
         this.phone.event({ type: 'tool', text: block.name ?? undefined, parent: block.parent });
@@ -287,6 +279,9 @@ export class Session {
    * Open the ears, once, on the first audio — so a connection that is only typed to
    * never opens a Gemini session at all, and one that is spoken to needs no flag.
    *
+   * Opened mid-turn — the mic tapped on a chat already working — nothing is replayed:
+   * the reply so far is on the screen, and the voice reads the next thing that arrives.
+   *
    * Failing here costs the microphone and nothing else: the connection stays up and
    * can still be typed to, which is exactly what the phone should offer if Gemini is
    * unreachable.
@@ -299,16 +294,6 @@ export class Session {
       if (this.closed) return void ears.close();
       this.ears = ears;
       this.backlog.splice(0).forEach((pcm) => ears.send(pcm));
-      // Ears arriving mid-turn: the mic was tapped on a chat already working. The
-      // reply so far is on the screen and was never spoken, so the latest line is
-      // read now — the listener lands where Claude is — and the deltas that follow
-      // continue through the same buffer. The line is what this connection has heard
-      // since it attached; if that is nothing yet, it is the last thing Claude said,
-      // read from the transcript, which is the same state the phone is showing.
-      if (this.state === 'claude') {
-        const line = this.lastLine.trim() || (this.sessionId ? await latest(this.sessionId) : '');
-        if (line && this.ears && this.state === 'claude') this.voice.say(line);
-      }
     } catch (e) {
       this.log(`ears failed: ${e}`);
       this.phone.event({ type: 'error', text: `could not start listening: ${e}` });
@@ -714,7 +699,6 @@ export class Session {
     t.claude_start_at = t.claude_opens = t.claude_first_at = null;
     t.tts_sent_at = t.voice_out_at = t.reply_in_at = null;
     t.voice_ms = 0;
-    this.lastLine = '';
     this.state = 'user';
   }
 
@@ -737,7 +721,6 @@ export class Session {
     const t = this.turn;
     this.turn = this.blank();
     this.attached = []; // what was attached was this turn's, and the turn is over
-    this.lastLine = '';
     this.state = 'user';
     // Which chat this turned out to be, so the next connection the phone opens can
     // carry it on — and where the turn's two messages now sit in the store, so a line

@@ -8,7 +8,7 @@ lock screen and lets AirPods stem presses reach it (`Call.swift`).
 
 The bar under the composer splits at the microphone: what you are adding to the turn on
 the left (`+`, then the model), the session itself on the right (Direct/Review until it
-starts, then mute and stop). The left two stay usable while live, because the relay puts
+starts, then mute, output and stop). The left two stay usable while live, because the relay puts
 what it carries on the session already running. `Choices.swift` holds the choices and the
 one sheet that shows them; the model list comes down the socket rather than being written
 into the app, and effort — how hard the model thinks — is a row inside the model sheet,

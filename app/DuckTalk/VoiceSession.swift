@@ -136,10 +136,12 @@ final class VoiceSession {
     /// Set by the screen; a change reconnects, since a socket is one of these.
     var url: URL? { didSet { if url != oldValue { drop(); reconcile() } } }
 
-    /// The gear menu's "Filler sound", handed in like the model choice so this class
-    /// reads no settings. Off takes effect mid-wait: a loop already playing stops.
-    var fillerEnabled = true {
-        didSet { if !fillerEnabled { pipe?.waiting = false } }
+    /// The speaker, on or off — the spoken reply and the filler chimes together. Handed
+    /// in like the model choice so this class reads no settings. Off takes effect
+    /// mid-reply: what the speaker holds is dropped, and what still arrives is consumed
+    /// unplayed — see `AudioPipe.output`.
+    var output = true {
+        didSet { pipe?.output = output }
     }
 
     // MARK: - The one socket
@@ -328,6 +330,7 @@ final class VoiceSession {
 
     private func startMic() async {
         let pipe = AudioPipe()
+        pipe.output = output
         pipe.onLevel = { [weak self] l in Task { @MainActor in self?.level = l } }
         // What the speaker really played — the relay's only way to tell a reply that
         // was heard from one that was cut off. Sent when it runs dry.
@@ -533,7 +536,7 @@ final class VoiceSession {
     /// whatever the speaker has nothing to play for. On means proof, never prediction:
     /// asserted only by a sign of work arriving, so a turn that provably runs is
     /// guaranteed a closer. AudioPipe decides whether the wait *sounds* right now.
-    private func waiting(_ on: Bool) { pipe?.waiting = on && fillerEnabled }
+    private func waiting(_ on: Bool) { pipe?.waiting = on }
 
     /// The tools stop running when speech resumes or the turn ends.
     private func endToolRun() {

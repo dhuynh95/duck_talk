@@ -16,6 +16,14 @@ final class AudioPipe {
     /// continuous stream — so the frames keep coming at the same rate, zeroed. The
     /// ears stay open and hear a quiet room; the speaker is untouched.
     var muted = false
+    /// Play nothing instead of the reply — the mirror of `muted`. The buffers keep
+    /// arriving and are consumed on the spot, so `playedMs` still grows and the relay
+    /// still hears "the reply is over" the moment it is; it goes on synthesising into a
+    /// listener who is not listening, exactly as it goes on hearing a muted room. The
+    /// chimes are off too: a wait nobody will hear the end of needs no sound.
+    var output = true {
+        didSet { if !output { flush() } else { settle() } }
+    }
 
     /// A reply is owed: a turn is provably running and not yet over. VoiceSession
     /// flips this for the life of the turn — one bit, the same shape as `muted` —
@@ -40,7 +48,9 @@ final class AudioPipe {
     /// off the same `.dataPlayedBack` callback, so it is the hardware's answer and not
     /// a timer's. The relay sends audio and can only know what it handed over; this is
     /// the half of the subtraction that lives on this side, and the only way a reply
-    /// cut off mid-sentence stops being recorded as one that played in full.
+    /// cut off mid-sentence stops being recorded as one that played in full. With
+    /// `output` off it counts what was consumed on arrival instead: either way it is
+    /// what the relay may take as heard, which is the one question it asks.
     private(set) var playedMs: Double = 0
 
     /// The speaker has nothing left: it played the reply out, or a flush or a rebuild
@@ -74,7 +84,7 @@ final class AudioPipe {
     /// the bit flipping, a buffer arriving, a buffer playing out — lands here, and a
     /// timer that fires into a changed world just falls through the same guards.
     private func settle() {
-        guard waiting, queued == 0 else { return chime(false) }
+        guard waiting, output, queued == 0 else { return chime(false) }
         let dry = Date().timeIntervalSince(dryAt)
         if dry >= Self.lull { return chime(true) }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.lull - dry) { [weak self] in self?.settle() }
@@ -271,6 +281,9 @@ final class AudioPipe {
     /// Queue one chunk of 24 kHz Int16 PCM. The player node plays chunks back to back.
     func play(_ pcm: Data) {
         let frames = AVAudioFrameCount(pcm.count / 2)
+        // Output off: consumed on the spot, and reported as such — the same report a
+        // played-out buffer gives, so the relay ends the turn when synthesis does.
+        guard output else { playedMs += Double(frames) / 24; onDrained?(playedMs); return }
         guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: speakerFormat, frameCapacity: frames) else { return }
         buffer.frameLength = frames
         let out = buffer.floatChannelData![0]

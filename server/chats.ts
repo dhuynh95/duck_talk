@@ -127,17 +127,6 @@ export async function chat(id: string): Promise<Message[]> {
   return all;
 }
 
-/** The last thing Claude said in this chat, or empty — read from the transcript, for
- *  the moment a microphone opens on a turn already running. */
-export async function latest(id: string): Promise<string> {
-  const messages = await getSessionMessages(id, { dir: CWD });
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]!;
-    if (m.type === 'assistant') { const said = text(m); if (said) return said; }
-  }
-  return '';
-}
-
 /**
  * Branch a chat at one message: a new conversation holding everything up to and
  * including it, and nothing after.

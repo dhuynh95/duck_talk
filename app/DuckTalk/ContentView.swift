@@ -33,9 +33,10 @@ struct ContentView: View {
     /// the levels a model actually takes come down the socket with the model list.
     @AppStorage("effort") private var effort = "default"
     @AppStorage("autocorrect") private var autocorrect = false
-    /// A quiet chime loop while Claude works and nothing is being said — see
-    /// `AudioPipe.waiting`. Client-only, so unlike the three above it never travels.
-    @AppStorage("filler") private var filler = true
+    /// The speaker: the spoken reply and the chime loop while Claude works, together.
+    /// Client-only, so unlike the three above it never travels — see `AudioPipe.output`.
+    /// Persisted, because it is set once for a meeting and should hold across sessions.
+    @AppStorage("output") private var output = true
     private let session = VoiceSession.shared
     @State private var draft = ""
     /// The instruction the relay is holding for review, as you may have edited it.
@@ -175,8 +176,8 @@ struct ContentView: View {
         // every socket it opens after, so talking and typing never disagree about it.
         .task(id: "\(model)|\(permissionName)|\(effort)") { session.use(model: model, permission: permissionName, effort: effort) }
         // Client-only, so it reaches the session directly rather than riding a frame —
-        // and mid-wait, so switching it off silences a loop already playing.
-        .task(id: filler) { session.fillerEnabled = filler }
+        // and mid-reply, so switching it off silences what is playing.
+        .task(id: output) { session.output = output }
         // Watch the chat on screen whenever the relay says it is working and nothing
         // here is already attached to it. Declarative on purpose: the relay's word
         // replaces the guess this used to make with a three-second timer, and coming
@@ -626,11 +627,15 @@ struct ContentView: View {
                 if live || working {
                     // Mute lit on the accent when it is on: the orange has left the
                     // border and the bars, and this is where it went. Same order as the
-                    // call UI, so the thumb learns one layout.
+                    // call UI, so the thumb learns one layout. Beside it, the speaker,
+                    // in the same grammar: lit means switched off.
                     if live {
                         glyph("mic.slash", accent: session.muted) { session.toggleMute() }
                             .accessibilityIdentifier("mute")
                             .accessibilityLabel(session.muted ? "Unmute" : "Mute")
+                        glyph("speaker.slash.fill", accent: !output) { output.toggle() }
+                            .accessibilityIdentifier("output")
+                            .accessibilityLabel(output ? "Output off" : "Output on")
                     }
                     glyph("stop.fill", accent: false) { session.stopAll() }
                         .accessibilityIdentifier("stop")
@@ -699,7 +704,6 @@ struct ContentView: View {
             Button { sheet = .corrections(nil) } label: { Label("Corrections", systemImage: "text.badge.checkmark") }
             Toggle(isOn: $autocorrect) { Label("Auto-correct", systemImage: "wand.and.stars") }
                 .disabled(live)
-            Toggle(isOn: $filler) { Label("Filler sound", systemImage: "music.note") }
             Divider()
             Button { sheet = .server } label: { Label("Server", systemImage: "network") }
         } label: {
