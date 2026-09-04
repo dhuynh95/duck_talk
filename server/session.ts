@@ -561,15 +561,28 @@ export class Session {
   /**
    * A typed instruction. It cannot have been misheard, so there is nothing to correct
    * and nothing to review — it is final the moment it arrives, and runs.
+   *
+   * Typed over the reply, it takes the floor the way a spoken one does: the same
+   * barge-in, with the instruction already in hand. Speech has a gap between the
+   * partial that cancels and the final that runs, and the interrupted turn's `turn_end`
+   * goes out inside it; typing has no gap, so it waits for that `turn_end` here — a
+   * store read, milliseconds — or the phone would see it land after the next
+   * `turn_start` and file the new line under the old turn. A held instruction is not
+   * taken over: mid-hold the field on the phone *is* the held text, and sending it is
+   * an approval, not this.
    */
   private typed(said: string): void {
     const instruction = said.trim();
-    if (!instruction || this.state !== 'user') return;
-    this.turn.proposed = instruction;
-    this.turn.instruction = instruction;
-    this.turn.heard_at = Date.now();
-    this.log(`typed: ${instruction}`);
-    this.run(instruction);
+    if (!instruction || this.state === 'held') return;
+    const ended = this.state === 'claude' ? this.cancel('typed over the reply') : Promise.resolve();
+    void ended.then(() => {
+      if (this.state !== 'user' || this.closed) return; // a spoken turn took the floor meanwhile
+      this.turn.proposed = instruction;
+      this.turn.instruction = instruction;
+      this.turn.heard_at = Date.now();
+      this.log(`typed: ${instruction}`);
+      this.run(instruction);
+    }).catch((e) => this.log(`typed failed: ${e}`));
   }
 
   /** Remember what was really meant, so the next transcription starts from it. */
@@ -705,18 +718,21 @@ export class Session {
     this.state = 'user';
   }
 
-  /** Interrupt Claude, silence the voice, tell the phone to flush, record the partial turn. */
-  private cancel(why: string): void {
-    if (this.state === 'user') return;
+  /** Interrupt Claude, silence the voice, tell the phone to flush, record the partial turn.
+   *  Resolves once the phone has been told the turn is over — see `endTurn`. */
+  private cancel(why: string): Promise<void> {
+    if (this.state === 'user') return Promise.resolve();
     this.log(`cancel (${why})`);
     this.claude.interrupt(); // stops this turn; the session stays warm for the next
     this.voice.interrupt();
     this.phone.event({ type: 'interrupted' });
-    this.endTurn();
+    return this.endTurn();
   }
 
-  private endTurn(): void {
-    if (this.state === 'user') return; // nothing in flight
+  /** End the turn now; resolves once `turn_end` has gone to the phone, which is after
+   *  the store lookup below — the one thing here that is not immediate. */
+  private endTurn(): Promise<void> {
+    if (this.state === 'user') return Promise.resolve(); // nothing in flight
     this.disarm();
     const t = this.turn;
     this.turn = this.blank();
@@ -729,10 +745,10 @@ export class Session {
     // the same function that loads a chat, so a live line and a loaded one cannot
     // disagree about where a cut goes. The lookup is a file read, milliseconds; a
     // failure costs the fork handles and not the turn_end.
-    void this.saved(t.said.length > 0)
+    void this.record(t).catch((e) => this.log(`record failed: ${e}`));
+    return this.saved(t.said.length > 0)
       .catch((e) => { this.log(`turn_end lookup failed: ${e}`); return {}; })
       .then((saved) => this.phone.event({ type: 'turn_end', session: this.sessionId, ...saved }));
-    void this.record(t).catch((e) => this.log(`record failed: ${e}`));
   }
 
   /**

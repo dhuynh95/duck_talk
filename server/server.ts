@@ -6,7 +6,7 @@
  * exist, and it is where everything the relay learns is kept. See paths.ts.
  *
  *   ↑ binary  raw PCM Int16 LE, 16 kHz, mono          (mic)
- *   ↑ text    {"type":"text","text"}                  an instruction, typed
+ *   ↑ text    {"type":"text","text"}                  an instruction, typed — over a reply, a barge-in
  *             {"type":"mark","name","at"?,"note"?}    a moment only the phone can see
  *             {"type":"played","ms"}                  reply audio its speaker has played
  *             {"type":"approve","text"?}              run a held instruction, as edited

@@ -12,9 +12,10 @@ import SwiftUI
 /// lands in the same field, and the same arrow sends it, edited or not. An edit is what
 /// teaches the relay; ignoring it is how you drop it.
 ///
-/// Talking and typing are exclusive, and the field says so without a word: while the
-/// ears are writing it, it is not editable, and touching it stops the session and gives
-/// you the keyboard. That is the whole of the mode switch.
+/// Talking and typing are not exclusive: the field is yours whether or not the ears are
+/// open, and what they hear is a line above it. Sending while live is a barge-in — the
+/// relay drops the reply it was reading and answers the typed line aloud — so there is
+/// no mode to switch and the microphone never stops because you typed.
 ///
 /// Everything that configures the thing rather than being the conversation lives
 /// behind the gear.
@@ -391,14 +392,15 @@ struct ContentView: View {
     /// The field, and under it the one control. Which face each of them wears follows
     /// from a single question — what are you about to do — so they can never disagree.
     ///
-    /// Live, the field is not yours to type in, and tapping it is how you stop
-    /// listening and start typing. The exception is an instruction held for review:
-    /// that one is yours to fix, and fixing it is how the relay learns what you said.
+    /// The field is yours, live or not. The one exception is an instruction held for
+    /// review: that one is the relay's, yours to fix, and fixing it is how the relay
+    /// learns what you said.
     private var composer: some View {
         VStack(spacing: 10) {
-            // One field, three writers: you, the ears, and the relay when it holds an
-            // instruction back for you to look at. What is being said is not history
-            // until it has been sent, so this is where it lives until then.
+            // One field, two writers: you, and the relay when it holds an instruction
+            // back for you to look at. The ears do not write the field — what is being
+            // said is a line above it, not history until it has been sent — so a sentence
+            // can be typed while one is being heard, and neither takes the other's place.
             // Held for review, and the audio it was heard from: play it and the text
             // below stops being a guess. Inline rather than a sheet — mid-hold you are
             // deciding whether to *run* something, and nothing modal belongs between
@@ -454,6 +456,19 @@ struct ContentView: View {
                 .scrollIndicators(.hidden)
                 .frame(height: 78)
             }
+            // What the ears are hearing, revised as you speak. A sentence still being
+            // transcribed grows at its end, and the end is the part being read — so a
+            // long one loses its head, not its tail.
+            if let utterance = session.utterance {
+                Text(utterance)
+                    .italic()
+                    .foregroundStyle(Brand.secondaryText)
+                    .lineLimit(6)
+                    .truncationMode(.head)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("utterance")
+                    .accessibilityLabel("Heard")
+            }
             if writer == .relay, let clip = session.heardClip {
                 // The spacer, not a frame on the chip: a capsule you can miss by
                 // aiming at it is worse than a small one, and a full-width button
@@ -465,34 +480,11 @@ struct ContentView: View {
             }
             // One writer at a time, and each gets the field it needs rather than one
             // field whose binding and keyboard traits change underneath it. A switch is
-            // three views, so switching writers builds a new one — where mutating
-            // `disabled` or `autocorrectionDisabled` on the field that currently holds
-            // the keyboard makes UIKit tear the input session down and start it again,
-            // and a session started again has forgotten what you were correcting.
+            // two views, so switching writers builds a new one — where mutating
+            // `autocorrectionDisabled` on the field that currently holds the keyboard
+            // makes UIKit tear the input session down and start it again, and a session
+            // started again has forgotten what you were correcting.
             switch writer {
-            case .ears:
-                // Not a field at all. What the ears write is not yours to edit — the
-                // relay only hands it back in review — so there is no field to disable
-                // and nothing transparent laid over one to undo the disabling. Tapping
-                // it is still how you take the keyboard back.
-                Text(session.utterance ?? "Message")
-                    .italic()
-                    .foregroundStyle(session.utterance == nil ? Brand.tertiaryText : Brand.secondaryText)
-                    // A sentence still being transcribed grows at its end, and the end
-                    // is the part being read — so a long one loses its head, not its tail.
-                    .lineLimit(6)
-                    .truncationMode(.head)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        session.stopListening()
-                        // The draft field does not exist yet — it is the next branch of
-                        // this switch — so ask for focus on the next turn of the run
-                        // loop, once stopping has been drawn.
-                        Task { typing = true }
-                    }
-                    .accessibilityIdentifier("message")
-                    .accessibilityLabel("Message")
             case .you:
                 TextField("Message", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -571,23 +563,17 @@ struct ContentView: View {
     private var intent: Intent {
         switch writer {
         case .relay: return .send
-        case .you: if !draft.isEmpty { return .send }
-        case .ears: break
+        case .you: return draft.isEmpty ? .talk : .send
         }
-        return .talk
     }
 
-    /// Who is writing the field. One field, three writers — you, the ears, and the
-    /// relay when it holds an instruction back for you to look at — and this is that
-    /// sentence as a value: what the field shows, who may change it, whether iOS may
-    /// correct it, and what the button under it does all follow from this and from
-    /// nothing else.
-    private enum Writer { case you, ears, relay }
+    /// Who is writing the field. One field, two writers — you, and the relay when it
+    /// holds an instruction back for you to look at — and this is that sentence as a
+    /// value: what the field shows, whether iOS may correct it, and what the button
+    /// under it does all follow from this and from nothing else.
+    private enum Writer { case you, relay }
 
-    private var writer: Writer {
-        if held != nil { return .relay }
-        return live ? .ears : .you
-    }
+    private var writer: Writer { held != nil ? .relay : .you }
 
     /// Send what is in the field. A held instruction you edited is also the only
     /// evidence of what you actually said, so sending it teaches the relay.

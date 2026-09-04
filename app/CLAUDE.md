@@ -27,7 +27,9 @@ chat inline as `pastes` — the transcript is its only store.
 Typing and talking are frames on the same socket (`VoiceSession.swift`). The relay opens
 ears only once audio arrives and closes them when it stops, so a typed turn costs no
 Gemini session and gets no spoken reply, and tapping the mic mid-turn joins the turn
-rather than starting a chat beside it. The socket is held while there is a reason to —
+rather than starting a chat beside it. Typing mid-turn barges in — the relay drops the
+reply, runs the typed line, and reads the answer aloud if the mic is open — so the field
+stays yours while live and sending never stops the microphone. The socket is held while there is a reason to —
 the mic is open, a turn this screen sent is running, or the relay says the chat is
 working — and closes otherwise; the relay keeps the chat's work going without it. Typing
 `/` offers the project's skills, filtered on-device from the list the data socket already
