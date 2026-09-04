@@ -17,6 +17,8 @@
 # A device build must be signed, and signing needs an Apple team: put its ID in
 # app/.team (gitignored) or DEVELOPMENT_TEAM. Xcode ▸ Settings ▸ Accounts shows it
 # once an Apple ID is signed in; a free personal team is enough for a cabled phone.
+# On a Mac with no Apple ID in Xcode, the App Store Connect key in app/.asc (see
+# `ship`) proves who is asking instead — for the phone and for TestFlight alike.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -160,18 +162,21 @@ sys.exit('no single paired iPhone on the cable (unlock it and tap Trust; turn on
 phone() {
   require_xcode
   gen
-  local team udid hw
+  local team udid hw auth
   team=$(team)
+  auth=$(asc_auth)
   read -r udid hw < <(phone_id)
   set -o pipefail
-  # -allowProvisioningUpdates lets xcodebuild register the phone and mint the
-  # profile itself, which is otherwise a trip through Xcode's signing pane. It can
-  # only enrol a device it was aimed at, so this builds for *this* phone by UDID —
-  # "generic/platform=iOS" signs for a team that may have no devices at all.
+  # Everything signing needs, xcodebuild does itself: it enrols the phone in the
+  # team, mints the profile, and proves who is asking the same two ways `ship` does —
+  # the API key in app/.asc, or the Apple ID in Xcode. That is why it builds for
+  # *this* phone by UDID: "generic/platform=iOS" names no device to enrol, and signs
+  # for a team that may have none.
+  # shellcheck disable=SC2086  # $auth is a flag list, and empty is a valid one
   xcodebuild -project "$PROJECT" -scheme "$SCHEME" \
     -destination "id=$hw" \
     -derivedDataPath "$DERIVED" \
-    -allowProvisioningUpdates \
+    -allowProvisioningUpdates -allowProvisioningDeviceRegistration $auth \
     DEVELOPMENT_TEAM="$team" \
     -quiet build 2>&1 | filter
   xcrun devicectl device install app --device "$udid" \
