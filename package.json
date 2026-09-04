@@ -40,6 +40,7 @@
     "start": "node --watch server/cli.ts",
     "check": "tsc --noEmit",
     "build": "tsc && node -e \"require('fs').cpSync('server/prompts','dist/prompts',{recursive:true})\"",
+    "prepare": "git config core.hooksPath scripts/hooks 2>/dev/null || true",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

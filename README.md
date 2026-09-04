@@ -180,7 +180,10 @@ of which runs alone.
 
 `npm run check`, `npm run build`, and `./scripts/install-elsewhere.sh` — which packs
 the tarball, installs it into a folder that is not this repo, and starts it there.
-CI runs all three on every push.
+CI runs all three on every push, and so does the pre-commit hook `npm install` sets up
+(`scripts/hooks/pre-commit`), on any commit that touches `server/` or the package
+config — so a package that cannot be installed is caught before it is committed.
+`git commit --no-verify` skips it once.
 
 Publishing is one button: **Actions ▸ Release ▸ Run workflow**, pick patch/minor/major.
 That verifies, bumps, tags, publishes to npm with provenance, and writes the GitHub

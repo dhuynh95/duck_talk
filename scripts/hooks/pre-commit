@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+#
+# Before a commit that touches what ships, verify it the way the release does.
+#
+# CI and the Release button both run the same three commands — typecheck, build, then
+# pack, install elsewhere and start — but only after the push, so a commit that breaks
+# the package used to be found by a red run rather than by the person making it. This
+# runs the same three on the same evidence, at the moment there is still nothing to
+# undo. Nothing new is checked here: see README › Releasing.
+#
+# Only when a staged file decides what ships. A Swift edit or a doc change costs no
+# tarball: the package is `server/`, its build config, and the script that proves it.
+#
+# Installed by `npm install` — the `prepare` script points `core.hooksPath` here, so
+# there is no dependency to add and nothing to copy into .git/hooks.
+#
+#   git commit --no-verify        skip it, once, on purpose
+
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '^(server/|scripts/install-elsewhere\.sh$|package(-lock)?\.json$|tsconfig\.json$)'; then
+  exit 0
+fi
+
+echo "pre-commit: something that ships changed — verifying the package"
+npm run --silent check
+npm run --silent build
+./scripts/install-elsewhere.sh
