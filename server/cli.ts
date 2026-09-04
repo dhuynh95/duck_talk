@@ -19,7 +19,6 @@
  *   duck-talk --port 9000 --cwd ~/work/api
  */
 
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const argv = process.argv.slice(2);
@@ -31,8 +30,15 @@ function flag(name: string): string | undefined {
   return inline?.slice(name.length + 3);
 }
 
+// The folder first, because everything after it is read relative to it: paths.ts takes
+// PROJECT_CWD when it loads, so it is imported only once this line has run — and so
+// is everything that imports it, which is the reason the imports below are dynamic.
+const project = resolve(flag('cwd') ?? process.env['PROJECT_CWD'] ?? process.cwd());
+process.env['PROJECT_CWD'] = project;
+const { VERSION } = await import('./paths.ts');
+
 if (argv.includes('--help') || argv.includes('-h')) {
-  console.log(`duck-talk ${version()} — talk to Claude Code from your phone
+  console.log(`duck-talk ${VERSION} — talk to Claude Code from your phone
 
   duck-talk [--port <n>] [--cwd <path>]
 
@@ -49,23 +55,19 @@ Get a Gemini key at https://aistudio.google.com/apikey (the free tier is enough)
 }
 
 if (argv.includes('--version') || argv.includes('-v')) {
-  console.log(version());
+  console.log(VERSION);
   process.exit(0);
 }
 
 // A key belongs to the project you are in, so the .env that counts is the one in the
 // folder you started from. Loaded before anything reads it, and never over a variable
 // the shell already set — an explicit export outranks a file.
-const project = resolve(flag('cwd') ?? process.env['PROJECT_CWD'] ?? process.cwd());
 for (const file of [resolve(project, '.env'), resolve(process.cwd(), '.env')]) {
   try { process.loadEnvFile(file); break; } catch { /* no .env here, which is normal */ }
 }
 
-process.env['PROJECT_CWD'] = project;
-
 // From here on the terminal is also a file — one per start, a week each, under the
-// project's state directory. Imported dynamically for the same reason server.ts is:
-// paths.ts reads PROJECT_CWD when it loads, so it must load after the line above.
+// project's state directory.
 const logFile = (await import('./log.ts')).openLog();
 
 if (!process.env['GEMINI_API_KEY']) {
@@ -93,18 +95,5 @@ if (process.env['ANTHROPIC_API_KEY']?.trim()) {
 const port = flag('port');
 if (port) process.env['PORT'] = port;
 
-console.log(`duck-talk ${version()}\n  project      ${project}\n  log          ${logFile}`);
+console.log(`duck-talk ${VERSION}\n  project      ${project}\n  log          ${logFile}`);
 await import('./server.ts');
-
-/**
- * The published version, read from the package rather than written into the code.
- * One path works from both homes — `server/cli.ts` and `dist/cli.js` sit at the same
- * depth, which is the reason the build flattens into `dist/` rather than nesting.
- */
-function version(): string {
-  try {
-    return (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
-  } catch {
-    return 'unknown'; // running from somewhere that is neither, which is not a reason to stop
-  }
-}

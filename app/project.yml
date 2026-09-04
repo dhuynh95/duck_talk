@@ -1,6 +1,6 @@
 name: DuckTalk
 options:
-  bundleIdPrefix: dev.conception.ducktalk
+  bundleIdPrefix: dev.conception.duck-talk
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
@@ -8,7 +8,12 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    MARKETING_VERSION: "0.1.0"
+    # The relay's version, from the repo's package.json — `dt gen` puts it in the
+    # environment, and xcodegen substitutes it here. One number for the phone and the
+    # relay, so "app 0.3.0" and "relay 0.3.0" were cut from the same commit, and the
+    # relay's greeting on the data socket can be checked against it. The build number
+    # is Apple's to raise at upload (see ExportOptions.plist), so it stays at 1 here.
+    MARKETING_VERSION: "${DUCK_TALK_VERSION}"
     CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
@@ -26,6 +31,10 @@ targets:
       path: DuckTalk/Resources/Info.plist
       properties:
         CFBundleDisplayName: Duck Talk
+        # From the settings above, or xcodegen writes a literal 1.0 and the version in
+        # this file and the one Apple sees drift apart.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -62,7 +71,7 @@ targets:
           NSAllowsLocalNetworking: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.conception.ducktalk
+        PRODUCT_BUNDLE_IDENTIFIER: dev.conception.duck-talk
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_PREVIEWS: YES
         # DuckTalk/Assets.xcassets, generated from the logo by scripts/app-icon.sh —

@@ -14,6 +14,8 @@ app/*.xcodeproj
 app/.build/
 app/.venv/
 app/.team
+# App Store Connect API key, for `./dt ship` — a credential, never committed
+app/.asc/
 app/DuckTalk/Resources/Info.plist
 app/DuckTalkWidget/Info.plist
 xcuserdata/

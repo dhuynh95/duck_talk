@@ -47,6 +47,25 @@ final class RelayStore {
     /// a relay, where an opened socket is only proof of something accepting TCP — and
     /// false the moment the connection drops. The home screen draws its status from this.
     private(set) var connected = false
+    /// Which relay: its package version, said on open. The app is built with the same
+    /// number (`dt gen` reads the relay's package.json), so the two side by side say
+    /// whether a phone and a relay were cut from one release — see `versionNote`.
+    private(set) var relayVersion: String?
+
+    /// The version this app was built with — the relay's, at the commit it was cut from.
+    static let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+
+    /// One sentence when the two have drifted, nil when they agree or nothing is known.
+    /// Major.minor only: a patch never changes the wire, and a release button raises
+    /// the patch far more often than a phone gets rebuilt.
+    var versionNote: String? {
+        guard let relayVersion, minor(relayVersion) != minor(Self.appVersion) else { return nil }
+        return relayVersion < Self.appVersion
+            ? "This app expects relay \(Self.appVersion) — update with npx duck_talk@latest"
+            : "The relay is \(relayVersion); this app is \(Self.appVersion) — update the app"
+    }
+
+    private func minor(_ v: String) -> String { v.split(separator: ".").prefix(2).joined(separator: ".") }
 
     private var task: URLSessionWebSocketTask?
     /// The address someone wants held. It outlives any one socket, so it is what the
@@ -70,6 +89,7 @@ final class RelayStore {
         // about it — so the pill and the Server sheet go back to not knowing until a frame
         // comes back, rather than calling a fresh address reachable on the last one's word.
         connected = false
+        relayVersion = nil
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         Task { await hold(serverURL) }
@@ -164,6 +184,8 @@ final class RelayStore {
         let id: String?
         let messages: [ChatMessage]?
         let forked: Bool?
+        /// On `relay`, the greeting: the package version this relay is.
+        let version: String?
     }
 
     private func receive(_ json: String) {
@@ -174,6 +196,7 @@ final class RelayStore {
         if let models = state.models { self.models = models }
         if let skills = state.skills { self.skills = skills }
         if let chats = state.chats { self.chats = chats }  // already newest first
+        if let version = state.version { relayVersion = version }
         if let messages = state.messages {
             self.messages = messages
             wasForked = state.forked ?? false

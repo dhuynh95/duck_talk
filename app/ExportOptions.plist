@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  How `./dt ship` hands the archive to Apple.
+
+  `destination: upload` sends it straight to App Store Connect rather than writing an
+  .ipa to disk for a second tool to pick up. `manageAppVersionAndBuildNumber` lets
+  Apple raise the build number past the last one it has, so CURRENT_PROJECT_VERSION in
+  project.yml never has to be bumped by hand and a re-upload of the same version does
+  not collide. The team id is not here: `dt` copies this file and inserts it from
+  app/.team, the same place the device build reads it, so it is written down once.
+-->
+<plist version="1.0">
+<dict>
+  <key>method</key>
+  <string>app-store-connect</string>
+  <key>destination</key>
+  <string>upload</string>
+  <key>signingStyle</key>
+  <string>automatic</string>
+  <key>manageAppVersionAndBuildNumber</key>
+  <true/>
+  <key>uploadSymbols</key>
+  <true/>
+</dict>
+</plist>

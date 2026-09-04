@@ -7,7 +7,9 @@ tooling to build, run and drive it from the command line.
 
 ## Requirements
 
-- Xcode 16+ (with an iOS simulator runtime: `xcodebuild -downloadPlatform iOS`)
+- Xcode 16+ from the App Store, then `sudo xcode-select -s /Applications/Xcode.app` —
+  a Mac with only the Command Line Tools has `xcodebuild` on PATH and it refuses to
+  build; `./dt` says so. iOS simulator runtime: `xcodebuild -downloadPlatform iOS`.
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
 - [AXe](https://github.com/cameroncooke/AXe) — `brew install cameroncooke/axe/axe`,
   only needed for the MCP server below

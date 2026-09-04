@@ -104,12 +104,17 @@ node server/probe.ts "what is the latest commit"
 
 ```bash
 git clone https://github.com/dhuynh95/duck_talk.git && cd duck_talk
-npm install
+npm ci        # exactly what the lockfile says — after every pull, too
 npm start     # the relay, watching, serving this repo
 ```
 
 There is no build step in the loop: Node runs the TypeScript. `npm run build` exists
-only for the package, which cannot assume that of a stranger's Node.
+only for the package, which cannot assume that of a stranger's Node. A `node_modules`
+older than the lockfile fails `npm run check` on SDK types that do not exist yet;
+`npm ci` is the fix.
+
+The iPhone app is a separate build with its own tooling — see
+[`app/README.md`](app/README.md) › Requirements.
 
 The first version of this was a browser client against an Express backend. It is at
 the **`web-app`** tag — `git show web-app`. Everything that mattered is in `server/`;

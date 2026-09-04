@@ -119,7 +119,10 @@ record names it, which is how a chat reopened next week still shows it; a paste 
 nowhere, because the transcript keeps the block and `chat` reads it back from there.
 
 `?data=1` opens a connection that edits what the relay owns and nothing else — no
-voice session, no Gemini, no Claude:
+voice session, no Gemini, no Claude. It opens with `{"type":"relay","version":"…"}`
+— the package version, which the app is built with too (`app/dt gen` reads the same
+`package.json`), so the phone shows the two numbers side by side and says when they
+have drifted. Then:
 
 | phone → server | answer |
 |---|---|

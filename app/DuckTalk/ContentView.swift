@@ -1034,6 +1034,18 @@ struct ServerView: View {
                         .font(.footnote)
                         .foregroundStyle(reach.color)
                         .accessibilityIdentifier("reach")
+                    // Which relay answered, beside which app is asking. The same number
+                    // when both were cut from one release; a sentence when they were not.
+                    if let version = relay.relayVersion {
+                        Label("Relay \(version) · App \(RelayStore.appVersion)", systemImage: "number")
+                            .font(.footnote)
+                            .foregroundStyle(Brand.secondaryText)
+                            .accessibilityIdentifier("versions")
+                        if let note = relay.versionNote {
+                            Text(note).font(.footnote).foregroundStyle(.orange)
+                                .accessibilityIdentifier("version-note")
+                        }
+                    }
                 } footer: {
                     Text("Copy one of the addresses the relay prints when it starts: `localhost` for the simulator, your Mac\u{2019}s Wi-Fi address for a phone on the same network, or its `wss://\u{2026}ts.net` name to reach it from anywhere, cellular included.")
                 }

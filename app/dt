@@ -8,6 +8,7 @@
 #   ./dt logs [seconds]   app's stdout/stderr + os_log for N seconds (default 10)
 #   ./dt udid             UDID of the target simulator, booting it if needed
 #   ./dt phone            build for the iPhone on the cable, install, launch
+#   ./dt ship             archive signed for distribution and upload to TestFlight
 #   ./dt mcp              serve the ios-sim MCP over HTTP, reloading on every edit
 #   ./dt clean            drop derived data
 #
@@ -22,7 +23,7 @@ cd "$(dirname "$0")"
 
 SCHEME=DuckTalk
 PROJECT=DuckTalk.xcodeproj
-BUNDLE_ID=dev.conception.ducktalk
+BUNDLE_ID=dev.conception.duck-talk
 SIM="${SIM:-iPhone 17 Pro}"
 DERIVED=.build
 
@@ -45,7 +46,10 @@ filter() {
 # `./dt build` see the same project from the same derived data. Absolute paths, so it
 # is written here rather than committed. Skipped without `brew install xcode-build-server`.
 gen() {
-  xcodegen generate --quiet
+  # The app's version is the relay's: one package.json, read here and by the relay at
+  # startup, so a phone and a relay from one release carry one number. xcodegen
+  # substitutes ${DUCK_TALK_VERSION} into project.yml.
+  DUCK_TALK_VERSION=$(node -p "require('../package.json').version") xcodegen generate --quiet
   local bsp
   bsp=$(command -v xcode-build-server) || return 0
   cat > buildServer.json <<JSON
@@ -174,6 +178,66 @@ phone() {
   # it is the one process that knows every way it can be reached.
 }
 
+# --- App Store Connect ------------------------------------------------------
+# The release build, signed for distribution and handed to TestFlight. Everything
+# a device build needed plus one thing: proof to Apple of who is uploading. Two ways
+# to give it, and xcodebuild takes either — an App Store Connect API key in
+# app/.asc/ (gitignored: AuthKey_<ID>.p8 beside an `issuer` file holding the issuer
+# id), which is headless and works in CI; or the Apple ID signed into Xcode ▸
+# Settings ▸ Accounts, which works only on a Mac someone has sat at. The key comes
+# from App Store Connect ▸ Users and Access ▸ Integrations ▸ Team Keys, role
+# App Manager, and downloads exactly once.
+#
+# The certificate and the profile are minted by Apple on the way through
+# (-allowProvisioningUpdates), so a fresh Mac needs nothing in its keychain first —
+# the key has to be an Admin one, though: an App Manager key may upload but may not
+# mint the distribution certificate ("Cloud signing permission error", measured).
+# The build number is App Store Connect's to raise (see ExportOptions.plist), so
+# nothing here is bumped by hand and two uploads of one version never collide.
+#
+# The archive itself is unsigned. Archiving with automatic signing wants a
+# *development* profile, and a team with no registered device cannot have one; the
+# export step is what signs for distribution anyway, so signing at archive time
+# bought nothing but that failure.
+
+asc_auth() {
+  local key
+  key=$(ls .asc/AuthKey_*.p8 2>/dev/null | head -1) || true
+  [ -n "$key" ] || return 0 # no key: xcodebuild falls back to the account in Xcode
+  local id=${key#.asc/AuthKey_}; id=${id%.p8}
+  [ -f .asc/issuer ] || { echo "error: .asc/issuer is missing — the issuer id shown above the key list" >&2; exit 1; }
+  echo "-authenticationKeyPath $PWD/$key -authenticationKeyID $id -authenticationKeyIssuerID $(tr -d '[:space:]' < .asc/issuer)"
+}
+
+ship() {
+  require_xcode
+  gen
+  local team auth archive="$DERIVED/$SCHEME.xcarchive"
+  team=$(team)
+  auth=$(asc_auth)
+  set -o pipefail
+  rm -rf "$archive"
+  # shellcheck disable=SC2086  # $auth is a flag list, and empty is a valid one
+  xcodebuild -project "$PROJECT" -scheme "$SCHEME" \
+    -destination 'generic/platform=iOS' \
+    -derivedDataPath "$DERIVED" \
+    -archivePath "$archive" \
+    CODE_SIGNING_ALLOWED=NO \
+    -quiet archive 2>&1 | filter
+  # The team rides in from .team rather than being written into the plist twice; an
+  # unsigned archive carries none of its own, and export refuses without one.
+  local options="$DERIVED/ExportOptions.plist"
+  cp ExportOptions.plist "$options"
+  plutil -insert teamID -string "$team" "$options"
+  # shellcheck disable=SC2086
+  xcodebuild -exportArchive \
+    -archivePath "$archive" \
+    -exportOptionsPlist "$options" \
+    -exportPath "$DERIVED/export" \
+    -allowProvisioningUpdates $auth 2>&1 | grep -vE '^\s*$|IDEDistributionLogging' | tail -20
+  echo "uploaded — processing takes a few minutes, then it appears under TestFlight ▸ Builds"
+}
+
 shot() {
   local out="${1:-$DERIVED/shot.png}"
   mkdir -p "$(dirname "$out")"
@@ -198,6 +262,7 @@ case "${1:-run}" in
   logs)  logs "${2:-10}" ;;
   udid)  boot ;;
   phone) phone ;;
+  ship)  ship ;;
   mcp)   mcp ;;
   clean) rm -rf "$DERIVED" && echo "cleaned $DERIVED" ;;
   *)     sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2 ; exit 1 ;;

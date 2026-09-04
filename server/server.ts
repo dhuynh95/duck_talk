@@ -49,8 +49,10 @@
  * `?data=1` is a connection that reads and edits what the relay can see and nothing
  * else — the corrections, the prompts it says to each model, the models themselves, the
  * project's skills, and the chats — so the phone can show those screens with no voice
- * session running. Every message is answered with all of it, so the phone never has
- * to ask twice or guess what the files now say. The exceptions are the two parts that are not small: one chat's messages, sent
+ * session running. It opens with `relay`: the package version, which is also the app's
+ * version (both read package.json), so the phone can put the two side by side. Every
+ * message after that is answered with all of the state, so the phone never has to ask
+ * twice or guess what the files now say. The exceptions are the two parts that are not small: one chat's messages, sent
  * when asked for by `chat_open`, and the media, sent as a binary frame when asked for
  * by `clip_get` or `image_get` — the only binary a data connection ever carries, and one
  * question gets one frame, so there is nothing to tell apart. `fork` branches a chat at one message and answers
@@ -75,6 +77,7 @@ import { read as readClip } from './clips.ts';
 import { read as readImage } from './images.ts';
 import { load, remove, save } from './corrections.ts';
 import { watch, working } from './live.ts';
+import { VERSION } from './paths.ts';
 import { all as prompts, isName, write as writePrompt } from './prompts.ts';
 import { reach } from './reach.ts';
 
@@ -132,6 +135,11 @@ wss.on('connection', (ws, req) => {
   // is answered with all of it, so the phone never has to guess what the files say.
   if (url.searchParams.get('data') === '1') {
     dataConnections.add(ws);
+    // Said first and once: which relay this is. The phone was cut from the same
+    // package version (app/dt reads the same file), so the two numbers side by side are
+    // the whole compatibility story — and a frame that arrives on open is also the
+    // earliest proof that a relay, not just a TCP port, is answering.
+    ws.send(JSON.stringify({ type: 'relay', version: VERSION }));
     ws.on('message', async (raw, isBinary) => {
       if (isBinary) return;
       const f = parse(String(raw));

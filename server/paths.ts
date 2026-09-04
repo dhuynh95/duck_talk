@@ -21,7 +21,7 @@
  * to the first.
  */
 
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -47,3 +47,18 @@ export function state(...parts: string[]): string {
 export function packaged(relative: string): string {
   return fileURLToPath(new URL(relative, import.meta.url));
 }
+
+/**
+ * The published version, read from the package rather than written into the code.
+ * One path works from both homes — `server/` and `dist/` sit at the same depth, which
+ * is the reason the build flattens into `dist/` rather than nesting. It is also the
+ * app's version: `app/dt gen` reads the same file, so a phone and a relay cut from one
+ * release carry one number, and the relay says it to every data connection.
+ */
+export const VERSION: string = (() => {
+  try {
+    return (JSON.parse(readFileSync(packaged('../package.json'), 'utf8')) as { version: string }).version;
+  } catch {
+    return 'unknown'; // running from somewhere that is neither, which is not a reason to stop
+  }
+})();
