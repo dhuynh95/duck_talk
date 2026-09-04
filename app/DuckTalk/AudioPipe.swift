@@ -281,9 +281,13 @@ final class AudioPipe {
     /// Queue one chunk of 24 kHz Int16 PCM. The player node plays chunks back to back.
     func play(_ pcm: Data) {
         let frames = AVAudioFrameCount(pcm.count / 2)
-        // Output off: consumed on the spot, and reported as such — the same report a
-        // played-out buffer gives, so the relay ends the turn when synthesis does.
-        guard output else { playedMs += Double(frames) / 24; onDrained?(playedMs); return }
+        // Output off: consumed on the spot, and in every respect a buffer that played
+        // out — counted, reported, and the speaker dry as of *now*. Through `drained`
+        // rather than a bare report, because dryness is what the chimes read: stamped
+        // only at the flush that switched output off, the speaker looked dry for the
+        // whole time it was consuming, and switching back on chimed until the next
+        // chunk landed.
+        guard output else { playedMs += Double(frames) / 24; drained(); return }
         guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: speakerFormat, frameCapacity: frames) else { return }
         buffer.frameLength = frames
         let out = buffer.floatChannelData![0]
@@ -308,9 +312,10 @@ final class AudioPipe {
         if !player.isPlaying { player.play() }
     }
 
-    /// The speaker has nothing left to play. Three ways to arrive: the reply ran out,
-    /// a barge-in dropped it, or a rebuild took it — and the one thing that is true in
-    /// all three is what this says, so all three come through here.
+    /// The speaker has nothing left to play. Four ways to arrive: the reply ran out, a
+    /// barge-in dropped it, a rebuild took it, or output is off and a buffer was consumed
+    /// on arrival — and the one thing that is true in all four is what this says, so all
+    /// four come through here.
     ///
     /// Abandoning the queue is why `epoch` exists. `.dataPlayedBack` fires for every
     /// scheduled buffer, including the ones `player.stop()` throws away unplayed, so

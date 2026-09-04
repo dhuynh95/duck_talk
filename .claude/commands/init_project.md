@@ -122,6 +122,8 @@ If you are asked to start one yourself, detach it (`nohup … &`). A server star
 
 NEVER use AskQuestions to send structured questions. Raw text always.
 
+Think from first principles before adding anything. Ask what the thing *is* — a fact about the listener, the project, the chat — and that says which side owns it; then look for the primitive already there (a mute is silence instead of the room; a turn's end is what the speaker reports played) before reaching for a new frame, flag or file. A change that needs the other side to learn something is only right when the fact really lives there.
+
 All @-referenced files are already loaded in context. Do NOT re-read them.
 
 If you have to read new files:
