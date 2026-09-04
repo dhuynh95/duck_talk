@@ -12,8 +12,10 @@ import SwiftUI
 /// lands in the same field, and the same arrow sends it, edited or not. An edit is what
 /// teaches the relay; ignoring it is how you drop it.
 ///
-/// Talking and typing are not exclusive: the field is yours whether or not the ears are
-/// open, and what they hear is a line above it. Sending while live is a barge-in — the
+/// The field holds text that waits for your arrow — a draft, or an instruction held for
+/// review. What the ears hear in direct mode waits for nobody: the relay runs it, so it
+/// is drawn where it will end up, as your bubble in the transcript, dimmed until it
+/// has. Talking and typing are therefore not exclusive. Sending while live is a barge-in — the
 /// relay drops the reply it was reading and answers the typed line aloud — so there is
 /// no mode to switch and the microphone never stops because you typed.
 ///
@@ -205,7 +207,8 @@ struct ContentView: View {
     private var conversation: some View {
         // Anywhere that is not the composer is somewhere to put the keyboard away.
         Group {
-            if session.lines.isEmpty { blank } else { transcript }
+            // A first utterance is already a line of the conversation, tentative or not.
+            if session.lines.isEmpty, session.utterance == nil { blank } else { transcript }
         }
         .contentShape(Rectangle())
         .onTapGesture { typing = false }
@@ -400,8 +403,8 @@ struct ContentView: View {
         VStack(spacing: 10) {
             // One field, two writers: you, and the relay when it holds an instruction
             // back for you to look at. The ears do not write the field — what is being
-            // said is a line above it, not history until it has been sent — so a sentence
-            // can be typed while one is being heard, and neither takes the other's place.
+            // said is a bubble in the transcript until it has run — so a sentence can be
+            // typed while one is being heard, and neither takes the other's place.
             // Held for review, and the audio it was heard from: play it and the text
             // below stops being a guess. Inline rather than a sheet — mid-hold you are
             // deciding whether to *run* something, and nothing modal belongs between
@@ -456,19 +459,6 @@ struct ContentView: View {
                 }
                 .scrollIndicators(.hidden)
                 .frame(height: 78)
-            }
-            // What the ears are hearing, revised as you speak. A sentence still being
-            // transcribed grows at its end, and the end is the part being read — so a
-            // long one loses its head, not its tail.
-            if let utterance = session.utterance {
-                Text(utterance)
-                    .italic()
-                    .foregroundStyle(Brand.secondaryText)
-                    .lineLimit(6)
-                    .truncationMode(.head)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("utterance")
-                    .accessibilityLabel("Heard")
             }
             if writer == .relay, let clip = session.heardClip {
                 // The spacer, not a frame on the chip: a capsule you can miss by
@@ -779,11 +769,24 @@ struct ContentView: View {
     private var transcript: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
-                // First in the flipped stack is last on the screen: the row under the
-                // conversation that says Claude is still at it. From the relay's own
-                // word, not inferred from the last tool event seen, so it is right for
-                // a turn started on another screen and for tasks running after the
-                // answer — and it is here whether or not a microphone is open.
+                // First in the flipped stack is last on the screen. Newest of all is
+                // what you are saying right now: your bubble, drawn by the same row a
+                // sent line gets and dimmed because it has not run yet. Revised in place
+                // as the ears revise it — one identity, so a partial does not re-enter —
+                // and no glyphs, since a line with no place in the store has no verbs.
+                // When the relay runs it, `commit` appends the real line in this spot.
+                if let utterance = session.utterance {
+                    row(VoiceSession.Line(kind: .user, text: utterance))
+                        .opacity(0.55)
+                        .id("utterance")
+                        .accessibilityIdentifier("utterance")
+                        .scaleEffect(x: 1, y: -1)
+                }
+                // Then the row under the conversation that says Claude is still at it.
+                // From the relay's own word, not inferred from the last tool event seen,
+                // so it is right for a turn started on another screen and for tasks
+                // running after the answer — and it is here whether or not a microphone
+                // is open.
                 if working { workingRow.scaleEffect(x: 1, y: -1) }
                 ForEach(session.lines.reversed()) { line in
                     row(line).scaleEffect(x: 1, y: -1)

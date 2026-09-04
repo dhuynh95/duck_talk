@@ -24,7 +24,9 @@ over 800 characters leaves the field and rides the same holder as a TXT chip: it
 Claude whole as a `document` block, the way Claude.ai sends one, and comes back with the
 chat inline as `pastes` — the transcript is its only store.
 
-Typing and talking are frames on the same socket (`VoiceSession.swift`). The relay opens
+What the ears are hearing is drawn as your bubble in the transcript, dimmed until the
+relay has run it; the field holds only text that waits for your arrow — a draft, or an
+instruction held for review. Typing and talking are frames on the same socket (`VoiceSession.swift`). The relay opens
 ears only once audio arrives and closes them when it stops, so a typed turn costs no
 Gemini session and gets no spoken reply, and tapping the mic mid-turn joins the turn
 rather than starting a chat beside it. Typing mid-turn barges in — the relay drops the
