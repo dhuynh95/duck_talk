@@ -1,6 +1,6 @@
 {
   "name": "duck_talk",
-  "version": "0.2.1",
+  "version": "1.0.0",
   "type": "module",
   "description": "Talk to Claude Code from your phone: a voice relay you run in the folder you want it to work on",
   "keywords": [
