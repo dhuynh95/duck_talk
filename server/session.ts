@@ -422,14 +422,26 @@ export class Session {
     // What the speaker has really played of this turn's reply. The only honest answer
     // to "was it heard": everything else here is arithmetic over what was sent.
     //
-    // Recorded only while a turn is in flight, for the reason speech_end is: the
+    // Heeded only while a turn is in flight, for the reason speech_end is: the
     // report trails the audio by a beat, and on an ordinary turn the wait below has
     // already ended on its own arithmetic — so a report arriving after that would
     // stamp the blank turn that follows with the last turn's number. The case this
     // exists for is the other one, where the speaker falls silent seconds early and
     // says so while the turn is very much still running.
+    //
+    // The voice is told under the same guard, and it has to be: a barge-in flushes
+    // the phone's speaker, which reports what it had played — of the turn just
+    // cancelled, and after the voice was reset for the next one. Fed through, that
+    // number stood as the next reply's "heard" before a byte of it was sent, so a
+    // reply shorter than the last one's played tail ended the moment it was sent
+    // (measured: a 1.2s answer recorded as 8.6s heard). Between turns the speaker
+    // has nothing of this session's to report, and nothing is listening for it.
     else if (msg.type === 'played' && typeof msg.ms === 'number') {
-      if (this.state !== 'user') this.turn.heard_ms = msg.ms;
+      if (this.state === 'user') return;
+      // Beside what was sent, so the two halves of the subtraction sit on one line
+      // when a reply stops early — the phone's own number, not arithmetic over it.
+      this.log(`phone: played ${(msg.ms / 1000).toFixed(1)}s of ${(this.turn.voice_ms / 1000).toFixed(1)}s sent`);
+      this.turn.heard_ms = msg.ms;
       this.voice.heard(msg.ms);
     }
     else if (msg.type === 'text' && typeof msg.text === 'string') this.typed(msg.text);

@@ -285,44 +285,74 @@ function audio(chunk: GenerateContentResponse): Buffer | null {
  * syllable. If a shorter opener ever makes that audible, the fix is to let one
  * request run ahead of the sentence being read, not to go back to waiting.
  *
- * `maxWaitMs` is a ceiling on the first character's wait, not a quiet timer: it
- * starts when the buffer stops being empty and is not restarted by later text.
- * Restarting it meant it never fired while Claude streamed, so a reply that never
- * reached a boundary was not read until the turn ended.
+ * One invariant under both rules: text is handed over only at a pause. A request
+ * that ends mid-phrase is read with a full-sentence fall, and the next one starts
+ * with a fresh rise, so the seam is audible however fast the audio arrives — heard
+ * on a 209-character opening sentence, cut at the cap a few words in. So the cap is
+ * not a cutter. `maxWaitMs` after a chunk starts waiting it *widens what counts as
+ * a pause*, from a full stop to a clause break — comma, dash, colon — and the same
+ * scan then cuts at the last of those. Prose meant to be spoken has one every few
+ * words, so the ceiling holds within a beat of where it was, and the fragment ends
+ * on a breath. Text with no pause in it at all is not speech and waits for the
+ * turn's end, where `flush` sends it whole.
+ *
+ * The timer is per chunk: it starts when the buffer stops being empty and is not
+ * restarted by later text. Restarting it meant it never fired while Claude
+ * streamed, so a reply slow to reach a full stop was not read until the turn ended.
  */
 function sentenceBuffer(onFlush: (text: string) => void, minChars = 40, maxWaitMs = 1000) {
   let buf = '';
   let timer: ReturnType<typeof setTimeout> | undefined;
   let started = false; // a sentence of this turn has already been sent
+  let overdue = false; // this chunk has waited the cap: a clause break is a pause too
   const stopTimer = () => { if (timer) { clearTimeout(timer); timer = undefined; } };
   const emit = (text: string) => { started = true; onFlush(text); };
-  // The cap firing: send what is buffered, but the turn is not over.
-  const cut = () => { stopTimer(); if (buf.trim()) { emit(buf.trim()); buf = ''; } };
+  /** Where the buffer can be cut: the pauses admissible right now, and which one.
+   *  The first sentence cuts at the *first* full stop and the rest at the last: one
+   *  is racing to make a sound, the others are filling a queue that is already
+   *  playing, and a longer request there is cheaper than a chopped one. Overdue, the
+   *  first sentence takes the last pause too — everything buffered has waited. */
+  const pause = (): number => {
+    const marks = overdue ? '.!?,;:—' : '.!?';
+    let at = -1;
+    for (let i = 0; i < buf.length; i++) {
+      if (marks.includes(buf[i]!) && (i === buf.length - 1 || buf[i + 1] === ' ' || buf[i + 1] === '\n')) {
+        at = i;
+        if (!started && !overdue) break;
+      }
+    }
+    return at;
+  };
+  /** Cut if there is a pause worth cutting at, and keep the cap armed if not. */
+  const scan = (): void => {
+    const at = pause();
+    if (at >= 0 && (!started || at + 1 >= minChars)) {
+      const chunk = buf.slice(0, at + 1).trim();
+      buf = buf.slice(at + 1).trimStart();
+      stopTimer();
+      overdue = false;
+      emit(chunk);
+    }
+    // The first chunk's wait is the listener's; a later chunk's is the queue's, and
+    // synthesis outruns playback three to one, so it can hold out for the full stop
+    // three times as long before a clause break has to do.
+    if (buf && !timer && !overdue) timer = setTimeout(() => { timer = undefined; overdue = true; scan(); }, started ? 3 * maxWaitMs : maxWaitMs);
+    else if (!buf) stopTimer();
+  };
   return {
     push(text: string) {
       buf += text;
-      // The first sentence cuts at the *first* boundary and the rest at the last:
-      // one is racing to make a sound, the others are filling a queue that is
-      // already playing, and a longer request there is cheaper than a chopped one.
-      let at = -1;
-      for (let i = 0; i < buf.length; i++) {
-        if ('.!?'.includes(buf[i]!) && (i === buf.length - 1 || buf[i + 1] === ' ' || buf[i + 1] === '\n')) {
-          at = i;
-          if (!started) break;
-        }
-      }
-      if (at >= 0 && (!started || at + 1 >= minChars)) {
-        const chunk = buf.slice(0, at + 1).trim();
-        buf = buf.slice(at + 1).trimStart();
-        stopTimer();
-        emit(chunk);
-      }
-      if (buf && !timer) timer = setTimeout(cut, maxWaitMs);
-      else if (!buf) stopTimer();
+      scan();
     },
-    /** No more text this turn: send the tail, and the next sentence is a first one again. */
-    flush() { cut(); started = false; },
-    clear() { stopTimer(); buf = ''; started = false; },
+    /** No more text this turn: the tail is the end of the reply, which is a pause by
+     *  definition, so it goes as it is — and the next sentence is a first one again. */
+    flush() {
+      stopTimer();
+      if (buf.trim()) emit(buf.trim());
+      buf = '';
+      started = overdue = false;
+    },
+    clear() { stopTimer(); buf = ''; started = overdue = false; },
   };
 }
 
