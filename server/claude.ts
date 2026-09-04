@@ -178,10 +178,10 @@ export interface Capabilities {
   /** Every model this account may use, each with the words to show for it. Empty for
    *  the same reasons `account` is null. */
   models: ModelInfo[];
-  /** The project's skills, each invokable by sending `/name` as an instruction — the
-   *  CLI expands it into the turn itself, so the Skill tool stays disallowed and the
-   *  model still cannot reach for one on its own. Empty for the same reasons `account`
-   *  is null. */
+  /** The project's skills, for the composer's "/" autocomplete — sending `/name` as an
+   *  instruction has the CLI expand it into the turn itself. Claude can also reach for
+   *  one unasked, which is the `skills` option below; this list is what the phone shows,
+   *  not what the model may use. Empty for the same reasons `account` is null. */
   skills: SlashCommand[];
 }
 
@@ -403,7 +403,18 @@ function openClaude(cb: ClaudeCallbacks, resume?: string): Claude {
     // Claude the tool exists. The way out of Plan is the capsule on the phone, not
     // something Claude asks for: offered the tool it cannot use, it spends the reply
     // explaining that the exit is disabled instead of saying it cannot write.
-    disallowedTools: ['AskUserQuestion', 'Skill', 'ExitPlanMode'],
+    disallowedTools: ['AskUserQuestion', 'ExitPlanMode'],
+    // Every skill this project has, reachable by Claude itself — not only by the `/name`
+    // the phone sends. Withholding it never withheld anything: with the Skill tool
+    // disallowed the model listed the directory and read SKILL.md with Bash, and
+    // followed the procedure anyway (measured). What the block cost was the good path,
+    // where the CLI loads the skill and says so as a tool call the phone can draw.
+    //
+    // This option is the one switch, and `'Skill'` in `allowedTools` is the deprecated
+    // spelling of it. Omitting it is not "skills off" — the CLI's own default already
+    // enables them — so it is set here to say what the relay means rather than to
+    // inherit it.
+    skills: 'all',
     env: subprocessEnv(),
     stderr: (line: string) => { if (process.env['DEBUG']) console.debug('sdk:', line.trimEnd()); },
   };
