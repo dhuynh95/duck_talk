@@ -512,15 +512,14 @@ struct ContentView: View {
         .floating(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         // Listening, the box is the only live thing on the screen, and its edge says
         // so — in the accent, which is where the orange goes once it has left the
-        // microphone. Nothing else changes, because nothing else has to.
-        // Orange means live *and hearing*. Muted, the edge stays drawn — the session is
-        // still up — but in the border grey, and the orange moves to the mute button.
+        // microphone. Nothing else changes, because nothing else has to: the edge means
+        // live and only live. Mute and output-off each light their own glyph, and the
+        // flat waveform says the room is not being heard.
         .overlay {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(live ? (session.muted ? Brand.border : Brand.accent) : .clear, lineWidth: 2)
+                .strokeBorder(live ? Brand.accent : .clear, lineWidth: 2)
         }
         .animation(.easeOut(duration: 0.2), value: live)
-        .animation(.easeOut(duration: 0.2), value: session.muted)
         .onChange(of: session.pending) { held = session.pending }
     }
 
