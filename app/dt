@@ -47,9 +47,12 @@ filter() {
 # is written here rather than committed. Skipped without `brew install xcode-build-server`.
 gen() {
   # The app's version is the relay's: one package.json, read here and by the relay at
-  # startup, so a phone and a relay from one release carry one number. xcodegen
-  # substitutes ${DUCK_TALK_VERSION} into project.yml.
-  DUCK_TALK_VERSION=$(node -p "require('../package.json').version") xcodegen generate --quiet
+  # startup, so a phone and a relay from one release carry one number. The build
+  # number is the commit count — monotonic, and it names the commit. xcodegen
+  # substitutes both into project.yml.
+  DUCK_TALK_VERSION=$(node -p "require('../package.json').version") \
+  DUCK_TALK_BUILD=$(git rev-list --count HEAD) \
+    xcodegen generate --quiet
   local bsp
   bsp=$(command -v xcode-build-server) || return 0
   cat > buildServer.json <<JSON
@@ -192,8 +195,8 @@ phone() {
 # (-allowProvisioningUpdates), so a fresh Mac needs nothing in its keychain first —
 # the key has to be an Admin one, though: an App Manager key may upload but may not
 # mint the distribution certificate ("Cloud signing permission error", measured).
-# The build number is App Store Connect's to raise (see ExportOptions.plist), so
-# nothing here is bumped by hand and two uploads of one version never collide.
+# The build number is the commit count (see `gen`), so nothing here is bumped by
+# hand and two uploads never collide unless they are the same commit.
 #
 # The archive itself is unsigned. Archiving with automatic signing wants a
 # *development* profile, and a team with no registered device cannot have one; the

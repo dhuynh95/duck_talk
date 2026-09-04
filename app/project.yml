@@ -8,13 +8,15 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    # The relay's version, from the repo's package.json — `dt gen` puts it in the
-    # environment, and xcodegen substitutes it here. One number for the phone and the
-    # relay, so "app 0.3.0" and "relay 0.3.0" were cut from the same commit, and the
-    # relay's greeting on the data socket can be checked against it. The build number
-    # is Apple's to raise at upload (see ExportOptions.plist), so it stays at 1 here.
+    # Both from the repo, put in the environment by `dt gen` and substituted here, so
+    # neither is ever typed. The version is the relay's, from package.json: "app 0.3.0"
+    # and "relay 0.3.0" were cut from one commit, and the relay's greeting on the data
+    # socket can be checked against it. The build number is the commit count, which
+    # only ever grows — Apple refuses a build number it has seen before under any
+    # version of the app (measured: 0.2.1 (1) after 1.0 (1) processed as Invalid
+    # Binary), and it names the commit a build came from.
     MARKETING_VERSION: "${DUCK_TALK_VERSION}"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "${DUCK_TALK_BUILD}"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
 

@@ -4,11 +4,12 @@
   How `./dt ship` hands the archive to Apple.
 
   `destination: upload` sends it straight to App Store Connect rather than writing an
-  .ipa to disk for a second tool to pick up. `manageAppVersionAndBuildNumber` lets
-  Apple raise the build number past the last one it has, so CURRENT_PROJECT_VERSION in
-  project.yml never has to be bumped by hand and a re-upload of the same version does
-  not collide. The team id is not here: `dt` copies this file and inserts it from
-  app/.team, the same place the device build reads it, so it is written down once.
+  .ipa to disk for a second tool to pick up. The version and build number are the
+  archive's own — package.json and the commit count, see project.yml — and Apple is
+  not asked to manage either: its option only renumbers within one version, and a
+  number it has seen under another version still fails processing. The team id is not
+  here: `dt` copies this file and inserts it from app/.team, the same place the device
+  build reads it, so it is written down once.
 -->
 <plist version="1.0">
 <dict>
@@ -18,8 +19,6 @@
   <string>upload</string>
   <key>signingStyle</key>
   <string>automatic</string>
-  <key>manageAppVersionAndBuildNumber</key>
-  <true/>
   <key>uploadSymbols</key>
   <true/>
 </dict>
