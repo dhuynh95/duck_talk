@@ -17,8 +17,10 @@
  *
  *   duck-talk                       serve this folder on :8765
  *   duck-talk --port 9000 --cwd ~/work/api
+ *   duck-talk --awake               and keep this Mac from idle sleep meanwhile
  */
 
+import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 
 const argv = process.argv.slice(2);
@@ -46,6 +48,8 @@ if (argv.includes('--help') || argv.includes('-h')) {
                 Tailscale front door opens onto one port, and moving would leave
                 the phone talking to whatever is still behind it.
   --cwd <path>  the project Claude works in (default: this folder)
+  --awake       keep this Mac from idle sleep while the relay runs (KEEP_AWAKE=1).
+                Idle sleep only: a closed lid still sleeps the Mac.
   --version     print the version and exit
 
 Needs GEMINI_API_KEY in the environment or in a .env file in this folder, and
@@ -95,5 +99,25 @@ if (process.env['ANTHROPIC_API_KEY']?.trim()) {
 const port = flag('port');
 if (port) process.env['PORT'] = port;
 
+// A phone reaching a Mac that has gone to sleep reads "Offline", with nothing to say
+// why — so the relay can hold the Mac awake for as long as it serves. Off unless asked:
+// a command run by `npx` must not rewrite the machine's power policy on its own, and a
+// laptop kept awake in a bag is real damage. Said at startup either way, because the
+// moment to learn the flag exists is now and not after a night of silence.
+//
+// `caffeinate -w` ties the assertion to this pid, so it ends however this process ends
+// and there is nothing to release. Idle sleep only (`-i`): a closed lid still sleeps,
+// and the setting that changes that needs sudo, which is not this tool's to ask for.
+if (argv.includes('--awake')) process.env['KEEP_AWAKE'] = '1';
+const awake = process.platform === 'darwin' && process.env['KEEP_AWAKE'] === '1';
+if (awake) {
+  spawn('caffeinate', ['-i', '-w', String(process.pid)], { stdio: 'ignore' })
+    .on('error', (e) => console.error(`could not keep the Mac awake: ${e.message}`))
+    .unref(); // holds the Mac, not the event loop
+}
+
 console.log(`duck-talk ${VERSION}\n  project      ${project}\n  log          ${logFile}`);
+if (process.platform === 'darwin') {
+  console.log(`  awake        ${awake ? 'keeping this Mac from idle sleep' : 'no — pass --awake, or set KEEP_AWAKE=1, to keep this Mac from sleeping'}`);
+}
 await import('./server.ts');
