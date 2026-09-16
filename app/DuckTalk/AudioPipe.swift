@@ -126,6 +126,27 @@ final class AudioPipe {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
 
+    /// The player belongs to the engine for the life of the pipe, not for the life of a
+    /// run. Attached here rather than in `start`, because attachment is what makes a node
+    /// addressable at all: detached, `stop()` and `play()` do not fail, they raise — and
+    /// the pipe is configured before it is started, so `output` arriving switched off
+    /// reached `flush` while the graph was still empty and took the app down.
+    ///
+    /// Attached from birth, the three bits above are what they claim to be: intent, set
+    /// in any order, before or during a run.
+    init() {
+        engine.attach(player)
+    }
+
+    /// The transport, running — the one precondition a scheduled buffer has, and a node
+    /// plays only while its engine does. Four paths need it (a start, a rebuild, a
+    /// session coming back, a buffer arriving), so it is said once rather than spelled
+    /// three ways; `flush` needs it not at all, since the next buffer comes through here.
+    private func playing() {
+        guard engine.isRunning, !player.isPlaying else { return }
+        player.play()
+    }
+
     private let micFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)!
     private let speakerFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24_000, channels: 1, interleaved: false)!
 
@@ -141,21 +162,23 @@ final class AudioPipe {
     /// handshake — activation is the system's under CallKit, and the stub's in the
     /// simulator — so this file never says `setActive` in either direction.
     ///
-    /// .voiceChat turns on the system's echo cancellation; without it the mic
-    /// hears the model's own voice and Gemini interrupts itself.
+    /// .videoChat turns on the system's echo cancellation — without it the mic hears
+    /// the model's own voice and Gemini interrupts itself — and tunes the built-in
+    /// speaker for a phone held at arm's length. .voiceChat is the same processing
+    /// tuned for the phone at the ear: on the speaker it keeps headroom for the echo
+    /// canceller and plays audibly quieter at the same volume setting.
     static func configure() throws {
         try AVAudioSession.sharedInstance()
-            .setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+            .setCategory(.playAndRecord, mode: .videoChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
     }
 
     /// Engine only. The audio session is already configured and active — `Call.begin`
     /// returned, which is what says so.
     func start() throws {
-        engine.attach(player)
         try wire()
         engine.prepare()
         try engine.start()
-        player.play()
+        playing()
         observe()
     }
 
@@ -267,7 +290,7 @@ final class AudioPipe {
             try wire()
             engine.prepare()
             try engine.start()
-            player.play()
+            playing()
         } catch {
             failed = error.localizedDescription
             onProblem?("the audio route changed and could not be picked up again: \(error.localizedDescription)")
@@ -309,7 +332,7 @@ final class AudioPipe {
                 else { self.settle() }
             }
         }
-        if !player.isPlaying { player.play() }
+        playing()
     }
 
     /// The speaker has nothing left to play. Four ways to arrive: the reply ran out, a
@@ -333,7 +356,6 @@ final class AudioPipe {
 
     func flush() {
         player.stop()
-        player.play()
         // Stopping fires the completion of every unplayed buffer, but the flush is
         // the truth right now: the speaker is dry because the turn was taken away.
         drained()
@@ -412,7 +434,7 @@ final class AudioPipe {
     /// microphone buffer reopens the ears on the relay by itself.
     func resume() {
         try? engine.start()
-        if !player.isPlaying { player.play() }
+        playing()
     }
 
     func stop() {
