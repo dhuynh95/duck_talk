@@ -1,0 +1,24 @@
+{
+  // The browser client is plain ES modules with JSDoc types — no build — and this
+  // is what holds the JSDoc to account: `npm run check` runs `tsc -p web`. Checked
+  // against the DOM and nothing else (`types: []` keeps @types/node's globals out, so
+  // a Node-only call in browser code is an error and not a surprise on the phone).
+  //
+  // mic-worklet.js runs in the AudioWorklet scope, which has its own globals and none
+  // of the DOM's; it is left to run rather than described to a checker that would
+  // reject half of it.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "types": [],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["*.js", "ui/*.js", "*.d.ts"],
+  "exclude": ["mic-worklet.js"]
+}

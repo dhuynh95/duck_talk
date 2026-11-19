@@ -9,7 +9,8 @@
 # undo. Nothing new is checked here: see README › Releasing.
 #
 # Only when a staged file decides what ships. A Swift edit or a doc change costs no
-# tarball: the package is `server/`, its build config, and the script that proves it.
+# tarball: the package is `server/`, the browser client in `web/`, its build config, and
+# the script that proves it.
 #
 # Installed by `npm install` — the `prepare` script points `core.hooksPath` here, so
 # there is no dependency to add and nothing to copy into .git/hooks.
@@ -19,7 +20,7 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '^(server/|scripts/install-elsewhere\.sh$|package(-lock)?\.json$|tsconfig\.json$)'; then
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '^(server/|web/|scripts/install-elsewhere\.sh$|package(-lock)?\.json$|tsconfig\.json$)'; then
   exit 0
 fi
 

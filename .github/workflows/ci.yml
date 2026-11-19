@@ -1,8 +1,9 @@
 name: CI
 
-# The relay, checked the way it will be used: typechecked, built, then packed,
-# installed into a folder that is not this repo, and started there. A green run here
-# is the same evidence a release run collects, so Release has nothing new to discover.
+# The relay and its browser client, checked the way they will be used: typechecked,
+# tested, built, then packed, installed into a folder that is not this repo, and
+# started there. A green run here is the same evidence a release run collects, so
+# Release has nothing new to discover.
 
 on:
   push:
@@ -20,6 +21,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm test
       - run: npm run build
       - run: ./scripts/install-elsewhere.sh
 
