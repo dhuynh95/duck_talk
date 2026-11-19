@@ -24,6 +24,11 @@
  *             a `tool` carries `parent`: the Agent call it ran inside, null for Claude's own
  *             an `interrupted` may carry `retract`: the turn was taken back, un-show it
  *
+ * One port serves both the browser client's files (web/, see web.ts) and the sockets, so
+ * a page and its relay share an origin. A socket brings `?key=`, the key the relay keeps
+ * in `.duck-talk/key` (access.ts), and one without it is refused with a 401 on the
+ * upgrade, before anything below runs — `--open` turns the check off.
+ *
  * Audio is what buys audio: the ears open on the first microphone buffer and the voice
  * speaks only where there are ears, so a connection that is only typed to reaches
  * Claude and never Gemini — with nothing in the URL saying which kind it is.
@@ -68,8 +73,10 @@
  * latency is a subtraction, never a measurement.
  */
 
+import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { GoogleGenAI } from '@google/genai';
+import { isOpen, keyMatches, loadKey } from './access.ts';
 import { Session, type Mode, type Phone } from './session.ts';
 import { billingMode, capabilities } from './claude.ts';
 import { chat, chats, fork, remove as removeChat, rename, star } from './chats.ts';
@@ -77,9 +84,10 @@ import { read as readClip } from './clips.ts';
 import { read as readImage } from './images.ts';
 import { load, remove, save } from './corrections.ts';
 import { watch, working } from './live.ts';
-import { VERSION } from './paths.ts';
+import { packaged, state, VERSION } from './paths.ts';
 import { all as prompts, isName, write as writePrompt } from './prompts.ts';
 import { reach } from './reach.ts';
+import { webHandler } from './web.ts';
 
 const PORT = Number(process.env['PORT'] ?? 8765);
 // Two jobs, two models: one Live session transcribes what you say, and a
@@ -94,7 +102,28 @@ if (!API_KEY) {
 }
 
 const ai = new GoogleGenAI({ apiKey: API_KEY });
-const wss = new WebSocketServer({ port: PORT });
+
+// The relay is reachable by more than the phone in your hand, so a socket has to bring
+// the key — see access.ts. Null when `--open` says not to ask, and then no key is made
+// or kept: a relay that is open has nothing to guard.
+const key: string | null = isOpen(process.argv.slice(2), process.env) ? null : loadKey(state('key'));
+
+// One port, two kinds of caller. A request is the browser client's files; an upgrade is
+// a socket, and it is let in or refused here, before a `connection` exists — so a
+// refused caller is never a session, a data connection or a log line, whatever it asked
+// for in the query (`?data=1` is the chat history, the clips and the pictures).
+const server = createServer(webHandler(packaged('../web/')));
+const wss = new WebSocketServer({ noServer: true });
+server.on('upgrade', (req, socket, head) => {
+  if (key !== null && !keyMatches(suppliedKey(req.url), key)) {
+    // A stranger who hangs up on being refused is not an error worth a line.
+    socket.on('error', () => {});
+    socket.once('finish', () => socket.destroy());
+    socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+});
 let nextId = 1;
 
 // The chat list with the one fact only this process knows on it: which chats Claude
@@ -257,7 +286,7 @@ process.on('unhandledRejection', (e) => console.error('unhandled rejection:', e)
 // what a forgotten relay from this morning looks like — arrives after this line would
 // otherwise have promised a server. The uncaught handler above would then swallow it
 // and leave a process that answers nothing.
-wss.on('listening', () => {
+server.on('listening', () => {
   // Where a phone can find this — every row the one process that knows can say, so
   // nobody copies an address out of System Settings or remembers a ts.net name.
   void reach(PORT).then((r) => {
@@ -270,7 +299,7 @@ wss.on('listening', () => {
   // when it comes back rather than kept in front of the address someone is waiting for.
   void billingMode().then((mode) => console.log(`  claude       ${mode}`));
 });
-wss.on('error', (e: NodeJS.ErrnoException) => {
+server.on('error', (e: NodeJS.ErrnoException) => {
   // Almost always a relay from earlier today, still up. Not stepped around: the phone
   // is pointed at this port — directly, or through a Tailscale door that opens onto
   // it — so a relay on another port is one the phone cannot reach.
@@ -279,6 +308,16 @@ wss.on('error', (e: NodeJS.ErrnoException) => {
     : `could not listen on ${PORT}: ${e.message}`);
   process.exit(1);
 });
+server.listen(PORT);
+
+/** The `?key=` on a request, or null — which includes a request line that is not a URL at all. */
+function suppliedKey(target: string | undefined): string | null {
+  try {
+    return new URL(target ?? '/', 'ws://x').searchParams.get('key');
+  } catch {
+    return null;
+  }
+}
 
 function parse(text: string): Record<string, unknown> | null {
   try { return JSON.parse(text) as Record<string, unknown>; } catch { return null; }

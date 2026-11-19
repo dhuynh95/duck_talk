@@ -18,6 +18,7 @@
  *   duck-talk                       serve this folder on :8765
  *   duck-talk --port 9000 --cwd ~/work/api
  *   duck-talk --awake               and keep this Mac from idle sleep meanwhile
+ *   duck-talk --open                and let any socket in, with no key
  */
 
 import { spawn } from 'node:child_process';
@@ -50,6 +51,8 @@ if (argv.includes('--help') || argv.includes('-h')) {
   --cwd <path>  the project Claude works in (default: this folder)
   --awake       keep this Mac from idle sleep while the relay runs (KEEP_AWAKE=1).
                 Idle sleep only: a closed lid still sleeps the Mac.
+  --open        do not ask for the access key (DUCK_TALK_OPEN=1). By default a socket
+                must bring the key kept in .duck-talk/key, or DUCK_TALK_KEY if set.
   --version     print the version and exit
 
 Needs GEMINI_API_KEY in the environment or in a .env file in this folder, and
@@ -98,6 +101,10 @@ if (process.env['ANTHROPIC_API_KEY']?.trim()) {
 
 const port = flag('port');
 if (port) process.env['PORT'] = port;
+
+// The relay's one gate is a key — see access.ts — and this is the explicit way to say you
+// do not want it. Handed on as the variable the relay reads, like `--awake` below.
+if (argv.includes('--open')) process.env['DUCK_TALK_OPEN'] = '1';
 
 // A phone reaching a Mac that has gone to sleep reads "Offline", with nothing to say
 // why — so the relay can hold the Mac awake for as long as it serves. Off unless asked:
