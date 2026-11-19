@@ -52,15 +52,18 @@ done
 
 # Asked while the relay is up and judged after it is gone, so a failed check still
 # finds the relay stopped and its log on screen. `|| true` keeps a refused connection
-# from ending the script here, with the relay still running.
+# from ending the script here, with the relay still running, and `--max-time` keeps a
+# relay that answers and then holds the connection open — which is what an upgrade the
+# relay wrongly accepts looks like — from hanging here, relay and port held, instead
+# of failing.
 #
 # The page is the one `web/` ships: `packaged('../web/')` in server.ts reaches it from
 # `dist/`, and only an installed package — with `web/` in `files` — shows that it does.
-page=$(curl -fs "localhost:$PORT/" || true)
+page=$(curl -fs --max-time 5 "localhost:$PORT/" || true)
 # A socket with no key, which the relay refuses on the upgrade itself with a 401. The
 # headers are the ones a browser's WebSocket sends, so the refusal is the access check
 # and not a complaint about a malformed handshake.
-upgrade=$(curl -s -o /dev/null -w '%{http_code}' \
+upgrade=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
   -H 'Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==' "localhost:$PORT/?data=1" || true)
 { kill "$relay" && wait "$relay"; } 2>/dev/null || true
