@@ -59,7 +59,8 @@ async function startRelay(...args: string[]): Promise<Relay> {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`relay did not start in 10 s:\n${printed}`)), 10_000);
       const look = () => {
-        if (!new RegExp(`simulator +ws://localhost:${port}`).test(printed)) return;
+        // The `stt` row is the last of the address rows, so every address is out by then.
+        if (!new RegExp(`simulator +ws://localhost:${port}`).test(printed) || !/^ {2}stt /m.test(printed)) return;
         clearTimeout(timer);
         resolve();
       };
@@ -164,12 +165,14 @@ describe('a relay with a key', () => {
     assert.deepEqual(await firstFrame(at(`?data=1&key=${key}`)), { type: 'relay', version: VERSION });
   });
 
-  it('keeps the key out of its own log', async () => {
+  it('prints the key in its startup addresses and nowhere else', async () => {
     const before = opened();
     await firstFrame(at(`?data=1&key=${key}`));
     assert.equal(opened(), before + 1);
     assert.ok(/\[\d+\] open \(/.test(relay.output()));
-    assert.ok(!relay.output().includes(key));
+    const withKey = relay.output().split('\n').filter((line) => line.includes(key));
+    assert.ok(withKey.some((line) => line.includes(`http://localhost:${relay.port}/?key=${key}`)));
+    for (const line of withKey) assert.match(line, /^ {2}(web|localhost|web Wi-Fi) +http\S*\/\?key=/, 'the key is in a line that is not an address row');
   });
 });
 
@@ -186,6 +189,11 @@ describe('a relay started with --open', () => {
 
   it('lets a data connection in with no key', async () => {
     assert.deepEqual(await firstFrame(at('?data=1')), { type: 'relay', version: VERSION });
+  });
+
+  it('prints its addresses with no key in them', () => {
+    assert.match(relay.output(), new RegExp(`^ {2}localhost +http://localhost:${relay.port}/$`, 'm'));
+    assert.ok(!relay.output().includes('?key='));
   });
 
   it('does not mind what key it is brought', async () => {

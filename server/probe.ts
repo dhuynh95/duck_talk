@@ -1,8 +1,8 @@
 /**
  * A phone made of code: connects to the relay, speaks, and reports what happened.
  *
- *   node probe.ts "what is two plus two"     synthesize with `say`, then send it
- *   node probe.ts --file turn.wav            send an existing recording
+ *   node probe.ts "what is two plus two"     speak it (`say`, or `espeak-ng` off a Mac), then send it
+ *   node probe.ts --file turn.wav            send an existing recording (any format `ffmpeg` reads, off a Mac)
  *
  * Prints {heard, said, first_audio_ms, reply_pcm} — `heard` is what Gemini made of
  * the audio, `said` is Claude's answer as it was read aloud. `first_audio_ms` spans
@@ -12,50 +12,23 @@
  * AudioPipe — use the `play_audio()` tool for that.
  */
 
-import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
-
-const run = promisify(execFile);
+import { synthesize, toPcm16k } from './local-audio.ts';
 
 const URL_BASE = process.env['PROBE_URL'] ?? 'ws://localhost:8765';
 const RATE = 16_000; // the relay declares audio/pcm;rate=16000
 const FRAME_MS = 20;
 const FRAME_BYTES = (RATE / 1000) * FRAME_MS * 2; // Int16 mono
-const VOICE = process.env['PROBE_VOICE'] ?? 'Samantha';
+const VOICE = process.env['PROBE_VOICE']; // the speech tool's own voice name; unset is its default
 
 // --- Turn audio into exactly the format the relay expects -------------------
 
-/** `say` → AIFF → 16 kHz Int16 LE mono WAV. Returns the PCM body, header stripped. */
+/** The spoken text, or the recording, as the PCM body the relay expects: 16 kHz Int16 LE mono. */
 async function pcmFor(args: { text?: string; file?: string }): Promise<Buffer> {
-  const dir = await mkdtemp(join(tmpdir(), 'probe-'));
-  const wav = join(dir, 'turn.wav');
-
-  let source = args.file;
-  if (!source) {
-    const aiff = join(dir, 'say.aiff');
-    // -a is deliberately absent: writing to a file must not touch any device.
-    await run('say', ['-v', VOICE, '-o', aiff, '--', args.text ?? '']);
-    source = aiff;
-  }
-  await run('afconvert', [source, '-o', wav, '-f', 'WAVE', '-d', `LEI16@${RATE}`, '-c', '1']);
-
-  const buf = await readFile(wav);
-  return buf.subarray(dataOffset(buf));
-}
-
-/** Walk the RIFF chunks to the `data` body — never assume a 44-byte header. */
-function dataOffset(buf: Buffer): number {
-  let at = 12;
-  while (at + 8 <= buf.length) {
-    const id = buf.toString('ascii', at, at + 4);
-    const size = buf.readUInt32LE(at + 4);
-    if (id === 'data') return at + 8;
-    at += 8 + size + (size % 2);
-  }
-  throw new Error('no data chunk in converted WAV');
+  const source = args.file ?? await synthesize(args.text ?? '', await mkdtemp(join(tmpdir(), 'probe-')), VOICE);
+  return toPcm16k(source);
 }
 
 // --- One turn ---------------------------------------------------------------

@@ -8,7 +8,7 @@
  *
  * Knobs, once it is up:
  *   curl -X POST 'localhost:8799/say?text=what+is+the+latest+commit'   speak a phrase
- *   curl -X POST 'localhost:8799/file?path=/tmp/turn.wav'              send a recording
+ *   curl -X POST 'localhost:8799/file?path=/tmp/turn.wav'              send a recording (converted to 16 kHz first)
  *   curl -X POST 'localhost:8799/silence?ms=1500'                      stream quiet
  *   curl -X POST 'localhost:8799/end'                                  audioStreamEnd
  *   curl localhost:8799/log                                            what came back
@@ -18,15 +18,13 @@
  * stopped talking" is read directly off the log.
  */
 
-import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { GoogleGenAI, Modality, Type, type LiveServerMessage, type Session, type Tool } from '@google/genai';
+import { synthesize, toPcm16k } from './local-audio.ts';
 
-const run = promisify(execFile);
 const PORT = Number(process.env['LAB_PORT'] ?? 8799);
 const FRAME = 640;
 const FRAME_MS = 20;
@@ -79,14 +77,8 @@ async function stream(pcm: Buffer): Promise<void> {
 }
 
 async function pcmForText(text: string): Promise<Buffer> {
-  const dir = await mkdtemp(join(tmpdir(), 'lab-'));
-  const aiff = join(dir, 'a.aiff'), wav = join(dir, 'a.wav');
-  await run('say', ['-v', process.env['LAB_VOICE'] ?? 'Samantha', '-o', aiff, '--', text]);
-  await run('afconvert', [aiff, '-o', wav, '-f', 'WAVE', '-d', 'LEI16@16000', '-c', '1']);
-  return pcmOf(await readFile(wav));
+  return toPcm16k(await synthesize(text, await mkdtemp(join(tmpdir(), 'lab-')), process.env['LAB_VOICE']));
 }
-
-const pcmOf = (buf: Buffer) => buf.subarray(buf.indexOf('data') + 8);
 
 createServer((req, res) => {
   void (async () => {
@@ -96,7 +88,7 @@ createServer((req, res) => {
     try {
       switch (url.pathname) {
         case '/say':     await stream(await pcmForText(q.get('text') ?? '')); return reply({ sent: 'audio', text: q.get('text') });
-        case '/file':    await stream(pcmOf(await readFile(q.get('path')!))); return reply({ sent: 'file', path: q.get('path') });
+        case '/file':    await stream(await toPcm16k(q.get('path')!)); return reply({ sent: 'file', path: q.get('path') });
         case '/silence': await stream(Buffer.alloc(Math.round(Number(q.get('ms') ?? 1000) * 32))); return reply({ sent: 'silence' });
         case '/end':     session?.sendRealtimeInput({ audioStreamEnd: true }); return reply({ sent: 'audioStreamEnd' });
         case '/clear':   log.length = 0; return reply({ cleared: true });

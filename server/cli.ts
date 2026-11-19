@@ -17,7 +17,7 @@
  *
  *   duck-talk                       serve this folder on :8765
  *   duck-talk --port 9000 --cwd ~/work/api
- *   duck-talk --awake               and keep this Mac from idle sleep meanwhile
+ *   duck-talk --awake               and keep this machine from idle sleep meanwhile
  *   duck-talk --open                and let any socket in, with no key
  */
 
@@ -32,6 +32,10 @@ function flag(name: string): string | undefined {
   const inline = argv.find((a) => a.startsWith(`--${name}=`));
   return inline?.slice(name.length + 3);
 }
+
+// The word for the machine in text printed to a person: a Mac says "Mac", anything else
+// has no better name than "machine".
+const machine = process.platform === 'darwin' ? 'Mac' : 'machine';
 
 // The folder first, because everything after it is read relative to it: paths.ts takes
 // PROJECT_CWD when it loads, so it is imported only once this line has run — and so
@@ -49,8 +53,8 @@ if (argv.includes('--help') || argv.includes('-h')) {
                 Tailscale front door opens onto one port, and moving would leave
                 the phone talking to whatever is still behind it.
   --cwd <path>  the project Claude works in (default: this folder)
-  --awake       keep this Mac from idle sleep while the relay runs (KEEP_AWAKE=1).
-                Idle sleep only: a closed lid still sleeps the Mac.
+  --awake       keep this ${machine} from idle sleep while the relay runs (KEEP_AWAKE=1).
+                Idle sleep only: a closed lid still sleeps the ${machine}.
   --open        do not ask for the access key (DUCK_TALK_OPEN=1). By default a socket
                 must bring the key kept in .duck-talk/key, or DUCK_TALK_KEY if set.
   --version     print the version and exit
@@ -106,25 +110,38 @@ if (port) process.env['PORT'] = port;
 // do not want it. Handed on as the variable the relay reads, like `--awake` below.
 if (argv.includes('--open')) process.env['DUCK_TALK_OPEN'] = '1';
 
-// A phone reaching a Mac that has gone to sleep reads "Offline", with nothing to say
-// why — so the relay can hold the Mac awake for as long as it serves. Off unless asked:
-// a command run by `npx` must not rewrite the machine's power policy on its own, and a
-// laptop kept awake in a bag is real damage. Said at startup either way, because the
-// moment to learn the flag exists is now and not after a night of silence.
+// A phone reaching a machine that has gone to sleep reads "Offline", with nothing to say
+// why — so the relay can hold the machine awake for as long as it serves. Off unless
+// asked: a command run by `npx` must not rewrite the machine's power policy on its own,
+// and a laptop kept awake in a bag is real damage. Said at startup either way, because
+// the moment to learn the flag exists is now and not after a night of silence.
 //
-// `caffeinate -w` ties the assertion to this pid, so it ends however this process ends
-// and there is nothing to release. Idle sleep only (`-i`): a closed lid still sleeps,
-// and the setting that changes that needs sudo, which is not this tool's to ask for.
+// Both holders are tied to this pid, so they end however this process ends and there is
+// nothing to release. `caffeinate -w` does it by waiting on the pid. `systemd-inhibit`
+// holds its inhibitor for as long as its command runs, and `tail --pid` runs until the
+// pid is gone — the same property, with no logind call of our own. Idle sleep only
+// (`-i`, `--what=idle`): a closed lid still sleeps, and the setting that changes that
+// needs root, which is not this tool's to ask for.
 if (argv.includes('--awake')) process.env['KEEP_AWAKE'] = '1';
-const awake = process.platform === 'darwin' && process.env['KEEP_AWAKE'] === '1';
-if (awake) {
-  spawn('caffeinate', ['-i', '-w', String(process.pid)], { stdio: 'ignore' })
-    .on('error', (e) => console.error(`could not keep the Mac awake: ${e.message}`))
-    .unref(); // holds the Mac, not the event loop
+const keepAwake = process.env['KEEP_AWAKE'] === '1';
+const pid = String(process.pid);
+const holder: { command: string; args: string[] } | null =
+  process.platform === 'darwin' ? { command: 'caffeinate', args: ['-i', '-w', pid] }
+  : process.platform === 'linux' ? { command: 'systemd-inhibit', args: ['--what=idle', '--who=duck-talk', '--why=relay serving', 'tail', `--pid=${pid}`, '-f', '/dev/null'] }
+  : null;
+if (keepAwake && holder) {
+  spawn(holder.command, holder.args, { stdio: 'ignore', detached: true })
+    .on('error', (e) => console.error(`could not keep this ${machine} awake: ${e.message}`))
+    .on('exit', (code) => { if (code) console.error(`could not keep this ${machine} awake: ${holder.command} exited with ${code}`); })
+    .unref(); // holds the machine, not the event loop
 }
 
 console.log(`duck-talk ${VERSION}\n  project      ${project}\n  log          ${logFile}`);
-if (process.platform === 'darwin') {
-  console.log(`  awake        ${awake ? 'keeping this Mac from idle sleep' : 'no — pass --awake, or set KEEP_AWAKE=1, to keep this Mac from sleeping'}`);
+// A platform with no way to do it says so when asked, and stays quiet when not: a hint
+// to pass a flag that would do nothing is no hint.
+if (holder) {
+  console.log(`  awake        ${keepAwake ? `keeping this ${machine} from idle sleep` : `no — pass --awake, or set KEEP_AWAKE=1, to keep this ${machine} from sleeping`}`);
+} else if (keepAwake) {
+  console.log(`  awake        no — --awake is not supported on ${process.platform}, so this ${machine} may sleep`);
 }
 await import('./server.ts');

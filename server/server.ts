@@ -86,7 +86,7 @@ import { load, remove, save } from './corrections.ts';
 import { watch, working } from './live.ts';
 import { packaged, state, VERSION } from './paths.ts';
 import { all as prompts, isName, write as writePrompt } from './prompts.ts';
-import { reach } from './reach.ts';
+import { reach, webLines } from './reach.ts';
 import { webHandler } from './web.ts';
 
 const PORT = Number(process.env['PORT'] ?? 8765);
@@ -293,6 +293,10 @@ server.on('listening', () => {
     console.log(`  simulator    ${r.simulator}`);
     if (r.wifi) console.log(`  same Wi-Fi   ${r.wifi}`);
     console.log(`  anywhere     ${r.anywhere}`);
+    // The browser client's addresses carry the key, because that is what makes a printed
+    // address one that opens. These rows are the only place it is printed: a
+    // connection's `[id]` line says its mode and options, never its query string.
+    for (const line of webLines({ port: PORT, ...r }, key)) console.log(line);
     console.log(`  stt ${STT_MODEL}  ·  voice ${VOICE_MODEL}`);
   });
   // Asking the CLI who it is takes a subprocess and about 700ms, so it is printed
