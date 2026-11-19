@@ -1,0 +1,274 @@
+/*
+ * The iPhone app's look (Brand.swift), in custom properties. Dark only: the page says so
+ * with color-scheme, and every colour below comes from the palette.
+ *
+ * The one layout rule carried over: what is the conversation is flat and runs edge to
+ * edge; what floats over it (the header, the composer) is glass with a shadow. The
+ * transcript therefore scrolls underneath both, and pads itself clear of them.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --ground: #111827;
+  --surface: #1F2937;
+  --fill: #2C3644;
+  --border: #4B5563;
+  --accent: #FB923C;
+  --text: #F3F4F6;
+  --text-secondary: #D1D5DB;
+  --text-tertiary: #9CA3AF;
+
+  /* --surface at 72%, written out so a browser without color-mix still draws glass. */
+  --glass: rgb(31 41 55 / 0.72);
+  --shadow: 0 3px 10px rgb(0 0 0 / 0.5);
+
+  --gutter: 16px;
+  --bar: 56px;
+  --composer: 80px;
+  --column: 760px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding:
+    env(safe-area-inset-top)
+    env(safe-area-inset-right)
+    env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+  background: var(--ground);
+  color: var(--text);
+  font: 16px/1.45 var(--font);
+  overflow-wrap: anywhere;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  min-height: 44px;
+  touch-action: manipulation;
+}
+
+/* Glass: the treatment for anything that floats over the conversation. The shadow is
+   not decoration: a sentence scrolls right behind these, and blur alone leaves a glyph
+   and the text under it in the same grey. */
+.floating {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: var(--shadow);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .floating {
+    background: var(--surface);
+  }
+}
+
+/* Controls */
+
+.field {
+  width: 100%;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--fill);
+}
+
+.field::placeholder {
+  color: var(--text-tertiary);
+}
+
+.field:disabled {
+  opacity: 0.6;
+}
+
+.button {
+  min-width: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--fill);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.button.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--ground);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (hover: hover) {
+  .button:not(:disabled):hover {
+    background: var(--border);
+  }
+
+  .button.primary:not(:disabled):hover {
+    background: #FDBA74;
+  }
+}
+
+/* The key form: all there is until the page has a key. */
+
+.gate {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 24px var(--gutter);
+}
+
+.gate-card {
+  width: min(100%, 420px);
+  display: grid;
+  gap: 12px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.gate-card .logo {
+  justify-self: center;
+  width: auto;
+  height: 48px;
+}
+
+.gate-card h1 {
+  margin: 0;
+  text-align: center;
+  font-size: 22px;
+}
+
+.gate-card label {
+  font-weight: 600;
+}
+
+.gate-help,
+.gate-note {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-tertiary);
+}
+
+.gate-note {
+  color: var(--accent);
+}
+
+.gate-note:empty {
+  display: none;
+}
+
+/* The app shell: a header, the transcript, a composer. */
+
+.app {
+  position: fixed;
+  inset: 0;
+}
+
+.bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  height: calc(var(--bar) + env(safe-area-inset-top));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding:
+    env(safe-area-inset-top)
+    calc(var(--gutter) + env(safe-area-inset-right))
+    0
+    calc(var(--gutter) + env(safe-area-inset-left));
+}
+
+.bar .logo {
+  width: auto;
+  height: 28px;
+}
+
+.title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.transcript {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding:
+    calc(var(--bar) + env(safe-area-inset-top) + 12px)
+    calc(var(--gutter) + env(safe-area-inset-right))
+    calc(var(--composer) + env(safe-area-inset-bottom) + 12px)
+    calc(var(--gutter) + env(safe-area-inset-left));
+}
+
+.composer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  z-index: 2;
+  width: min(var(--column), calc(100% - 24px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+  margin-inline: auto;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 30px;
+}
+
+.composer .field {
+  flex: 1;
+  min-width: 0;
+}
+
+img {
+  max-width: 100%;
+}
+
+.noscript {
+  margin: 24px var(--gutter);
+  color: var(--text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
