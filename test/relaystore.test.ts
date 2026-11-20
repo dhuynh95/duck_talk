@@ -517,3 +517,76 @@ describe('RelayStore: clips and images', () => {
     assert.equal(state()['connected'], true);
   });
 });
+
+// The store tells its subscribers synchronously, inside the write that a frame causes, and a
+// subscriber that opens a chat's pictures asks for them right there. The frame that caused the
+// write must already be over, as far as the media queue is concerned, or it is read as the first
+// frame of the answer to a request it never preceded.
+describe('RelayStore: media asked for from a store subscriber', () => {
+  const asked = (s: FakeSocket) => s.frames.filter((f) => f.type === 'clip_get' || f.type === 'image_get');
+
+  it('a picture asked for when the chat frame lands gets the relay\'s reply, not null', async () => {
+    const { relay, store, up } = rig();
+    const s = up();
+    let picture: Promise<Blob | null> | undefined;
+    let seen: unknown;
+    store.subscribe((state) => {
+      if (state['loaded'] && state['loaded'] !== seen) {
+        seen = state['loaded'];
+        picture = relay.image(5);
+      }
+    });
+    relay.openChat('c1');
+    s.burst(); // the relay's answer to chat_open: the state frames, the chat list last...
+    s.receive({ type: 'chat', id: 'c1', messages: [], forked: false }); // ...then the chat
+    assert.deepEqual(asked(s), [{ type: 'image_get', id: 5 }]);
+
+    let settled = false;
+    void picture!.then(() => (settled = true));
+    await tick();
+    assert.equal(settled, false, 'nothing has been said about the picture yet');
+    s.receiveBinary([5, 5]);
+    assert.deepEqual(await bytes((await picture)!), [5, 5]);
+  });
+
+  it('two pictures asked for when the chat list lands go out one at a time, each answered with its own', async () => {
+    const { relay, store, up } = rig();
+    const s = up();
+    let first: Promise<Blob | null> | undefined;
+    let second: Promise<Blob | null> | undefined;
+    let done = false;
+    store.subscribe((state) => {
+      if (!done && state['chats']?.length === 1) {
+        done = true;
+        first = relay.image(1);
+        second = relay.image(2);
+      }
+    });
+    s.receive({ type: 'chats', chats: [{ id: 'x', at: 1, title: 'T' }] });
+    assert.deepEqual(asked(s), [{ type: 'image_get', id: 1 }], 'the second waits');
+
+    s.receiveBinary([1, 1]);
+    assert.deepEqual(await bytes((await first)!), [1, 1]);
+    assert.equal(asked(s).length, 1, 'still waiting for the end of the first answer');
+    s.burst(); // the end of the first answer
+    assert.deepEqual(asked(s), [{ type: 'image_get', id: 1 }, { type: 'image_get', id: 2 }]);
+    s.receiveBinary([2, 2]);
+    assert.deepEqual(await bytes((await second)!), [2, 2], 'not the first picture\'s bytes');
+  });
+
+  it('a subscriber that throws does not leave the media slot unsettled: the next request still goes out', async () => {
+    const { relay, store, up } = rig();
+    const s = up();
+    const first = relay.clip(1);
+    const second = relay.clip(2);
+    store.subscribe(() => {
+      throw new Error('boom');
+    });
+    s.receiveBinary([1]);
+    assert.deepEqual(await bytes((await first)!), [1]);
+    assert.throws(() => s.receive({ type: 'chats', chats: [] }), /boom/); // the end of the first answer
+    assert.deepEqual(asked(s), [{ type: 'clip_get', id: 1 }, { type: 'clip_get', id: 2 }]);
+    s.receiveBinary([2]);
+    assert.deepEqual(await bytes((await second)!), [2]);
+  });
+});

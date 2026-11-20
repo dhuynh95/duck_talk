@@ -210,8 +210,11 @@ export class RelayStore {
         if (typeof f.id === 'string' && Array.isArray(f.messages)) patch['loaded'] = { id: f.id, messages: f.messages, forked: f.forked === true };
         break;
     }
-    this.#store.set(patch);
+    // The media queue first, then the store: a subscriber is told inside `set`, and one that asks
+    // for a picture right there must find this frame already over, not read it as the first
+    // frame of that request's answer (or, if it throws, leave the slot held).
     this.#text(f.type);
+    this.#store.set(patch);
   }
 
   // MARK: clips and pictures
