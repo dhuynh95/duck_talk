@@ -25,7 +25,9 @@ node server/cli.ts --help     # or once installed: duck-talk --help
 Everything is decided by the folder you start it in. That folder is what Claude works
 in, so it is which chats the drawer lists and what `?resume=` can carry on, and it is
 where the relay keeps what it learns — `<folder>/.duck-talk/`, holding `turns.jsonl`,
-`corrections.jsonl` and any prompt you edited from the phone. Nothing is written beside
+`corrections.jsonl` and any prompt you edited from the phone — and a `.gitignore` of `*`,
+written once if absent, so the key and the logs never reach the project's repo; made by
+the relay, the folder is closed to other users (0700). Nothing is written beside
 the code, because installed by `npx` the code lives in a cache that gets wiped.
 
 Needs `GEMINI_API_KEY` in that folder's `.env` or in the shell, and Claude Code signed

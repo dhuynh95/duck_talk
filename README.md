@@ -114,9 +114,10 @@ arrives without the key is refused on the upgrade with an HTTP 401, before anyth
 That covers the chat history, the audio clips and the pictures too.
 
 - The key is made on the first start — 16 random bytes — and kept in `.duck-talk/key`,
-  readable by you alone, so it survives a restart and a bookmark keeps working. Nothing
-  git-ignores that folder for you: if the project is a repo, add `.duck-talk/` to its
-  `.gitignore`.
+  readable by you alone, so it survives a restart and a bookmark keeps working. The relay
+  git-ignores that folder for you: it writes a `.duck-talk/.gitignore` of `*`, so neither
+  the key nor the logs that hold it can be committed, even by a `git add -A` — there is
+  nothing to add to the project's own `.gitignore`.
 - The `web` rows end in `?key=…`. Open one and the page moves the key into the browser's
   localStorage and takes it out of the address bar, so it is not left in the history or on
   a screen. A browser that has none is asked for it in one field: paste it from the relay's
