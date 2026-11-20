@@ -377,6 +377,25 @@ describe('VoiceSession: the socket', () => {
     );
   });
 
+  it('after the relay restarted mid-turn, Stop settles a page that still thinks Claude is working', () => {
+    const { session, state, sockets, last, advance } = rig();
+    session.send('hi');
+    last().open();
+    last().receive({ type: 'turn_start', session: 'c1' });
+    last().drop(); // the relay went away, and the one that comes back never ran this turn
+    advance(250);
+    last().open();
+    assert.equal(last().url, 'ws://relay/?mode=direct&resume=c1');
+    assert.equal(state().inFlight, true, 'stale: nothing will ever end this turn on its own');
+    session.stopAll();
+    assert.deepEqual(last().frames.at(-1), { type: 'stop' });
+    last().receive({ type: 'turn_end', session: 'c1' }); // what an idle relay now answers a stop with
+    assert.equal(state().inFlight, false);
+    assert.equal(last().closedByClient, true, 'nothing else holds the socket, so it is let go');
+    advance(10_000);
+    assert.equal(sockets.length, 2, 'and not redialled');
+  });
+
   it('queues a typed frame while the socket is down and sends it right after the claude frame on the next one', () => {
     const { session, last, advance } = rig();
     session.use({ model: 'opus', permission: 'plan', effort: '' });

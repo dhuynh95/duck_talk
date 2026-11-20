@@ -454,7 +454,7 @@ export class Session {
     // The stop button, as a frame. Stop means everything in this chat: the turn, and
     // the background tasks an interrupt deliberately spares. Hanging up is the
     // phone's separate act, so stopping the work and leaving stay decoupled.
-    else if (msg.type === 'stop') { this.cancel('stop frame'); this.claude.stopTasks(); }
+    else if (msg.type === 'stop') { this.stop(); this.claude.stopTasks(); }
     else if (msg.type === 'claude') this.be(msg.model, msg.permission, msg.effort);
   }
 
@@ -755,6 +755,18 @@ export class Session {
     this.voice.interrupt();
     this.phone.event({ type: 'interrupted' });
     return this.endTurn();
+  }
+
+  /**
+   * The stop button. A turn running here is cancelled as any other way. With none, the
+   * phone may still think one is — the relay it was watching restarted mid-turn, and this
+   * one never ran it — and only a `turn_end` settles that, so a bare one is the answer:
+   * the chat it is in and nothing else. Harmless to a phone that already knew.
+   */
+  private stop(): void {
+    if (this.state !== 'user') { void this.cancel('stop frame'); return; }
+    this.log('stop with nothing running');
+    this.phone.event({ type: 'turn_end', session: this.sessionId });
   }
 
   /** End the turn now; resolves once `turn_end` has gone to the phone, which is after
