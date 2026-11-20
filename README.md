@@ -132,6 +132,15 @@ That covers the chat history, the audio clips and the pictures too.
   page with no key stored asks the relay whether it wants one — the public
   `/access.json`, which says `{"required":false}` for an open relay and never says the
   key — and skips the form.
+- **Web pages from elsewhere are refused**, key or `--open`. A browser lets any site open
+  a socket to any address and says where the page came from; a socket whose page is not
+  from this machine, the local network (`192.168.…`, `10.…`, `*.local`, a one-word name)
+  or a tailnet (`*.ts.net`) is refused with a 403 and one `refused origin <host>` line. So
+  `--open` is open to whoever can reach the port, not to every site in a tab. The app,
+  `curl` and other clients that are not browsers send no origin and are not affected.
+- **`DUCK_TALK_ORIGINS=duck.example.com,*.corp.example`** adds hosts to that list, exact
+  or `*.suffix`, comma-separated — for a page served through a reverse proxy or a domain
+  of your own.
 - **The iPhone app sends no key**, so a relay it talks to has to be started with `--open`.
   The web client does not need that.
 

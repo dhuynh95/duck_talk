@@ -76,9 +76,11 @@
  */
 
 import { createServer } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { WebSocketServer } from 'ws';
 import { GoogleGenAI } from '@google/genai';
 import { isOpen, keyMatches, loadKey } from './access.ts';
+import { extraOrigins, originAllowed, originHost } from './origin.ts';
 import { Session, type Mode, type Phone } from './session.ts';
 import { billingMode, capabilities } from './claude.ts';
 import { chat, chats, fork, remove as removeChat, rename, star } from './chats.ts';
@@ -118,16 +120,30 @@ const key: string | null = isOpen(process.argv.slice(2), process.env) ? null : l
 // stored asks before it shows a form.
 const server = createServer(accessNotice(key !== null, webHandler(packaged('../web/'))));
 const wss = new WebSocketServer({ noServer: true });
+// A page from anywhere else is refused first, open or not: `--open` is for whoever can
+// reach the port, not for every site in a browser that can. See origin.ts.
+const origins = extraOrigins(process.env['DUCK_TALK_ORIGINS']);
 server.on('upgrade', (req, socket, head) => {
+  const origin = req.headers.origin;
+  if (!originAllowed(origin, origins)) {
+    console.log(`refused origin ${originHost(origin ?? '')}`);
+    refuse(socket, '403 Forbidden');
+    return;
+  }
   if (key !== null && !keyMatches(suppliedKey(req.url), key)) {
-    // A stranger who hangs up on being refused is not an error worth a line.
-    socket.on('error', () => {});
-    socket.once('finish', () => socket.destroy());
-    socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    refuse(socket, '401 Unauthorized');
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
 });
+
+/** Answer an upgrade with a bare status and hang up. */
+function refuse(socket: Duplex, status: string): void {
+  // A stranger who hangs up on being refused is not an error worth a line.
+  socket.on('error', () => {});
+  socket.once('finish', () => socket.destroy());
+  socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+}
 let nextId = 1;
 
 // The chat list with the one fact only this process knows on it: which chats Claude

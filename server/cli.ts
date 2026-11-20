@@ -57,6 +57,8 @@ if (argv.includes('--help') || argv.includes('-h')) {
                 Idle sleep only: a closed lid still sleeps the ${machine}.
   --open        do not ask for the access key (DUCK_TALK_OPEN=1). By default a socket
                 must bring the key kept in .duck-talk/key, or DUCK_TALK_KEY if set.
+                Either way a web page from outside this machine, the local network
+                and the tailnet is refused; DUCK_TALK_ORIGINS=host,*.suffix adds hosts.
   --version     print the version and exit
 
 Needs GEMINI_API_KEY in the environment or in a .env file in this folder, and

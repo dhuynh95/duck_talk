@@ -31,14 +31,20 @@ async function freePort(): Promise<number> {
 }
 
 /** A relay in a folder of its own, resolved once it has said where it listens. */
-async function startRelay(...args: string[]): Promise<Relay> {
+function startRelay(...args: string[]): Promise<Relay> {
+  return startRelayWith({}, ...args);
+}
+
+/** The same, with something more in its environment. */
+async function startRelayWith(extra: Record<string, string>, ...args: string[]): Promise<Relay> {
   const port = await freePort();
   const dir = mkdtempSync(join(tmpdir(), 'duck-talk-relay-'));
   // An empty PATH, and an absolute `node` to run it: a relay that finds `tailscale` on
   // the machine running the tests repoints that machine's own front door at this port.
   const empty = mkdtempSync(join(tmpdir(), 'duck-talk-path-'));
   const env = { ...process.env, GEMINI_API_KEY: 'fake', PATH: empty };
-  for (const name of ['ANTHROPIC_API_KEY', 'DUCK_TALK_KEY', 'DUCK_TALK_OPEN', 'PORT', 'PROJECT_CWD']) delete env[name];
+  for (const name of ['ANTHROPIC_API_KEY', 'DUCK_TALK_KEY', 'DUCK_TALK_OPEN', 'DUCK_TALK_ORIGINS', 'PORT', 'PROJECT_CWD']) delete env[name];
+  Object.assign(env, extra);
 
   const child: ChildProcess = spawn(process.execPath, [CLI, '--port', String(port), '--cwd', dir, ...args], {
     env,
@@ -76,9 +82,9 @@ async function startRelay(...args: string[]): Promise<Relay> {
 }
 
 /** The status the upgrade was refused with. Fails if the socket opened or never answered. */
-function refusal(url: string): Promise<{ status: number; length: string | undefined }> {
+function refusal(url: string, origin?: string): Promise<{ status: number; length: string | undefined }> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, origin === undefined ? {} : { origin });
     ws.on('unexpected-response', (_req, res) => {
       res.resume();
       ws.terminate();
@@ -90,15 +96,25 @@ function refusal(url: string): Promise<{ status: number; length: string | undefi
 }
 
 /** The first frame a socket is sent, parsed — and the socket closed behind it. */
-function firstFrame(url: string): Promise<Record<string, unknown>> {
+function firstFrame(url: string, origin?: string): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, origin === undefined ? {} : { origin });
     let frame: Record<string, unknown> | undefined;
     ws.once('message', (data) => { frame = JSON.parse(String(data)) as Record<string, unknown>; ws.close(); });
     ws.on('close', () => (frame ? resolve(frame) : reject(new Error(`${url} closed without a frame`))));
     ws.on('unexpected-response', (_req, res) => { res.resume(); reject(new Error(`${url} was refused: ${res.statusCode}`)); });
     ws.on('error', reject);
   });
+}
+
+/** Resolves once the relay has printed a line matching `pattern`, or fails after ~2 s. */
+async function printed(relay: Relay, pattern: RegExp): Promise<string> {
+  for (let i = 0; i < 40; i++) {
+    const line = relay.output().split('\n').find((l) => pattern.test(l));
+    if (line !== undefined) return line;
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  throw new Error(`no line matching ${pattern} in:\n${relay.output()}`);
 }
 
 /** What a relay answers at `/access.json`, with the headers that matter and the body as sent. */
@@ -241,6 +257,46 @@ describe('a relay with a key', () => {
   });
 });
 
+describe('a relay with a key, asked from a web page', () => {
+  let relay: Relay;
+  let key: string;
+  const at = (query: string) => `ws://127.0.0.1:${relay.port}/${query}`;
+
+  before(async () => {
+    relay = await startRelay();
+    key = readFileSync(join(relay.dir, '.duck-talk', 'key'), 'utf8').trim();
+  });
+  after(() => relay.stop());
+
+  it('refuses a page from anywhere else with a 403, even with the right key', async () => {
+    assert.deepEqual(await refusal(at(`?data=1&key=${key}`), 'https://evil.example'), { status: 403, length: '0' });
+  });
+
+  it('says which host it refused in one line, and not the key', async () => {
+    await refusal(at(`?data=1&key=${key}`), 'https://evil.example:8443/path?key=leak');
+    const line = await printed(relay, /refused origin/);
+    assert.match(line, /refused origin evil\.example$/);
+    assert.ok(!line.includes(key));
+    assert.ok(!line.includes('leak'));
+  });
+
+  it('lets in its own page on localhost', async () => {
+    assert.equal((await firstFrame(at(`?data=1&key=${key}`), `http://localhost:${relay.port}`)).type, 'relay');
+  });
+
+  it('lets in its own page behind Tailscale', async () => {
+    assert.equal((await firstFrame(at(`?data=1&key=${key}`), 'https://box.tail1234.ts.net')).type, 'relay');
+  });
+
+  it('lets in a caller that sends no Origin at all', async () => {
+    assert.equal((await firstFrame(at(`?data=1&key=${key}`))).type, 'relay');
+  });
+
+  it('still asks a page it lets in for the key', async () => {
+    assert.equal((await refusal(at('?data=1'), `http://localhost:${relay.port}`)).status, 401);
+  });
+});
+
 describe('a relay started with --open', () => {
   let relay: Relay;
   const at = (query: string) => `ws://127.0.0.1:${relay.port}/${query}`;
@@ -286,5 +342,30 @@ describe('a relay started with --open', () => {
 
   it('does not mind what key it is brought', async () => {
     assert.equal((await firstFrame(at('?data=1&key=whatever'))).type, 'relay');
+  });
+});
+
+describe('a relay started with --open, asked from a web page', () => {
+  it('refuses a page from anywhere else: open is to whoever can reach the port, not to every site in a browser', async () => {
+    const relay = await startRelay('--open');
+    try {
+      const url = `ws://127.0.0.1:${relay.port}/?data=1`;
+      assert.deepEqual(await refusal(url, 'https://evil.example'), { status: 403, length: '0' });
+      assert.equal((await refusal(`ws://127.0.0.1:${relay.port}/?mode=direct`, 'null')).status, 403);
+      assert.match(await printed(relay, /refused origin/), /refused origin evil\.example$/);
+      assert.equal((await firstFrame(url, `http://localhost:${relay.port}`)).type, 'relay');
+    } finally {
+      await relay.stop();
+    }
+  });
+
+  it('lets in a host DUCK_TALK_ORIGINS names', async () => {
+    const relay = await startRelayWith({ DUCK_TALK_ORIGINS: 'evil.example' }, '--open');
+    try {
+      assert.equal((await firstFrame(`ws://127.0.0.1:${relay.port}/?data=1`, 'https://evil.example')).type, 'relay');
+      assert.equal((await refusal(`ws://127.0.0.1:${relay.port}/?data=1`, 'https://other.example')).status, 403);
+    } finally {
+      await relay.stop();
+    }
   });
 });

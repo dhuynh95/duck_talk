@@ -15,6 +15,7 @@ duck_talk` runs. Each primitive runs alone:
 - `reach.ts`  — every address a phone can reach the relay at, printed at startup: simulator, same Wi-Fi, and Tailscale's `wss://` when it is set up — and the same three for the browser client, as `http(s)://` rows that carry the key.
 - `web.ts`    — the browser client's files, served from `web/` on the relay's own port, and `GET /access.json`.
 - `access.ts` — the access key: made once, kept in `.duck-talk/key`, checked on every WebSocket upgrade.
+- `origin.ts` — which web pages may open a socket: checked on every upgrade, before the key.
 
 ```bash
 npm install
@@ -61,6 +62,17 @@ one that does not gets `HTTP/1.1 401 Unauthorized` on the upgrade itself, before
 connection exists: a refused caller is never a session, a data connection or a log line.
 `--open`, or `DUCK_TALK_OPEN=1`, turns the check off, and no key is made. The iPhone app
 sends none, so it needs a relay started that way.
+
+Before the key, and in both modes, an upgrade's `Origin` is checked (`origin.ts`), because
+a browser lets any page it has loaded open a socket here. No `Origin` — the app, `ws`,
+curl, the probe — goes on to the key. One that is present must be an http(s) URL whose
+hostname is this machine (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`), the local
+network (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`, IPv6 ULA and link-local,
+`*.local`, a one-label name), a tailnet (`*.ts.net`), or in `DUCK_TALK_ORIGINS` —
+comma-separated exact hostnames or `*.suffix`, for a reverse proxy or a custom domain,
+read once at start. Anything else, `null` included, gets `HTTP/1.1 403 Forbidden` and one
+line, `refused origin <hostname>`. It is the hostname that is checked, not that it equals
+`Host`: a rebound DNS name makes those two agree.
 
 The files are served without a key, and so is one more address: `GET /access.json` answers
 `{"required":true}` or `{"required":false}`, which is what a page with no key stored asks
