@@ -18,13 +18,31 @@ export function autosize(input) {
 }
 
 /**
+ * Keep `input` fitted to its text when its width changes, not only when its text does: a phone
+ * turned on its side, a window dragged, a drawer opening beside it all re-wrap a long draft, and
+ * the height it had was for the old lines. A change of height alone (what `autosize` itself
+ * makes) is not a reason to measure again. For the life of the field.
+ * @param {HTMLTextAreaElement} input
+ */
+export function autosizeOnResize(input) {
+  if (typeof ResizeObserver !== 'function') return;
+  let width = input.clientWidth;
+  new ResizeObserver(() => {
+    if (input.clientWidth === width) return;
+    width = input.clientWidth;
+    if (width > 0) autosize(input); // a field that is not on screen has no lines to count
+  }).observe(input);
+}
+
+/**
  * Whether this keydown is Enter meaning "send". A keyboard with a fine pointer beside it sends on
  * Enter, and Shift+Enter breaks the line; on a touch screen Enter is the only way to break one,
- * so it does that and the button sends. Enter that is choosing a character in an input method
- * (`isComposing`) is not a send.
+ * so it does that and the button sends. Enter that is choosing a character in an input method is
+ * not a send: `isComposing` says so, except in Safari, whose keydown for that Enter arrives after
+ * the composition has ended, and says only `keyCode` 229.
  * @param {KeyboardEvent} event
  */
 export function enterSends(event) {
-  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return false;
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return false;
   return typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches;
 }

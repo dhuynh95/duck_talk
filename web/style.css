@@ -804,21 +804,24 @@ select {
   font-size: 14px;
 }
 
+/* Centred by its margins, not by a transform: `arrive` moves it with a transform of its own, and
+   under a `translateX(-50%)` it would slide in from 22 px to one side every time it showed. */
 .jump {
   position: absolute;
   z-index: 2;
-  left: 50%;
+  left: 0;
+  right: 0;
   bottom: calc(var(--composer-h) + 22px + env(safe-area-inset-bottom));
   display: grid;
   place-items: center;
   width: 44px;
   height: 44px;
+  margin: 0 auto;
   padding: 0;
   border: 0;
   border-radius: 50%;
   color: var(--text);
   cursor: pointer;
-  transform: translateX(-50%);
   animation: arrive 0.18s ease-out;
 }
 
@@ -853,6 +856,15 @@ select {
 
 .composer:focus-within {
   border-color: var(--border);
+}
+
+/* The keyboard is in a field: a ring of its own, set off from the box by a gap. The field has no
+   outline, and the edge going from 55 % to full grey is too weak a cue on its own. Listening, the
+   box's own edge is already the accent, so the gap is what tells typing from listening; and only
+   a field brings the ring, because every button in the box has one of its own. */
+.composer:has(.compose-input:focus) {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 /* Listening, the edge is the accent: the box is the live thing on the screen. */
@@ -1088,7 +1100,7 @@ select {
 }
 
 .compose-input:focus-visible {
-  outline: none; /* the composer's edge says where the keyboard is */
+  outline: none; /* the composer's ring says where the keyboard is */
 }
 
 /* Review: the relay is holding an instruction for you to look at. The same box with a
@@ -1133,16 +1145,21 @@ select {
   flex: none;
 }
 
+/* Three columns, the microphone in the middle of the box so it never shifts under a thumb. The
+   left one gives way first (the model's name cuts short); the right one is never narrower than
+   what is in it, because its buttons are as wide as a thumb — mute, speaker and stop, live, are
+   more than a third of 360 px — and when there is not room for both the microphone moves aside
+   by the difference, rather than the buttons going under it. */
 .compose-bar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto minmax(min-content, 1fr);
   align-items: center;
   gap: 4px;
   margin-top: 4px;
 }
 
 /* What Claude is: the model and what it may do, as words. They give way (ellipsis) before the
-   microphone moves: it stays in the middle of the box so it never shifts under a thumb. */
+   microphone moves. */
 .bar-start {
   display: flex;
   align-items: center;
@@ -1161,7 +1178,13 @@ select {
   justify-self: end;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+}
+
+/* A thumb's width, whatever is beside them: a flex item may shrink below its width, which is how
+   a circle becomes an oval. */
+.bar-end .round {
+  flex: none;
 }
 
 /* A word you can press: 36 px to look at, 44 to touch (the padding of ::after). */

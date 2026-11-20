@@ -16,6 +16,9 @@ import { icon } from './icons.js';
 
 /** @typedef {{ el: HTMLButtonElement, destroy: () => void }} ClipChip */
 
+/** What the chip is called, whether it is playing or not. */
+const PLAY = 'Play audio';
+
 /** @type {{ stop: () => void } | null} whichever chip is playing or paused with audio in hand */
 let current = null;
 
@@ -35,7 +38,9 @@ export function clipTime(seconds) {
  */
 export function clipChip({ id, load }) {
   const label = h('span', { class: 'clip-label' }, 'Play');
-  const el = h('button', { class: 'clip-chip', type: 'button', 'aria-pressed': 'false', 'aria-label': 'Play what was heard' });
+  // A toggle keeps its name and says which way it is with `aria-pressed`: a label that also became
+  // "Pause" would be read out as "Pause, pressed" while it plays — a pause that is already on.
+  const el = h('button', { class: 'clip-chip', type: 'button', 'aria-pressed': 'false', 'aria-label': PLAY });
 
   /** @type {'idle' | 'loading' | 'ready' | 'playing' | 'gone'} ready: the audio is in hand and not playing */
   let state = 'idle';
@@ -62,7 +67,7 @@ export function clipChip({ id, load }) {
     el.dataset['state'] = state;
     el.disabled = state === 'loading' || state === 'gone';
     el.setAttribute('aria-pressed', String(state === 'playing'));
-    el.setAttribute('aria-label', state === 'gone' ? 'No audio for this line' : state === 'playing' ? 'Pause' : 'Play what was heard');
+    el.setAttribute('aria-label', state === 'gone' ? 'No audio for this line' : PLAY);
     el.replaceChildren(state === 'loading' ? h('span', { class: 'spinner small', 'aria-hidden': 'true' }) : icon(state === 'playing' ? 'pause' : state === 'gone' ? 'waveform' : 'play'), label);
   };
 

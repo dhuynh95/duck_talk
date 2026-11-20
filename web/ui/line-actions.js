@@ -80,7 +80,12 @@ export function streamingId(lines, inFlight) {
  * @returns {LineActions}
  */
 export function lineActions(handlers) {
-  const el = h('div', { class: 'verbs', role: 'group', 'aria-label': 'Message actions', hidden: true });
+  // Where "Copied" is said to a screen reader: a status that is always in the page, last in the
+  // row so the glyphs keep their places among its children.
+  const status = h('span', { class: 'sr', role: 'status' });
+  const el = h('div', { class: 'verbs', role: 'group', 'aria-label': 'Message actions', hidden: true }, status);
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let statusTimer;
   /** @type {Map<VerbId, HTMLElement>} */
   const items = new Map();
   /** @type {import('./clip-chip.js').ClipChip | null} */
@@ -90,14 +95,16 @@ export function lineActions(handlers) {
   /** @type {Line | null} the line as last given: what a press acts on, read when it is pressed */
   let line = null;
 
+  // The glyph turns into a check for a moment, which a screen reader cannot see, and its name stays
+  // "Copy": the news is said in the status, which is emptied again so the next copy is a change.
   /** @param {HTMLButtonElement} button */
   const copied = (button) => {
-    const verb = GLYPHS.copy;
     button.replaceChildren(icon('check'));
-    button.setAttribute('aria-label', 'Copied');
-    setTimeout(() => {
-      button.replaceChildren(icon(verb.icon));
-      button.setAttribute('aria-label', verb.title);
+    status.textContent = 'Copied';
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => {
+      button.replaceChildren(icon(GLYPHS.copy.icon));
+      status.textContent = '';
     }, COPIED_FOR);
   };
 

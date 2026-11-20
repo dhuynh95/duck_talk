@@ -7,18 +7,27 @@
 //
 // It stands in for the normal field while an instruction is held, and the composer says when.
 // What was typed in the normal field is still there when this is gone.
+//
+// It announces itself, because nothing else will: it is a group with a name, a polite note says
+// what to do, and the keyboard moves into the field (unless a dialog or menu has it). Esc in the
+// field leaves the field and nothing more — Esc anywhere else stops Claude, which would throw
+// away the very edit being made.
 
 import { h } from '../dom.js';
-import { autosize, enterSends } from './field.js';
+import { autosize, autosizeOnResize, enterSends } from './field.js';
 import { icon } from './icons.js';
+
+/** What to do, said to a screen reader when the card appears. */
+const ASK = 'Review the instruction, then Accept';
 
 /**
  * @param {{ approve: (text: string) => void }} session
  * @returns {{
  *   el: HTMLElement,
+ *   note: HTMLElement,
  *   set: (pending: string | null) => void,
  *   focused: () => boolean,
- * }} `set` shows the held instruction, or hides the card when there is none; `focused`, whether the keyboard is in it
+ * }} `set` shows the held instruction, or hides the card when there is none; `note` is the live region that says what to do, which must be in the page beside the card (not in it: a region that appears with its words is not announced); `focused`, whether the keyboard is in it
  */
 export function reviewCard(session) {
   const input = h('textarea', {
@@ -32,10 +41,11 @@ export function reviewCard(session) {
     autocomplete: 'off',
   });
   const accept = h('button', { class: 'button primary accept', type: 'button', 'aria-label': 'Accept', disabled: true }, icon('check'), h('span', null, 'Accept'));
+  const note = h('div', { class: 'sr', role: 'status' });
   const el = h(
     'div',
-    { class: 'review', hidden: true },
-    h('div', { class: 'review-label' }, 'Review before it runs'),
+    { class: 'review', role: 'group', 'aria-labelledby': 'review-label', hidden: true },
+    h('div', { class: 'review-label', id: 'review-label' }, 'Review before it runs'),
     h('div', { class: 'review-row' }, input, accept),
   );
 
@@ -50,7 +60,13 @@ export function reviewCard(session) {
     autosize(input);
     sync();
   });
+  autosizeOnResize(input);
   input.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault(); // taken: the page's Esc stops Claude, and the held instruction with it
+      if (!event.isComposing) input.blur(); // an input method's own Esc is its to say
+      return;
+    }
     if (!enterSends(event)) return;
     event.preventDefault();
     submit();
@@ -61,14 +77,20 @@ export function reviewCard(session) {
   let shown = null;
   return {
     el,
+    note,
     set(pending) {
       if (pending === shown) return; // the store is written 25 times a second: only a new instruction replaces what you are editing
       shown = pending;
       el.hidden = pending === null;
+      note.textContent = pending === null ? '' : ASK; // emptied, so the same words said again are a change
       if (pending === null) return;
       input.value = pending;
       autosize(input);
       sync();
+      // The keyboard goes where the question is — but not out of a dialog or menu someone is in.
+      if (document.querySelector('[aria-modal="true"], [role="menu"]')) return;
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(input.value.length, input.value.length);
     },
     focused: () => el.contains(document.activeElement),
   };

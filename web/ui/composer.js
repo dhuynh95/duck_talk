@@ -25,7 +25,7 @@ import { h } from '../dom.js';
 import { createIntake } from '../intake.js';
 import { attachChips } from './attach-chips.js';
 import { contextButton } from './context-sheet.js';
-import { autosize, enterSends } from './field.js';
+import { autosize, autosizeOnResize, enterSends } from './field.js';
 import { icon } from './icons.js';
 import { modeCapsule, modeLocked, modelCapsule } from './pickers.js';
 import { reviewCard } from './review-card.js';
@@ -124,6 +124,7 @@ export function composer(store, session, change) {
     note,
     row,
     review.el,
+    review.note,
     h(
       'div',
       { class: 'compose-bar' },
@@ -158,15 +159,34 @@ export function composer(store, session, change) {
     autosize(input);
     sync();
   });
+  autosizeOnResize(input);
   input.addEventListener('keydown', (event) => {
     if (skills.keydown(event)) return; // the list is open and took the key: Enter picks, it does not send
     if (!enterSends(event)) return;
     event.preventDefault();
     submit();
   });
+
+  // The arrow must not take the keyboard from the field: on a phone the keyboard is the field's
+  // focus, and a tap that moved it to the button would put the keyboard away between two
+  // messages. A press is kept off the button while the field has focus (`held`); a send by key
+  // (Tab to the arrow, Enter) leaves focus on a button that is about to be disabled, and so
+  // takes it back to the field. A tap made with the keyboard already away leaves it away.
+  /** Whether the field had focus when the arrow was pressed; null when no pointer pressed it. @type {boolean | null} */
+  let held = null;
+  send.addEventListener('pointerdown', () => {
+    held = document.activeElement === input;
+  });
+  send.addEventListener('mousedown', (event) => {
+    if (held) event.preventDefault();
+  });
+  send.addEventListener('pointercancel', () => (held = null));
+  send.addEventListener('keydown', () => (held = null));
   el.addEventListener('submit', (event) => {
     event.preventDefault();
     submit();
+    if (event.submitter === send && (held ?? true)) input.focus({ preventScroll: true });
+    held = null;
   });
 
   // A picture on the clipboard, or a text too long to be a sentence, goes with the instruction

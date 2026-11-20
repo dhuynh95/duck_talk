@@ -325,7 +325,11 @@ export function chatsDrawer(store, actions) {
       emptyDetail.hidden = !words[1];
     }
 
-    const hadFocus = list.contains(document.activeElement);
+    // Moving a row takes the keyboard out of it (an element that is taken out of the page and put
+    // back has lost its focus) — as starring one does, by sending it to the top. So what had
+    // focus is remembered, and given it again once the rows are where they go.
+    const focused = document.activeElement;
+    const hadFocus = list.contains(focused);
     /** @type {Set<string>} */
     const seen = new Set();
     for (const chat of shown) {
@@ -346,8 +350,12 @@ export function chatsDrawer(store, actions) {
         rows.delete(id);
       }
     }
-    // The row that had the keyboard is gone (deleted, or filtered out): it goes somewhere that is.
-    if (hadFocus && !list.contains(document.activeElement)) (searchBox.hidden ? newChat : search).focus({ preventScroll: true });
+    if (hadFocus && !list.contains(document.activeElement)) {
+      // Its own control, brought into view: the row may have been sent to the other end of the list.
+      if (focused instanceof HTMLElement && focused.isConnected) focused.focus();
+      // The row that had the keyboard is gone (deleted, filtered out), or cannot take it now: it goes somewhere that can.
+      if (!list.contains(document.activeElement)) (searchBox.hidden ? newChat : search).focus({ preventScroll: true });
+    }
   }
 
   search.addEventListener('input', () => {

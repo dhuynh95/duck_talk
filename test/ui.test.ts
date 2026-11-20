@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { isWorking, toolLabel } from '../web/ui/transcript-view.js';
+import { grownBy, isWorking, toolLabel } from '../web/ui/transcript-view.js';
 
 // The two rules the transcript view draws by. The drawing itself is checked in Chrome.
 
@@ -30,5 +30,18 @@ describe('isWorking', () => {
   it('is false with nothing going on', () => {
     assert.equal(isWorking({ lines: [] }), false);
     assert.equal(isWorking({}), false);
+  });
+});
+
+describe('grownBy', () => {
+  it('is what a reply gained when it only got longer, so it can be added to the text that is there', () => {
+    assert.equal(grownBy('The login', 'The login handler'), ' handler');
+    assert.equal(grownBy('', 'Hello'), 'Hello');
+  });
+
+  it('is null for anything that is not an addition: no change, a rewrite, a shorter text', () => {
+    assert.equal(grownBy('same', 'same'), null);
+    assert.equal(grownBy('The login', 'A login handler'), null);
+    assert.equal(grownBy('The login handler', 'The login'), null);
   });
 });

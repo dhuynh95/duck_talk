@@ -34,6 +34,8 @@ import { piecesRow } from './pieces.js';
 const LOGO = '/logo.svg';
 /** Within this of the end counts as at the end: a finger never lands on the exact pixel. */
 const NEAR_END = 80;
+/** The longest a smooth scroll to the end is taken to last, for a browser that does not say when it stops, in ms. */
+const FLIGHT_MAX = 900;
 
 /**
  * The tools of a run, as one label: repeats counted, in the order first used ("Read ×3, Bash").
@@ -57,6 +59,39 @@ export function isWorking(state) {
   const lines = state['lines'] ?? [];
   const last = lines.at(-1);
   return last?.kind === 'tools' && last.running;
+}
+
+/**
+ * What must be added to `was` to make `next`, when `next` is `was` with more after it — a reply
+ * arriving word by word — and null when it is anything else (a rewrite, or no change).
+ * @param {string} was
+ * @param {string} next
+ * @returns {string | null}
+ */
+export function grownBy(was, next) {
+  return next.length > was.length && next.startsWith(was) ? next.slice(was.length) : null;
+}
+
+/**
+ * Show `next` as the text of `el`, touching as little as it can. Nothing is written when it is
+ * already there (the store is written on every streamed word, and a write to a live region is an
+ * announcement). Words that only grew are added to the text node that holds them, with
+ * `appendData`, and not put in a new one: a selection inside a reply that is still arriving
+ * stays where it was, which `textContent = …` would throw away every time.
+ * @param {HTMLElement} el an element whose only content is text
+ * @param {string} next
+ */
+function setText(el, next) {
+  const node = el.firstChild;
+  if (node instanceof Text && node === el.lastChild) {
+    if (node.data === next) return;
+    const more = grownBy(node.data, next);
+    if (more !== null) {
+      node.appendData(more);
+      return;
+    }
+  }
+  if (el.textContent !== next) el.textContent = next;
 }
 
 /**
@@ -101,10 +136,10 @@ function updateRow(row, line) {
   const was = row.line;
   row.line = line;
   if (line.kind === 'tools') {
-    if (line.tools !== was.tools) row.text.textContent = toolLabel(line.tools);
+    if (line.tools !== was.tools) setText(row.text, toolLabel(line.tools));
     row.el.classList.toggle('running', line.running);
   } else {
-    if (line.text !== was.text) row.text.textContent = line.text;
+    if (line.text !== was.text) setText(row.text, line.text);
     if (line.given !== was.given) row.pieces?.update(line.given);
   }
 }
@@ -203,20 +238,44 @@ export function transcriptView(store, context = {}) {
   };
 
   const atEnd = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= NEAR_END;
+  // A smooth scroll to the end passes through places that are not the end, and each of them is a
+  // scroll event that would say "not at the end": the button would come back in the middle of its
+  // own trip, and a word arriving meanwhile would not be followed. While one is in flight the
+  // scroll events are ours and are ignored; it is over at `scrollend` (which a reader taking
+  // the scroll for themselves also brings, and where it ends is where they are), or at the
+  // latest after FLIGHT_MAX for a browser that has no such event.
+  let flying = false;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let flightTimer;
+  const landed = () => {
+    flying = false;
+    clearTimeout(flightTimer);
+    stuck = atEnd();
+    jump.hidden = stuck;
+  };
   const toEnd = (smooth = false) => {
     const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-    scroller.scrollTo({ top: scroller.scrollHeight, behavior: smooth && !reduce ? 'smooth' : 'auto' });
+    // Nowhere to go is no trip, and a trip that is not one never ends with a `scrollend`.
+    const glide = smooth && !reduce && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop > 1;
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: glide ? 'smooth' : 'auto' });
     stuck = true;
     jump.hidden = true;
+    clearTimeout(flightTimer);
+    flying = glide;
+    if (glide) flightTimer = setTimeout(landed, FLIGHT_MAX);
   };
   const follow = () => {
     if (stuck) toEnd();
   };
 
   scroller.addEventListener('scroll', () => {
+    if (flying) return;
     stuck = atEnd();
     jump.hidden = stuck;
   }, { passive: true });
+  scroller.addEventListener('scrollend', () => {
+    if (flying) landed();
+  });
   jump.addEventListener('click', () => toEnd(true));
   // The room changes without a scroll: the window, the keyboard, the composer growing.
   if (typeof ResizeObserver === 'function') new ResizeObserver(follow).observe(scroller);
@@ -276,14 +335,14 @@ export function transcriptView(store, context = {}) {
 
     const said = state['utterance'];
     utteranceRow.hidden = !said;
-    if (said && utterance.textContent !== said) utterance.textContent = said;
+    if (said) setText(utterance, said);
 
     const busy = isWorking(state);
     workingRow.hidden = !busy;
     notice.hidden = !state['notice'];
-    notice.textContent = state['notice'] ?? '';
+    setText(notice, state['notice'] ?? '');
     error.hidden = !state['error'];
-    error.textContent = state['error'] ?? '';
+    setText(error, state['error'] ?? '');
     empty.hidden = lines.length > 0 || !!said || busy;
 
     const speaking = !!said && !drawn['utterance']; // you started a sentence: that is where to look
