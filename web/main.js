@@ -224,7 +224,8 @@ function app(key, storage) {
     }).observe(bottom.el);
   }
 
-  // Esc stops whatever is running, from anywhere on the page.
+  // Esc stops whatever is running, from anywhere on the page — unless something nearer has taken
+  // it (a sheet, the skills list putting itself away), which says so by preventing it.
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !event.defaultPrevented && bottom.stop()) event.preventDefault();
   });

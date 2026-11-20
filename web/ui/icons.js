@@ -98,6 +98,10 @@ const SHAPES = {
     ['circle', { cx: '9', cy: '10', r: '1.5' }],
     ['path', { d: 'M4 17l5-5 4 4 3-3 4 4' }],
   ],
+  camera: [
+    ['path', { d: 'M4 8.5A1.5 1.5 0 0 1 5.5 7H8l1.2-2h5.6L16 7h2.5A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z' }],
+    ['circle', { cx: '12', cy: '13', r: '3.2' }],
+  ],
   // Permission: what Claude may do, from looking to doing anything.
   eye: [
     ['path', { d: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z' }],

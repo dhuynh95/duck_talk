@@ -883,6 +883,204 @@ select {
   overflow-y: auto;
 }
 
+/* The field and, behind it, the hint a chosen skill gives for what it takes: a copy of the typed
+   "/name " that cannot be seen, with the hint written after it in muted type. It must set its
+   text exactly as the field does, so the two share their metrics. */
+.compose-field {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+}
+
+.compose-ghost {
+  position: absolute;
+  inset: 0;
+  padding: 11px 4px;
+  overflow: hidden;
+  font: inherit;
+  line-height: 22px;
+  white-space: pre;
+  pointer-events: none;
+}
+
+.ghost-text {
+  visibility: hidden;
+}
+
+.ghost-hint {
+  color: var(--text-tertiary);
+}
+
+/* How adding a picture is going, or why it did not: a line above the field that takes no room
+   while it has nothing to say. */
+.compose-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 2px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.compose-note[data-kind=""] {
+  height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.compose-note[data-kind="error"] {
+  color: var(--danger);
+}
+
+.compose-note:not([data-kind="busy"]) .spinner {
+  display: none;
+}
+
+/* What the next instruction will carry: pictures as squares and texts as chips, in a row that
+   scrolls sideways, with room above and to the right for the badge that overhangs each. */
+.attach-row {
+  display: flex;
+  gap: 12px;
+  margin: 0;
+  padding: 8px 8px 4px 2px;
+  overflow-x: auto;
+  list-style: none;
+  scrollbar-width: none;
+}
+
+.attach-row::-webkit-scrollbar {
+  display: none;
+}
+
+.attach-item {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  max-width: min(280px, 78vw);
+}
+
+.attach-img {
+  display: block;
+  width: 56px;
+  height: 56px;
+  border: 1px solid rgb(75 85 99 / 0.6);
+  border-radius: 12px;
+  background: var(--fill);
+  object-fit: cover;
+}
+
+.attach-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 40px;
+  padding: 0 14px 0 8px;
+  border: 1px solid rgb(75 85 99 / 0.6);
+  border-radius: 20px;
+  background: var(--fill);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* 22 px to look at, 44 to touch (the ::after). */
+.attach-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  color: var(--ground);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.5);
+  cursor: pointer;
+}
+
+.attach-remove::after {
+  content: "";
+  position: absolute;
+  inset: -11px;
+}
+
+.attach-remove .icon {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.6;
+}
+
+@media (hover: hover) {
+  .attach-remove:hover {
+    background: var(--text);
+  }
+}
+
+/* "/" reaches for a skill: a list above the composer, opaque (the composer is glass, and a glass
+   child of glass has nothing behind it to blur). Each skill is its name and, muted beside it,
+   what it takes; under them, what it does, on one line. */
+.skill-list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  max-height: min(264px, 38dvh);
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid rgb(75 85 99 / 0.55);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.skill-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 8px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.skill-option[aria-selected="true"] {
+  background: var(--fill);
+}
+
+.skill-name {
+  color: var(--text);
+  font: 15px/1.4 ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, monospace;
+}
+
+.skill-hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-desc {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .compose-input::placeholder {
   color: var(--text-tertiary);
 }
@@ -1361,6 +1559,17 @@ html.sheet-open body {
   width: 16px;
   height: 16px;
   color: var(--text-tertiary);
+}
+
+/* The Permission row wears the icon of the rung you are on, as the choice rows do. */
+.choice-trailing .choice-icon {
+  margin-right: -2px;
+}
+
+.choice-trailing .choice-icon .icon {
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
 }
 
 @media (hover: hover) {

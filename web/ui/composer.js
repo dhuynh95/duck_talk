@@ -1,8 +1,14 @@
 // @ts-check
 // The composer: the field and its send arrow, and under them the microphone, centred. On its
-// left is what Claude is — the model and what it may do — and on its right what is running:
-// mute, the speaker, and the one stop, or, while nothing is, how what you say will run (the
-// mode). Glass, floating over the end of the conversation, as on the phone.
+// left is what you add (the plus: a picture, and what Claude may do with it) and what Claude is —
+// the model — and on its right what is running: mute, the speaker, and the one stop, or, while
+// nothing is, how what you say will run (the mode). Glass, floating over the end of the
+// conversation, as on the phone.
+//
+// Above the field: the list of skills while you type "/…" (skill-list.js), what the next
+// instruction will carry (attach-chips.js) and, in a line of its own, how adding one is going.
+// A picture or a long text pasted into the field joins that list instead of the words
+// (intake.js does the work; the plus sheet, context-sheet.js, is the other way in).
 //
 // While the relay holds an instruction back for review, the field gives way to the review card
 // (review-card.js): the same box, asking a different question.
@@ -14,17 +20,24 @@
 // One stop, because there is one question — "make it stop" — whatever is running: Claude, the
 // microphone, or both. Esc asks it too.
 
+import { isLongPaste } from '../attach.js';
 import { h } from '../dom.js';
+import { createIntake } from '../intake.js';
+import { attachChips } from './attach-chips.js';
+import { contextButton } from './context-sheet.js';
 import { autosize, enterSends } from './field.js';
 import { icon } from './icons.js';
-import { modeCapsule, modeLocked, modelCapsule, permissionButton } from './pickers.js';
+import { modeCapsule, modeLocked, modelCapsule } from './pickers.js';
 import { reviewCard } from './review-card.js';
+import { skillList } from './skill-list.js';
 import { isWorking } from './transcript-view.js';
 
 /** @typedef {{ get: () => Record<string, any>, subscribe: (fn: (state: Record<string, any>) => void) => () => void }} Store */
-/** @typedef {Pick<import('../session.js').VoiceSession, 'send' | 'approve' | 'listen' | 'stopListening' | 'stopAll' | 'toggleMute' | 'output'>} SessionLike */
+/** @typedef {Pick<import('../session.js').VoiceSession, 'send' | 'approve' | 'attach' | 'drop' | 'listen' | 'stopListening' | 'stopAll' | 'toggleMute' | 'output'>} SessionLike */
 
 const BARS = 7;
+/** How long a reason something was not added stays up, in ms. */
+const NOTE_FOR = 7000;
 
 /**
  * @param {Store} store
@@ -52,19 +65,69 @@ export function composer(store, session, change) {
   const output = h('button', { class: 'round plain', type: 'button', 'aria-label': 'Speaker off', 'aria-pressed': 'false', hidden: true }, icon('speaker-off'));
   const stopButton = h('button', { class: 'round plain stop', type: 'button', 'aria-label': 'Stop listening', hidden: true }, icon('stop'));
 
-  const row = h('div', { class: 'compose-row' }, input, send);
+  // What a skill takes after its name, in muted type where the words will go: a placeholder shows
+  // only in an empty field, and the field is not empty — it holds "/name ". The ghost is a copy of
+  // that text, invisible, with the hint written after it, behind the field.
+  const ghostText = h('span', { class: 'ghost-text' });
+  const ghostHint = h('span', { class: 'ghost-hint' });
+  const ghost = h('div', { class: 'compose-ghost', 'aria-hidden': 'true', hidden: true }, ghostText, ghostHint);
+  const field = h('div', { class: 'compose-field' }, ghost, input);
+  const row = h('div', { class: 'compose-row' }, field, send);
   const review = reviewCard(session);
   const mode = modeCapsule(store, change);
+
+  // How adding something is going: working on it, or why it was not added. Always in the page, so
+  // a screen reader hears it change; empty, it takes no room.
+  const note = h('div', { class: 'compose-note', role: 'status', dataset: { kind: '' } }, h('span', { class: 'spinner small', 'aria-hidden': 'true' }), h('span', { class: 'note-text' }));
+  const noteText = /** @type {HTMLElement} */ (note.lastElementChild);
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let noteTimer;
+  /** @param {string} text @param {'busy' | 'error'} kind */
+  const say = (text, kind) => {
+    noteText.textContent = text;
+    note.dataset['kind'] = text ? kind : '';
+  };
+  const intake = createIntake({
+    session,
+    status: {
+      busy(text) {
+        clearTimeout(noteTimer);
+        if (text !== null) say(text, 'busy');
+        else if (note.dataset['kind'] === 'busy') say('', 'busy');
+      },
+      error(text) {
+        clearTimeout(noteTimer);
+        say(text, 'error');
+        noteTimer = setTimeout(() => say('', 'error'), NOTE_FOR);
+      },
+    },
+  });
+
+  const chips = attachChips(store, { drop: (id) => session.drop(id), focusField: () => input.focus() });
+
+  const skills = skillList(input, store, (skill) => {
+    const typed = `/${skill.name} `;
+    input.value = typed;
+    input.setSelectionRange(typed.length, typed.length);
+    autosize(input);
+    sync();
+    ghostText.textContent = typed;
+    ghostHint.textContent = skill.argumentHint ?? '';
+    ghost.hidden = !skill.argumentHint;
+  });
 
   const el = h(
     'form',
     { class: 'composer floating', dataset: { status: 'idle' } },
+    skills.el,
+    chips,
+    note,
     row,
     review.el,
     h(
       'div',
       { class: 'compose-bar' },
-      h('div', { class: 'bar-start' }, modelCapsule(store, change), permissionButton(store, change)), // what Claude is
+      h('div', { class: 'bar-start' }, contextButton(store, change, intake), modelCapsule(store, change)), // what you add, and what Claude is
       listen,
       h('div', { class: 'bar-end' }, mute, output, stopButton, mode), // what is running, or how it will run
     ),
@@ -75,20 +138,28 @@ export function composer(store, session, change) {
   const sync = () => {
     send.disabled = !input.value.trim();
   };
+  /** The hint under a chosen skill lasts until the words are anything but what the pick wrote. */
+  const clearGhost = () => {
+    if (ghost.hidden || input.value === ghostText.textContent) return;
+    ghost.hidden = true;
+  };
   const submit = () => {
     const text = input.value;
     if (!text.trim()) return;
     session.send(text); // mid-turn too: the session makes that a barge-in
     input.value = '';
+    clearGhost();
     autosize(input);
     sync();
   };
 
   input.addEventListener('input', () => {
+    clearGhost();
     autosize(input);
     sync();
   });
   input.addEventListener('keydown', (event) => {
+    if (skills.keydown(event)) return; // the list is open and took the key: Enter picks, it does not send
     if (!enterSends(event)) return;
     event.preventDefault();
     submit();
@@ -96,6 +167,24 @@ export function composer(store, session, change) {
   el.addEventListener('submit', (event) => {
     event.preventDefault();
     submit();
+  });
+
+  // A picture on the clipboard, or a text too long to be a sentence, goes with the instruction
+  // instead of into the field. Anything else pastes as it always did, and is left alone here.
+  input.addEventListener('paste', (event) => {
+    const data = event.clipboardData;
+    if (!data) return;
+    const pictures = [...data.items].flatMap((item) => (item.kind === 'file' && item.type.startsWith('image/') ? (item.getAsFile() ?? []) : []));
+    if (pictures.length > 0) {
+      event.preventDefault();
+      void intake.addFiles(pictures);
+      return;
+    }
+    const text = data.getData('text/plain');
+    if (isLongPaste(text)) {
+      event.preventDefault();
+      intake.addPaste(text);
+    }
   });
 
   // MARK: talking
@@ -134,6 +223,7 @@ export function composer(store, session, change) {
       const hadFocus = held === null && review.focused();
       review.set(held);
       row.hidden = held !== null;
+      if (held !== null) skills.close(); // the field is away: so is what it was offering
       // Accepted by keyboard: the keyboard goes back to the field. A touch screen is left alone,
       // because focus there is what raises the on-screen keyboard.
       if (hadFocus && typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches) input.focus();
@@ -173,8 +263,10 @@ export function composer(store, session, change) {
     stop,
     setDraft(text, focus = false) {
       input.value = text;
+      clearGhost();
       autosize(input);
       sync();
+      skills.update();
       if (!focus) return;
       input.focus();
       input.setSelectionRange(text.length, text.length);

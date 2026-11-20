@@ -3,11 +3,12 @@
 // answers (and how hard it thinks), and what it may do (permission). `Choices.swift` and the
 // bar under the composer in `ContentView.swift`, ported.
 //
-// They are small words in the bar — capsules — each opening a sheet that says what every
-// choice means, because a name you can read beats an icon nobody can read without being told.
-// Two of the three lists are known by heart, since the answers are the same on every machine;
-// the model list only the relay can know, so it arrives down the data socket and is drawn by
-// the same rows.
+// Mode and model are small words in the bar — capsules — each opening a sheet that says what
+// every choice means, because a name you can read beats an icon nobody can read without being
+// told. Permission is not in the bar — you set it once and forget it — but behind the plus
+// (context-sheet.js), which opens `permissionSheet` from here. Two of the three lists are known
+// by heart, since the answers are the same on every machine; the model list only the relay can
+// know, so it arrives down the data socket and is drawn by the same rows.
 //
 // The choices live in the store as `settings`; a pick asks `change` for a new one, and
 // whatever owns them (main.js) keeps them, applies them and writes them down. Capsules read the
@@ -193,26 +194,6 @@ export function modeCapsule(store, change) {
   return c.el;
 }
 
-/**
- * What Claude may do, named in the bar for now: its title, opening the same sheet the context
- * sheet will hold.
- * @param {Store} store
- * @param {Change} change
- * @returns {HTMLButtonElement}
- */
-export function permissionButton(store, change) {
-  const c = capsule('Permission');
-  /** @param {Record<string, any>} state */
-  const draw = (state) => {
-    const permission = PERMISSIONS.find((p) => p.id === state['settings'].permission) ?? PERMISSIONS[0];
-    c.draw({ label: permission.title, title: permission.detail });
-  };
-  draw(store.get());
-  store.subscribe(draw);
-  c.el.addEventListener('click', () => permissionSheet(store, change, c.el));
-  return c.el;
-}
-
 // MARK: the sheets
 
 /**
@@ -233,7 +214,7 @@ export function modeSheet(store, change, opener) {
 }
 
 /**
- * Exported as a function of its own: the context sheet will hold it.
+ * What Claude may do, as a sheet of its own: the context sheet's Permission row opens it.
  * @param {Store} store
  * @param {Change} change
  * @param {HTMLElement | null} [opener]
