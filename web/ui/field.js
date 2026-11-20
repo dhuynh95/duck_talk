@@ -35,6 +35,15 @@ export function autosizeOnResize(input) {
 }
 
 /**
+ * Whether a pointer that can aim is beside the screen: a keyboard-and-mouse machine, not a phone. On
+ * a touch screen focus is what raises the on-screen keyboard, so nothing the page does by itself
+ * (rather than for a tap) moves focus into a field there.
+ */
+export function finePointer() {
+  return typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches;
+}
+
+/**
  * Whether this keydown is Enter meaning "send". A keyboard with a fine pointer beside it sends on
  * Enter, and Shift+Enter breaks the line; on a touch screen Enter is the only way to break one,
  * so it does that and the button sends. Enter that is choosing a character in an input method is
@@ -44,5 +53,5 @@ export function autosizeOnResize(input) {
  */
 export function enterSends(event) {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return false;
-  return typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches;
+  return finePointer();
 }

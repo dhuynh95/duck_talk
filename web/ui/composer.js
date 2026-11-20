@@ -25,7 +25,7 @@ import { h } from '../dom.js';
 import { createIntake } from '../intake.js';
 import { attachChips } from './attach-chips.js';
 import { contextButton } from './context-sheet.js';
-import { autosize, autosizeOnResize, enterSends } from './field.js';
+import { autosize, autosizeOnResize, enterSends, finePointer } from './field.js';
 import { icon } from './icons.js';
 import { modeCapsule, modeLocked, modelCapsule } from './pickers.js';
 import { reviewCard } from './review-card.js';
@@ -246,7 +246,7 @@ export function composer(store, session, change) {
       if (held !== null) skills.close(); // the field is away: so is what it was offering
       // Accepted by keyboard: the keyboard goes back to the field. A touch screen is left alone,
       // because focus there is what raises the on-screen keyboard.
-      if (hadFocus && typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches) input.focus();
+      if (hadFocus && finePointer()) input.focus();
     }
     const lv = Number(state['level']) || 0;
     if (lv !== level) {

@@ -9,12 +9,13 @@
 // What was typed in the normal field is still there when this is gone.
 //
 // It announces itself, because nothing else will: it is a group with a name, a polite note says
-// what to do, and the keyboard moves into the field (unless a dialog or menu has it). Esc in the
-// field leaves the field and nothing more — Esc anywhere else stops Claude, which would throw
-// away the very edit being made.
+// what to do, and with a keyboard beside the screen the keyboard moves into the field (unless a
+// dialog or menu has it). On a touch screen it does not: focus there raises the on-screen keyboard,
+// over a conversation that is hands-free until now. Esc in the field leaves the field and nothing
+// more — Esc anywhere else stops Claude, which would throw away the very edit being made.
 
 import { h } from '../dom.js';
-import { autosize, autosizeOnResize, enterSends } from './field.js';
+import { autosize, autosizeOnResize, enterSends, finePointer } from './field.js';
 import { icon } from './icons.js';
 
 /** What to do, said to a screen reader when the card appears. */
@@ -64,7 +65,7 @@ export function reviewCard(session) {
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       event.preventDefault(); // taken: the page's Esc stops Claude, and the held instruction with it
-      if (!event.isComposing) input.blur(); // an input method's own Esc is its to say
+      if (!event.isComposing && event.keyCode !== 229) input.blur(); // an input method's own Esc is its to say (Safari's has only the keyCode)
       return;
     }
     if (!enterSends(event)) return;
@@ -87,8 +88,9 @@ export function reviewCard(session) {
       input.value = pending;
       autosize(input);
       sync();
-      // The keyboard goes where the question is — but not out of a dialog or menu someone is in.
-      if (document.querySelector('[aria-modal="true"], [role="menu"]')) return;
+      // The keyboard goes where the question is — with a keyboard beside the screen, and not out of
+      // a dialog or menu someone is in.
+      if (!finePointer() || document.querySelector('[aria-modal="true"], [role="menu"]')) return;
       input.focus({ preventScroll: true });
       input.setSelectionRange(input.value.length, input.value.length);
     },

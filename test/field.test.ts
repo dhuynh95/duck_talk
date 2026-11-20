@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
-import { autosizeOnResize, enterSends } from '../web/ui/field.js';
+import { autosizeOnResize, enterSends, finePointer } from '../web/ui/field.js';
 
 // What the message field and the review field decide for themselves: when Enter sends, and when a
 // change of width means the height must be worked out again. The drawing is looked at in Chrome.
@@ -16,6 +16,16 @@ const pointer = (kind: 'fine' | 'coarse') => {
   globals['matchMedia'] = (query: string) => ({ matches: query === `(pointer: ${kind})` });
 };
 const key = (rest: Record<string, unknown> = {}) => ({ key: 'Enter', shiftKey: false, isComposing: false, keyCode: 13, ...rest }) as unknown as KeyboardEvent;
+
+describe('finePointer', () => {
+  it('is whether a pointer that can aim is beside the screen, and false where the page cannot say', () => {
+    assert.equal(finePointer(), false);
+    pointer('fine');
+    assert.equal(finePointer(), true);
+    pointer('coarse');
+    assert.equal(finePointer(), false);
+  });
+});
 
 describe('enterSends', () => {
   it('sends on Enter where there is a keyboard, and not on a touch screen, where Enter breaks the line', () => {
