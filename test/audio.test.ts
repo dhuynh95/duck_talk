@@ -462,3 +462,117 @@ describe('AudioPipe when a callback throws', () => {
     pipe.stop();
   });
 });
+
+describe('AudioPipe gate: the microphone goes quiet while the reply is on the speaker', () => {
+  afterEach(restoreGlobals);
+
+  /** A started pipe on a clock the test moves, and the way to hand it one frame as the worklet would. */
+  async function gated() {
+    let time = 10_000;
+    const stub = installWebAudio({ getUserMedia: async (s) => micStream(s) });
+    const pipe = new AudioPipe({ now: () => time });
+    await pipe.start();
+    const chunks: ArrayBuffer[] = [];
+    const levels: number[] = [];
+    pipe.onChunk = (c) => chunks.push(c);
+    pipe.onLevel = (l) => levels.push(l);
+    const frame = () => {
+      const samples = new Int16Array(640).fill(8000); // loud: a level well above the floor
+      stub.worklets[0]?.port.onmessage?.({ data: samples.buffer });
+    };
+    /** The reply buffer the browser says it played to the end. */
+    const ended = (i: number) => (stub.sources[i] as unknown as { onended: () => void }).onended();
+    const advance = (ms: number) => void (time += ms);
+    const lastSilent = () => new Int16Array(chunks.at(-1)!).every((v) => v === 0);
+    return { pipe, stub, chunks, levels, frame, ended, advance, lastSilent };
+  }
+
+  it('is on by default, and passes the room while no reply is playing', async () => {
+    const { pipe, frame, chunks, levels, lastSilent } = await gated();
+    assert.equal(pipe.gate, true);
+    frame();
+    assert.equal(chunks.length, 1);
+    assert.equal(lastSilent(), false);
+    assert.ok(levels.at(-1)! > 0);
+    pipe.stop();
+  });
+
+  it('zero-fills frames, same length and same cadence, while reply audio is queued', async () => {
+    const { pipe, frame, chunks, levels, lastSilent } = await gated();
+    pipe.play(new ArrayBuffer(4800));
+    frame();
+    frame();
+    assert.equal(chunks.length, 2, 'a frame still goes out for every frame captured');
+    assert.ok(chunks.every((c) => c.byteLength === 1280));
+    assert.equal(lastSilent(), true);
+    assert.deepEqual(levels, [0, 0]);
+    pipe.stop();
+  });
+
+  it('holds the gate for 300 ms after the speaker last ran dry, then lets the room through', async () => {
+    const { pipe, frame, ended, advance, lastSilent } = await gated();
+    pipe.play(new ArrayBuffer(4800));
+    pipe.play(new ArrayBuffer(4800));
+    ended(0);
+    frame();
+    assert.equal(lastSilent(), true, 'one buffer still queued');
+    ended(1); // dry now
+    advance(299);
+    frame();
+    assert.equal(lastSilent(), true, 'the room still carries the tail of the reply');
+    advance(1);
+    frame();
+    assert.equal(lastSilent(), false);
+    pipe.stop();
+  });
+
+  it('holds after a flush too: a barge-in that stops the reply still leaves its echo in the room', async () => {
+    const { pipe, frame, advance, lastSilent } = await gated();
+    pipe.play(new ArrayBuffer(4800));
+    pipe.flush();
+    frame();
+    assert.equal(lastSilent(), true);
+    advance(300);
+    frame();
+    assert.equal(lastSilent(), false);
+    pipe.stop();
+  });
+
+  it('passes real audio throughout when the gate is off', async () => {
+    const { pipe, frame, levels, lastSilent } = await gated();
+    pipe.gate = false;
+    pipe.play(new ArrayBuffer(4800));
+    frame();
+    assert.equal(lastSilent(), false);
+    assert.ok(levels.at(-1)! > 0);
+    pipe.stop();
+  });
+
+  it('does not gate a reply that is not being played: with the output off nothing reaches the room', async () => {
+    const { pipe, frame, lastSilent } = await gated();
+    pipe.output = false;
+    pipe.play(new ArrayBuffer(4800));
+    frame();
+    assert.equal(lastSilent(), false);
+    pipe.stop();
+  });
+
+  it('never double-counts with mute: one zeroed frame per frame, and still zero once the gate opens', async () => {
+    const { pipe, frame, ended, advance, chunks, levels, lastSilent } = await gated();
+    pipe.muted = true;
+    pipe.play(new ArrayBuffer(4800));
+    frame();
+    assert.equal(chunks.length, 1);
+    assert.deepEqual(levels, [0]);
+    assert.equal(lastSilent(), true);
+    ended(0);
+    advance(1000);
+    frame();
+    assert.equal(chunks.length, 2);
+    assert.equal(lastSilent(), true, 'muted is muted, gate or no gate');
+    pipe.muted = false;
+    frame();
+    assert.equal(lastSilent(), false);
+    pipe.stop();
+  });
+});

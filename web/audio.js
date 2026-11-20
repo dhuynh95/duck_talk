@@ -1,7 +1,7 @@
 // @ts-check
 // Mic in, speaker out, in a browser, and nothing about the network: a port of
 // `AudioPipe.swift`, with the same three bits (`muted`, `output`, `waiting`) and the same
-// callbacks. The microphone is captured by mic-worklet.js, which hands over 16 kHz Int16
+// callbacks, and one the phone did without (`gate`: see there). The microphone is captured by mic-worklet.js, which hands over 16 kHz Int16
 // frames; the reply is scheduled here, one AudioBuffer per chunk, back to back. What can be
 // wrong about the counting is in playback.js (PlayQueue) and what can be wrong about the
 // samples is in pcm.js, both plain functions with tests; this file is only the Web Audio
@@ -23,6 +23,8 @@ const CHIME_FADE_IN = 0.4;
 const CHIME_FADE_OUT = 0.15;
 /** A buffer is never started in the past, and a few ms ahead of the clock keeps it from being late to the first render. */
 const LEAD = 0.02;
+/** How long the gate stays shut after the speaker runs dry: the room still carries the reply's tail. */
+const GATE_HOLD_MS = 300;
 
 /** @param {unknown} e */
 function describe(e) {
@@ -77,6 +79,15 @@ export class AudioPipe {
    */
   muted = false;
 
+  /**
+   * Send silence while the reply is on the speaker, and for a moment after. A browser's echo
+   * cancellation is good, not perfect, on a phone's speaker, and what leaks back is Claude's
+   * own voice — which the relay hears as you interrupting. Zeroed exactly as `muted` zeroes,
+   * so the relay sees no gap. The price is that a reply cannot be talked over while it plays;
+   * with headphones there is no echo to keep out, and this can be off.
+   */
+  gate = true;
+
   #output = true;
   #waiting = false;
 
@@ -84,6 +95,10 @@ export class AudioPipe {
   #queue;
   /** Set while being stopped, so tearing down does not report a speaker running dry. */
   #closing = false;
+  /** @type {() => number} milliseconds, for the gate's hold */
+  #now;
+  /** When the speaker last ran dry with the output on; long ago until it does. */
+  #dryAt = -Infinity;
 
   /** @type {AudioContext | null} also the answer to "is this running": set at the first line of `start`, cleared by `stop` */
   #ctx = null;
@@ -116,16 +131,21 @@ export class AudioPipe {
   #wake = null;
   #waking = false;
 
-  constructor() {
+  /** @param {{ now?: () => number }} [options] `now` in milliseconds, for a test to move by hand */
+  constructor({ now = () => performance.now() } = {}) {
+    this.#now = now;
     this.#queue = new PlayQueue({
       onDrained: (ms) => {
+        // With the output off nothing was in the room, and each chunk consumed on arrival
+        // drains: stamping those would hold the gate shut for a reply nobody hears.
+        if (this.#output) this.#dryAt = this.#now();
         if (!this.#closing) this.#emit('onDrained', ms);
       },
       onChime: (on) => {
         this.#chimeWanted = on;
         this.#applyChime();
       },
-      now: () => performance.now(),
+      now: () => this.#now(),
       setTimer: (fn, ms) => {
         setTimeout(fn, ms);
       },
@@ -362,16 +382,22 @@ export class AudioPipe {
   /** @param {unknown} data one frame from the worklet */
   #frame(data) {
     if (!(data instanceof ArrayBuffer)) return;
-    if (this.muted) {
+    if (this.muted || this.#gated()) {
       // Zeroed after capture, so the frame is exactly the shape a heard one would be. The meter
       // is skipped rather than fed zeros, so the level drops to nothing at once and the waveform
-      // going flat is how the screen says muted.
+      // going flat is how the screen says muted (or gated).
       this.#emit('onLevel', 0);
       this.#emit('onChunk', new ArrayBuffer(data.byteLength));
       return;
     }
     this.#emit('onLevel', this.#meter.process(new Int16Array(data)));
     this.#emit('onChunk', data);
+  }
+
+  /** The gate is on and the reply is in the room: playing now, or ran dry less than the hold ago. */
+  #gated() {
+    if (!this.gate) return false;
+    return this.#queue.queued > 0 || this.#now() - this.#dryAt < GATE_HOLD_MS;
   }
 
   /**

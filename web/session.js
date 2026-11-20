@@ -21,7 +21,7 @@ import { Transcript } from './transcript.js';
 /** @typedef {import('./transcript.js').ChatMessage} ChatMessage */
 /** @typedef {import('./transcript.js').TranscriptState} TranscriptState */
 /** @typedef {Pick<WebSocket, 'send' | 'close' | 'readyState' | 'binaryType' | 'onopen' | 'onmessage' | 'onclose' | 'onerror'>} SocketLike */
-/** @typedef {Pick<import('./audio.js').AudioPipe, 'onChunk' | 'onLevel' | 'onDrained' | 'onProblem' | 'onAudio' | 'muted' | 'waiting' | 'start' | 'stop' | 'play' | 'flush' | 'expectReply'>} PipeLike */
+/** @typedef {Pick<import('./audio.js').AudioPipe, 'onChunk' | 'onLevel' | 'onDrained' | 'onProblem' | 'onAudio' | 'muted' | 'output' | 'gate' | 'waiting' | 'start' | 'stop' | 'play' | 'flush' | 'expectReply'>} PipeLike */
 
 /**
  * What the screen reads. `status` is the microphone only: `connecting` is the call being placed.
@@ -93,6 +93,10 @@ export class VoiceSession {
   #model = '';
   #permission = '';
   #effort = '';
+
+  /** The pipe's output and gate, as chosen: kept here because every `listen` makes a new pipe. */
+  #output = true;
+  #gate = true;
 
   /** @param {SessionDeps} deps */
   constructor({ store, urlFor, makeSocket, makePipe, setTimer, now }) {
@@ -363,6 +367,26 @@ export class VoiceSession {
 
   // MARK: the microphone
 
+  /** Play the spoken reply, or not. Held for the next pipe, and told to a live one only on a change. */
+  get output() {
+    return this.#output;
+  }
+  set output(on) {
+    if (on === this.#output) return;
+    this.#output = on;
+    if (this.#pipe) this.#pipe.output = on;
+  }
+
+  /** Keep the microphone quiet while the reply plays (see AudioPipe `gate`). Held and told like `output`. */
+  get gate() {
+    return this.#gate;
+  }
+  set gate(on) {
+    if (on === this.#gate) return;
+    this.#gate = on;
+    if (this.#pipe) this.#pipe.gate = on;
+  }
+
   /**
    * Start talking. Call it from the tap: the pipe is started here, synchronously, because a
    * browser only opens audio for a page the person has just touched. The socket opens if
@@ -377,6 +401,8 @@ export class VoiceSession {
 
     const pipe = this.#makePipe();
     this.#pipe = pipe;
+    if (pipe.output !== this.#output) pipe.output = this.#output;
+    if (pipe.gate !== this.#gate) pipe.gate = this.#gate;
     pipe.onLevel = (level) => this.#store.set({ level });
     // What the speaker really played: the relay's only way to tell a reply heard from one cut off.
     pipe.onDrained = (ms) => this.#send({ type: 'played', ms: Math.round(ms) });

@@ -59,6 +59,7 @@ class FakePipe {
   muted = false;
   output = true;
   waiting = false;
+  gate = true;
   startCalls = 0;
   stopCalls = 0;
   flushes = 0;
@@ -467,6 +468,66 @@ describe('VoiceSession: the microphone', () => {
     session.stopAll();
     assert.deepEqual(last().frames.at(-1), { type: 'stop' });
     assert.equal(state().status, 'idle');
+  });
+});
+
+describe('VoiceSession: output and gate, held for the pipe', () => {
+  /** Records every assignment to `output` and `gate` on a pipe, so a needless one shows. */
+  const watch = (pipe: Record<string, unknown>) => {
+    const sets: string[] = [];
+    for (const name of ['output', 'gate']) {
+      let value = pipe[name];
+      Object.defineProperty(pipe, name, {
+        get: () => value,
+        set: (v) => {
+          sets.push(`${name}=${v}`);
+          value = v;
+        },
+      });
+    }
+    return sets;
+  };
+
+  it('are on until told otherwise, and say so', () => {
+    const { session } = rig();
+    assert.equal(session.output, true);
+    assert.equal(session.gate, true);
+  });
+
+  it('hands what was chosen before listening to the pipe that listen() makes', async () => {
+    const { session, pipes } = rig();
+    session.output = false;
+    session.gate = false;
+    session.listen();
+    assert.equal(pipes[0]!.output, false);
+    assert.equal(pipes[0]!.gate, false);
+    session.stopListening();
+    session.listen(); // a fresh pipe each time, told the same
+    assert.equal(pipes[1]!.output, false);
+    assert.equal(pipes[1]!.gate, false);
+  });
+
+  it('applies a change to the live pipe at once, and only a change', async () => {
+    const { session, pipe } = await live();
+    const sets = watch(pipe as unknown as Record<string, unknown>);
+    session.output = true; // already on
+    session.gate = true;
+    assert.deepEqual(sets, []);
+    session.output = false;
+    session.gate = false;
+    session.output = false;
+    assert.deepEqual(sets, ['output=false', 'gate=false']);
+    assert.equal(pipe.output, false);
+    assert.equal(pipe.gate, false);
+    session.output = true;
+    assert.equal(pipe.output, true);
+  });
+
+  it('touches no pipe when there is none', () => {
+    const { session, pipes } = rig();
+    session.output = false;
+    session.gate = false;
+    assert.equal(pipes.length, 0);
   });
 });
 
