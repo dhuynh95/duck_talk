@@ -13,12 +13,23 @@
 // It follows the end of the conversation while you are at the end, and lets you read while
 // you are not: scrolled up more than a little, new words arrive without moving you, and a
 // button offers the way back down.
+//
+// Under each line are its verbs (line-actions.js), and above one of yours what it was given with
+// (pieces.js): pictures, fetched by id when their square scrolls into view, and pasted texts.
+// Both belong to a row and go with it: a row that is removed lets go of its clips and pictures.
 
 import { h } from '../dom.js';
 import { icon } from './icons.js';
+import { lineActions, streamingId } from './line-actions.js';
+import { piecesRow } from './pieces.js';
 
 /** @typedef {import('../transcript.js').Line} Line */
 /** @typedef {{ get: () => Record<string, any>, subscribe: (fn: (state: Record<string, any>) => void) => () => void }} Store */
+/**
+ * What the lines need from the page beyond the store: what the verbs do, and how a stored
+ * picture is fetched. Left out, the verbs do nothing and pictures are placeholders.
+ * @typedef {import('./line-actions.js').LineHandlers & { image: (id: number) => Promise<Blob | null> }} LineContext
+ */
 
 const LOGO = '/logo.svg';
 /** Within this of the end counts as at the end: a finger never lands on the exact pixel. */
@@ -48,21 +59,41 @@ export function isWorking(state) {
   return last?.kind === 'tools' && last.running;
 }
 
-/** @typedef {{ el: HTMLElement, text: HTMLElement, line: Line }} Row */
+/**
+ * One line on screen. `pieces` and `verbs` are only on the kinds of line that have them, and
+ * `verbsFor` is what the verbs were last drawn for, so a row that has not moved is not asked again.
+ * @typedef {{
+ *   el: HTMLElement,
+ *   text: HTMLElement,
+ *   line: Line,
+ *   pieces: import('./pieces.js').Pieces | null,
+ *   verbs: import('./line-actions.js').LineActions | null,
+ *   verbsFor: { line: Line, streaming: boolean } | null,
+ * }} Row
+ */
 
-/** @param {Line} line @returns {Row} */
-function makeRow(line) {
+/**
+ * @param {Line} line
+ * @param {{ source: import('./pieces.js').PieceSource, handlers: import('./line-actions.js').LineHandlers }} parts
+ * @returns {Row}
+ */
+function makeRow(line, { source, handlers }) {
   if (line.kind === 'user') {
     const text = h('div', { class: 'bubble' }, line.text);
-    return { el: h('div', { class: 'row user' }, text), text, line };
+    const pieces = piecesRow(source);
+    pieces.update(line.given);
+    const verbs = lineActions(handlers);
+    const el = h('div', { class: 'row user' }, h('div', { class: 'stack' }, pieces.el, text, verbs.el));
+    return { el, text, line, pieces, verbs, verbsFor: null };
   }
   if (line.kind === 'model') {
     const text = h('div', { class: 'model-text' }, line.text);
-    return { el: h('div', { class: 'row model' }, text), text, line };
+    const verbs = lineActions(handlers);
+    return { el: h('div', { class: 'row model' }, text, verbs.el), text, line, pieces: null, verbs, verbsFor: null };
   }
   const text = h('span', { class: 'tools-label' }, toolLabel(line.tools));
   const el = h('div', { class: line.running ? 'row tools running' : 'row tools' }, h('span', { class: 'tools-mark', 'aria-hidden': 'true' }), text);
-  return { el, text, line };
+  return { el, text, line, pieces: null, verbs: null, verbsFor: null };
 }
 
 /** Bring a row up to date with its line, touching only what moved. @param {Row} row @param {Line} line */
@@ -72,9 +103,17 @@ function updateRow(row, line) {
   if (line.kind === 'tools') {
     if (line.tools !== was.tools) row.text.textContent = toolLabel(line.tools);
     row.el.classList.toggle('running', line.running);
-  } else if (line.text !== was.text) {
-    row.text.textContent = line.text;
+  } else {
+    if (line.text !== was.text) row.text.textContent = line.text;
+    if (line.given !== was.given) row.pieces?.update(line.given);
   }
+}
+
+/** Take a row off the page, and let go of what it holds: playing clips, picture URLs. @param {Row} row */
+function removeRow(row) {
+  row.pieces?.destroy();
+  row.verbs?.destroy();
+  row.el.remove();
 }
 
 /** Nothing said yet: the mark and the name, and the one piece of advice worth giving. */
@@ -91,9 +130,20 @@ function blank() {
 
 /**
  * @param {Store} store
+ * @param {Partial<LineContext>} [context] what the verbs do, and how a stored picture is fetched
  * @returns {{ el: HTMLElement, follow: () => void }} `follow` keeps the end in view if it was in view, for a caller that just changed the room the conversation has
  */
-export function transcriptView(store) {
+export function transcriptView(store, context = {}) {
+  /** @type {LineContext} */
+  const ctx = {
+    edit: () => {},
+    fix: () => {},
+    fork: () => {},
+    notify: () => {},
+    clip: async () => null,
+    image: async () => null,
+    ...context,
+  };
   const empty = blank();
   const list = h('div', { class: 'lines' });
   const utterance = h('div', { class: 'bubble' });
@@ -118,6 +168,40 @@ export function transcriptView(store) {
   /** At the end, as of the last scroll: what decides whether new content moves the view. */
   let stuck = true;
 
+  // A picture is fetched when its square comes near the screen, once: one observer for them all.
+  /** @type {IntersectionObserver | null} */
+  let observer = null;
+  /** @type {Map<Element, () => void>} */
+  const waiting = new Map();
+  /** @type {import('./pieces.js').PieceSource} */
+  const source = {
+    image: ctx.image,
+    watch(target, fn) {
+      if (typeof IntersectionObserver !== 'function') {
+        fn();
+        return () => {};
+      }
+      observer ??= new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            const run = waiting.get(entry.target);
+            if (!entry.isIntersecting || !run) continue;
+            waiting.delete(entry.target);
+            observer?.unobserve(entry.target);
+            run();
+          }
+        },
+        { root: scroller, rootMargin: '300px 0px' },
+      );
+      waiting.set(target, fn);
+      observer.observe(target);
+      return () => {
+        waiting.delete(target);
+        observer?.unobserve(target);
+      };
+    },
+  };
+
   const atEnd = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= NEAR_END;
   const toEnd = (smooth = false) => {
     const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -141,23 +225,29 @@ export function transcriptView(store) {
    * Lines kept by id, in order. True if one of yours was added: something you just said is
    * where the view goes, wherever you had scrolled to.
    * @param {Line[]} lines
+   * @param {number | null} streaming the line still being written, which has no verbs yet
    */
-  function drawLines(lines) {
+  function drawLines(lines, streaming) {
     let yours = false;
     /** @type {Set<number>} */
     const seen = new Set();
     lines.forEach((line, i) => {
       let row = rows.get(line.id);
       if (row && row.line.kind !== line.kind) {
-        row.el.remove();
+        removeRow(row);
         row = undefined;
       }
       if (!row) {
-        row = makeRow(line);
+        row = makeRow(line, { source, handlers: ctx });
         rows.set(line.id, row);
         if (line.kind === 'user') yours = true;
       } else if (row.line !== line) {
         updateRow(row, line);
+      }
+      const writing = line.id === streaming;
+      if (row.verbs && (row.verbsFor?.line !== line || row.verbsFor.streaming !== writing)) {
+        row.verbs.update(line, writing);
+        row.verbsFor = { line, streaming: writing };
       }
       seen.add(line.id);
       const here = list.children[i];
@@ -165,7 +255,7 @@ export function transcriptView(store) {
     });
     for (const [id, row] of rows) {
       if (!seen.has(id)) {
-        row.el.remove();
+        removeRow(row);
         rows.delete(id);
       }
     }
@@ -181,7 +271,8 @@ export function transcriptView(store) {
 
     /** @type {Line[]} */
     const lines = state['lines'] ?? [];
-    const yours = changed('lines') && drawLines(lines);
+    // A turn ending changes which line is still being written without changing any line.
+    const yours = (changed('lines') || changed('inFlight')) && drawLines(lines, streamingId(lines, !!state['inFlight']));
 
     const said = state['utterance'];
     utteranceRow.hidden = !said;

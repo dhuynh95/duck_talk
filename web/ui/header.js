@@ -9,8 +9,9 @@
 // relay to answer, and a drop that heals in a blink is not an outage: a red word on a screen
 // that is working is a false alarm.
 //
-// The chats and settings buttons are here and named, and do nothing yet: the drawer and the
-// settings sheet are theirs to open.
+// The chats button opens the drawer (drawer.js), which on a wide screen is always open and so
+// has no use for it: CSS hides it there but keeps its room, so the name stays in the middle. The
+// settings button is here and named, and does nothing yet: the settings sheet is its to open.
 
 import { h } from '../dom.js';
 import { icon } from './icons.js';
@@ -21,15 +22,17 @@ const GRACE = 800;
 
 /**
  * @param {{ get: () => Record<string, any>, subscribe: (fn: (state: Record<string, any>) => void) => () => void }} store
+ * @param {{ openChats?: (opener: HTMLElement) => void }} [actions] `openChats` is told which button was pressed, so focus can go back to it
  * @returns {HTMLElement}
  */
-export function header(store) {
+export function header(store, actions = {}) {
+  const chats = h('button', { class: 'round floating chats-button', type: 'button', 'aria-label': 'Chats', 'aria-haspopup': 'dialog', onclick: () => actions.openChats?.(chats) }, icon('chats'));
   const offline = h('span', { class: 'status-pill', role: 'status', hidden: true }, h('span', { class: 'status-dot', 'aria-hidden': 'true' }), 'Offline');
 
   const el = h(
     'header',
     { class: 'top' },
-    h('button', { class: 'round floating', type: 'button', 'aria-label': 'Chats' }, icon('chats')),
+    chats,
     h('div', { class: 'title floating' }, h('img', { class: 'logo', src: LOGO, alt: '' }), h('h1', null, 'Duck Talk')),
     h('div', { class: 'top-end' }, offline, h('button', { class: 'round floating', type: 'button', 'aria-label': 'Settings' }, icon('settings'))),
   );

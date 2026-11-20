@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { loadSettings, normalizeSettings, saveSettings } from '../web/settings.js';
 
-const DEFAULTS = { mode: 'direct', model: 'default', effort: 'default', permission: 'plan', autocorrect: false, output: true, gate: true };
+const DEFAULTS = { mode: 'direct', model: 'default', effort: 'default', permission: 'plan', autocorrect: false, output: true, gate: true, lastChat: null };
 
 /** A storage that holds what it is given, in memory. */
 function memory(initial: Record<string, string> = {}) {
@@ -42,7 +42,7 @@ describe('loadSettings', () => {
 
   it('reads back what was saved', () => {
     const storage = memory();
-    const chosen = { mode: 'review', model: 'claude-sonnet-5', effort: 'xhigh', permission: 'bypassPermissions', autocorrect: true, output: false, gate: false };
+    const chosen = { mode: 'review', model: 'claude-sonnet-5', effort: 'xhigh', permission: 'bypassPermissions', autocorrect: true, output: false, gate: false, lastChat: 'c0ffee-1' };
     assert.equal(saveSettings(storage, chosen as any), true);
     assert.deepEqual(loadSettings(storage), chosen);
   });
@@ -72,6 +72,19 @@ describe('loadSettings', () => {
     }
   });
 
+  it('keeps the last open chat, and has none until one is kept', () => {
+    assert.equal(loadSettings(null).lastChat, null);
+    assert.equal(loadSettings(memory({ [KEY]: JSON.stringify({ lastChat: '4f1c-22' }) })).lastChat, '4f1c-22');
+  });
+
+  it('takes a last chat that is not a non-empty string for none, and costs no other field', () => {
+    for (const bad of ['', 7, true, ['x'], { id: 'x' }, null]) {
+      const loaded = loadSettings(memory({ [KEY]: JSON.stringify({ lastChat: bad, mode: 'review' }) }));
+      assert.equal(loaded.lastChat, null, JSON.stringify(bad));
+      assert.equal(loaded.mode, 'review');
+    }
+  });
+
   it('ignores keys it does not know, and does not hand them on', () => {
     const loaded = loadSettings(memory({ [KEY]: '{"mode":"review","color":"red","__proto__":{"polluted":true},"constructor":{"x":1}}' }));
     assert.deepEqual(loaded, { ...DEFAULTS, mode: 'review' });
@@ -90,6 +103,14 @@ describe('saveSettings', () => {
     const storage = memory();
     saveSettings(storage, { ...DEFAULTS, mode: 'sideways', model: 3 } as any);
     assert.deepEqual(JSON.parse(storage.items.get(KEY)!), DEFAULTS);
+  });
+
+  it('writes the last chat, and a last chat that is not a string as none', () => {
+    const storage = memory();
+    saveSettings(storage, { ...DEFAULTS, lastChat: 'abc' } as any);
+    assert.equal(JSON.parse(storage.items.get(KEY)!).lastChat, 'abc');
+    saveSettings(storage, { ...DEFAULTS, lastChat: 12 } as any);
+    assert.equal(JSON.parse(storage.items.get(KEY)!).lastChat, null);
   });
 
   it('says false, and does not throw, when there is no storage or it refuses', () => {

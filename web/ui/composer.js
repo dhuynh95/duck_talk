@@ -30,7 +30,7 @@ const BARS = 7;
  * @param {Store} store
  * @param {SessionLike} session
  * @param {import('./pickers.js').Change} change how a choice is made: the speaker's, and the pickers'
- * @returns {{ el: HTMLElement, stop: () => boolean }} `stop` stops whatever is running, and says whether anything was
+ * @returns {{ el: HTMLElement, stop: () => boolean, setDraft: (text: string, focus?: boolean) => void }} `stop` stops whatever is running, and says whether anything was; `setDraft` puts words in the field — editing a line puts it back there, a new chat empties it — and, if asked, the cursor after them
  */
 export function composer(store, session, change) {
   const input = h('textarea', {
@@ -168,5 +168,16 @@ export function composer(store, session, change) {
 
   draw(state, true);
   store.subscribe((next) => draw(next));
-  return { el, stop };
+  return {
+    el,
+    stop,
+    setDraft(text, focus = false) {
+      input.value = text;
+      autosize(input);
+      sync();
+      if (!focus) return;
+      input.focus();
+      input.setSelectionRange(text.length, text.length);
+    },
+  };
 }

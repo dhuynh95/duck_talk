@@ -12,14 +12,18 @@
 // is true once a frame has come back, which is proof of a relay where an open socket is only
 // proof of a port, and false the moment the socket goes.
 //
-// Media is the one thing here that is not a state frame, and its answers carry no id. The relay
-// answers `clip_get` and `image_get` with one binary frame BEFORE the usual state frames if the
-// file exists, and with just the state frames if not, so the first frame back decides. That only
-// works if a reply cannot be taken for another request's, so media is asked one request at a
-// time, and a request holds its place until its whole answer has arrived (the chat list is the
-// last frame of every answer) — the tail of one answer is never read as the start of the next.
-// The state frames of some other request still in flight, a star or a rename sent a moment
-// before, would be read as "no file": media is for taps, not for the same instant as an edit.
+// Media is the one thing here that is not a state frame, and it does not travel on this socket.
+// The relay answers `clip_get` and `image_get` with one binary frame BEFORE the usual state frames
+// if the file exists, and with just the state frames if not, and the answer carries no id. On
+// this socket, which the relay also pushes a fresh chat list to whenever a chat starts or stops
+// working, that cannot be told from the answer to anything else asked at the same moment: a push
+// landing between the request and its audio reads as "no file", and the audio is then read as
+// the answer to whatever was asked next. So each request gets a socket of its own, as the phone's
+// `Relay.ask` does: open, ask, and the first frame that is the answer decides — the binary frame
+// is the file, `corrections` (always the first state frame of an answer) is "no file", and the
+// greeting and a pushed chat list are neither. Then it is closed. A few run at once (CONCURRENT),
+// each is given up on if the relay does not answer (MEDIA_TIMEOUT), and none of it touches
+// `connected` or the data socket's own state.
 //
 // The socket, the timers and the store are handed in, so a test can play the relay by hand.
 
@@ -48,16 +52,17 @@
  * }} RelayDeps
  */
 
-/** @typedef {{ frame: { type: 'clip_get' | 'image_get', id: number }, mime: string, resolve: (blob: Blob | null) => void }} MediaRequest */
-/** @typedef {{ req: MediaRequest, answered: boolean, cancel: () => void }} Outstanding */
+/** @typedef {{ type: 'clip_get' | 'image_get', id: number, mime: string, resolve: (blob: Blob | null) => void }} MediaRequest */
 
 const OPEN = 1; // WebSocket.OPEN, without reaching for the global
 const FIRST_BACKOFF = 250;
 const MAX_BACKOFF = 5000;
 /** A connection that lasted longer than this was not a failing one. */
 const LASTED = 5000;
-/** A media request not answered in this is given up on, so one that never comes cannot jam the queue. */
+/** A media request not answered in this, from the moment its socket is made, is given up on. */
 const MEDIA_TIMEOUT = 10_000;
+/** How many media sockets are open at once: a chat of twenty pictures is a queue, not twenty connections. */
+const CONCURRENT = 3;
 const DOWN = 'The relay is not answering.';
 
 export class RelayStore {
@@ -75,13 +80,11 @@ export class RelayStore {
   #cancelRetry = null;
   /** @type {(() => void) | null} fires once this socket has lasted: the next drop starts the backoff over */
   #cancelStable = null;
-  /** The relay has answered `read` in full on this socket, so nothing earlier is still on its way. */
-  #settled = false;
 
-  /** @type {MediaRequest[]} asked for, not yet sent */
+  /** @type {MediaRequest[]} asked for, no socket yet */
   #queue = [];
-  /** @type {Outstanding | null} sent, and its answer not yet over */
-  #outstanding = null;
+  /** @type {Set<() => void>} how to abandon each media request that has a socket */
+  #active = new Set();
 
   /** @param {RelayDeps} deps */
   constructor({ store, urlFor, makeSocket, setTimer }) {
@@ -111,7 +114,6 @@ export class RelayStore {
     const socket = this.#socket;
     this.#socket = null; // first, so its close is not mistaken for a drop
     socket?.close();
-    this.#settled = false;
     this.#failMedia();
     this.#store.set({ connected: false });
   }
@@ -120,7 +122,6 @@ export class RelayStore {
     const socket = this.#makeSocket(this.#urlFor());
     socket.binaryType = 'arraybuffer';
     this.#socket = socket;
-    this.#settled = false;
     socket.onopen = () => {
       if (this.#socket !== socket) return;
       this.#send({ type: 'read' }); // anything is answered with all of it
@@ -144,8 +145,6 @@ export class RelayStore {
     this.#socket = null;
     this.#cancelStable?.();
     this.#cancelStable = null;
-    this.#settled = false;
-    this.#failMedia();
     if (this.#store.get()['connected'] !== false || this.#store.get()['relayError'] !== DOWN) {
       this.#store.set({ connected: false, relayError: DOWN });
     }
@@ -171,10 +170,7 @@ export class RelayStore {
 
   /** @param {unknown} data */
   #receive(data) {
-    if (typeof data !== 'string') {
-      this.#binary(data);
-      return;
-    }
+    if (typeof data !== 'string') return; // media comes on sockets of its own: nothing is asked of this one in binary
     /** @type {any} */
     let f;
     try {
@@ -210,10 +206,6 @@ export class RelayStore {
         if (typeof f.id === 'string' && Array.isArray(f.messages)) patch['loaded'] = { id: f.id, messages: f.messages, forked: f.forked === true };
         break;
     }
-    // The media queue first, then the store: a subscriber is told inside `set`, and one that asks
-    // for a picture right there must find this frame already over, not read it as the first
-    // frame of that request's answer (or, if it throws, leave the slot held).
-    this.#text(f.type);
     this.#store.set(patch);
   }
 
@@ -240,76 +232,88 @@ export class RelayStore {
   /** @param {'clip_get' | 'image_get'} type @param {number} id @param {string} mime @returns {Promise<Blob | null>} */
   #ask(type, id, mime) {
     return new Promise((resolve) => {
-      // No socket at all — never connected, or between a drop and the redial — is an answer.
-      // One that is still opening is worth waiting for: the request goes out once the relay has spoken.
-      if (this.#socket === null) {
+      // Nobody wants the relay (never connected, or let go of): there is nothing to ask. A relay
+      // that is merely between a drop and its redial is still worth asking.
+      if (!this.#wanted) {
         resolve(null);
         return;
       }
-      this.#queue.push({ frame: { type, id }, mime, resolve });
-      this.#next();
+      this.#queue.push({ type, id, mime, resolve });
+      this.#pump();
     });
   }
 
-  /** Send the next request if nothing is outstanding and the relay has finished its first answer. */
-  #next() {
-    if (this.#outstanding || !this.#settled || !this.#open) return;
-    const req = this.#queue.shift();
-    if (!req) return;
-    const outstanding = { req, answered: false, cancel: () => {} };
-    this.#outstanding = outstanding;
-    outstanding.cancel = this.#setTimer(() => this.#timedOut(outstanding), MEDIA_TIMEOUT);
-    this.#send(req.frame);
-  }
-
-  /** @param {unknown} data */
-  #binary(data) {
-    const o = this.#outstanding;
-    if (!o || o.answered) return; // nobody asked
-    o.answered = true;
-    o.req.resolve(new Blob([/** @type {BlobPart} */ (data)], { type: o.req.mime }));
-  }
-
-  /** @param {string} type the frame's `type`, once the store has it */
-  #text(type) {
-    const o = this.#outstanding;
-    if (o && !o.answered) {
-      o.answered = true;
-      o.req.resolve(null); // text first: there was no file
+  /** Give the next waiting requests a socket, up to the few that may be open at once. */
+  #pump() {
+    while (this.#active.size < CONCURRENT) {
+      const req = this.#queue.shift();
+      if (!req) return;
+      this.#fetch(req);
     }
-    if (type !== 'chats') return;
-    // The last frame of every answer: this one is over, and the next may be asked.
-    this.#settled = true;
-    if (o) {
-      o.cancel();
-      this.#outstanding = null;
-    }
-    this.#next();
   }
 
   /**
-   * The relay did not finish answering. A reply that came late on this socket could be taken for
-   * the next request's, so this socket is let go of, and the redial starts clean.
-   * @param {Outstanding} o
+   * One request on one socket. Settled exactly once — by an answer, a closed or failed socket, or
+   * the timeout — and then the socket is let go of, so nothing it says later is anybody's.
+   * @param {MediaRequest} req
    */
-  #timedOut(o) {
-    if (this.#outstanding !== o) return;
-    const socket = this.#socket;
-    this.#socket = null; // first, so its close is not read as a second drop
-    socket?.close();
-    this.#lose();
+  #fetch(req) {
+    /** @type {SocketLike} */
+    let socket;
+    try {
+      socket = this.#makeSocket(this.#urlFor());
+    } catch {
+      req.resolve(null); // an address the browser will not dial is an answer too
+      return;
+    }
+    socket.binaryType = 'arraybuffer';
+    let cancelTimer = () => {};
+    let settled = false;
+    /** @param {Blob | null} blob */
+    const settle = (blob) => {
+      if (settled) return;
+      settled = true;
+      cancelTimer();
+      this.#active.delete(abandon);
+      socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
+      try {
+        socket.close();
+      } catch {
+        // already gone
+      }
+      this.#pump(); // before the answer is told, so a caller that asks for more finds the slot free
+      req.resolve(blob);
+    };
+    const abandon = () => settle(null);
+    this.#active.add(abandon);
+    cancelTimer = this.#setTimer(abandon, MEDIA_TIMEOUT);
+
+    socket.onopen = () => socket.send(JSON.stringify({ type: req.type, id: req.id }));
+    socket.onmessage = (ev) => {
+      if (typeof ev.data !== 'string') {
+        settle(new Blob([/** @type {BlobPart} */ (ev.data)], { type: req.mime }));
+        return;
+      }
+      // Text before any audio. The state frames of an answer start with `corrections`, so that one
+      // means the relay had no file; the greeting, and a chat list pushed to every data connection,
+      // are about something else and are waited past.
+      let type;
+      try {
+        type = JSON.parse(ev.data)?.type;
+      } catch {
+        return;
+      }
+      if (type === 'corrections') settle(null);
+    };
+    socket.onerror = () => {}; // a failure is followed by a close, which is where it is answered
+    socket.onclose = () => settle(null);
   }
 
-  /** Nobody is going to be answered: everything asked, sent or not, is null. */
+  /** Nobody is going to be answered: everything asked, with a socket or without, is null. */
   #failMedia() {
-    const o = this.#outstanding;
     const queued = this.#queue;
-    this.#outstanding = null;
     this.#queue = [];
-    if (o) {
-      o.cancel();
-      if (!o.answered) o.req.resolve(null);
-    }
+    for (const abandon of [...this.#active]) abandon();
     for (const req of queued) req.resolve(null);
   }
 

@@ -16,7 +16,8 @@ export const PERMISSION_IDS = /** @type {const} */ (['plan', 'acceptEdits', 'byp
 
 /**
  * `model` and `effort` are whatever the relay's list offers (`default` means the CLI's own choice);
- * `output` is the speaker; `gate` keeps the microphone quiet while the reply is in the room.
+ * `output` is the speaker; `gate` keeps the microphone quiet while the reply is in the room;
+ * `lastChat` is the chat that was on screen, reopened when the page is (null: a new chat).
  * @typedef {{
  *   mode: typeof MODE_IDS[number],
  *   model: string,
@@ -25,6 +26,7 @@ export const PERMISSION_IDS = /** @type {const} */ (['plan', 'acceptEdits', 'byp
  *   autocorrect: boolean,
  *   output: boolean,
  *   gate: boolean,
+ *   lastChat: string | null,
  * }} Settings
  */
 
@@ -32,7 +34,7 @@ export const PERMISSION_IDS = /** @type {const} */ (['plan', 'acceptEdits', 'byp
 
 /** @returns {Settings} */
 function defaults() {
-  return { mode: 'direct', model: 'default', effort: 'default', permission: 'plan', autocorrect: false, output: true, gate: true };
+  return { mode: 'direct', model: 'default', effort: 'default', permission: 'plan', autocorrect: false, output: true, gate: true, lastChat: null };
 }
 
 /**
@@ -58,6 +60,8 @@ export function normalizeSettings(raw) {
     const value = get(key);
     if (typeof value === 'boolean') out[key] = value;
   }
+  const lastChat = get('lastChat');
+  if (typeof lastChat === 'string' && lastChat) out.lastChat = lastChat;
   return out;
 }
 

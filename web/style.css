@@ -208,6 +208,13 @@ select {
   --composer-h: 118px;
 }
 
+/* The conversation and what floats over it. On a wide screen the chats are a sidebar and this is
+   what is left beside it; on a phone it is the whole screen, and the drawer comes over it. */
+.stage {
+  position: absolute;
+  inset: 0;
+}
+
 .icon {
   width: 20px;
   height: 20px;
@@ -530,6 +537,224 @@ select {
   white-space: pre-wrap;
 }
 
+/* What a line was given with, above the words: pictures as squares, pastes as chips. */
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.given {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.thumb {
+  display: grid;
+  place-items: center;
+  width: 62px;
+  height: 62px;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgb(75 85 99 / 0.6);
+  border-radius: 12px;
+  background: var(--fill);
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.thumb:disabled {
+  cursor: default;
+}
+
+.thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.thumb[data-state="loading"] .thumb-mark {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.thumb-mark .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.paste {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.paste.open {
+  flex-basis: 100%;
+}
+
+.paste-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 34px;
+  padding: 0 12px 0 8px;
+  border: 1px solid rgb(75 85 99 / 0.6);
+  border-radius: 17px;
+  background: var(--fill);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.paste-tag {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.paste-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paste-full {
+  align-self: stretch;
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  max-height: 40dvh;
+  overflow: auto;
+  border: 1px solid rgb(75 85 99 / 0.5);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: 13px/1.45 ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, monospace;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.preview {
+  display: grid;
+  place-items: center;
+}
+
+.preview-img {
+  max-width: 100%;
+  max-height: 70dvh;
+  border-radius: 12px;
+}
+
+/* The verbs under a line: small and tertiary, because they are always there and must never
+   compete with the words. Each is 32 px to look at and about 44 to touch (the ::after). */
+
+.verbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  min-height: 32px;
+  color: var(--text-tertiary);
+}
+
+.row.model > .verbs {
+  margin-top: 2px;
+}
+
+.verb {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  min-width: 40px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.verb::after,
+.clip-chip::after,
+.paste-chip::after {
+  content: "";
+  position: absolute;
+  inset: -6px -2px;
+}
+
+.verb .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.clip-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  margin-right: 4px;
+  padding: 0 11px 0 9px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--fill);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.clip-chip .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.clip-chip[data-state="playing"] {
+  color: var(--accent);
+}
+
+.clip-chip:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+.clip-chip[data-state="gone"] {
+  opacity: 0.8;
+}
+
+@media (hover: hover) {
+  .verb:hover,
+  .clip-chip:not(:disabled):hover {
+    color: var(--text);
+  }
+
+  .clip-chip:not(:disabled):hover {
+    background: var(--border);
+  }
+}
+
 /* Nothing said yet: the mark and the name, in the middle of the room. */
 
 .blank {
@@ -598,7 +823,7 @@ select {
 /* The composer: glass over the end of the conversation, with a fade under it so the words
    that scroll beneath end softly rather than at the glass's edge. */
 
-.app::after {
+.stage::after {
   content: "";
   position: absolute;
   left: 0;
@@ -1163,9 +1388,436 @@ html.sheet-open body {
   animation: spin 0.8s linear infinite;
 }
 
+.spinner.small {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+/* Small dialogs inside a sheet: rename, and the confirmation that deleting asks for. */
+
+.dialog {
+  display: grid;
+  gap: 14px;
+}
+
+.dialog-label {
+  font-weight: 600;
+}
+
+.dialog-subject {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dialog-text {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.button.danger {
+  border-color: transparent;
+  background: var(--danger);
+  color: var(--ground);
+}
+
+@media (hover: hover) {
+  .button.danger:not(:disabled):hover {
+    background: #FCA5A5;
+  }
+}
+
+.choice.danger .choice-icon,
+.choice.danger .choice-title {
+  color: var(--danger);
+}
+
+/* The chats. A phone gets a drawer that slides in from the left over a dimmed page; from 900 px
+   wide it is a sidebar that is always there, and the conversation takes what is left. */
+
+.drawer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  visibility: hidden;
+  pointer-events: none;
+  transition: visibility 0s linear 0.24s;
+}
+
+.drawer.open {
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+.drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 0.55);
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+}
+
+.drawer.open .drawer-backdrop {
+  opacity: 1;
+}
+
+.drawer-panel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(320px, 86vw);
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  border-right: 1px solid rgb(75 85 99 / 0.45);
+  background: var(--ground);
+  box-shadow: 8px 0 30px rgb(0 0 0 / 0.5);
+  transform: translateX(-100%);
+  transition: transform 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.drawer.open .drawer-panel {
+  transform: none;
+}
+
+.drawer-panel:focus {
+  outline: none;
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 6px 20px;
+}
+
+.drawer-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.drawer-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 16px 8px;
+  padding: 0 4px 0 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text-tertiary);
+}
+
+.drawer-search .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.drawer-search:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.drawer-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 16px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.drawer-search-input:focus-visible {
+  outline: none; /* the box around it says where the keyboard is */
+}
+
+.drawer-search-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.drawer-search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.drawer-search-clear {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  min-height: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.drawer-search-clear .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.drawer-note {
+  margin: 0 16px 8px;
+  padding: 8px 12px;
+  border: 1px solid rgb(248 113 113 / 0.35);
+  border-radius: 12px;
+  background: rgb(127 29 29 / 0.25);
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.chat-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Clear of New chat, which floats over the end of the list. */
+  padding-bottom: calc(76px + env(safe-area-inset-bottom));
+}
+
+.chat-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-row {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid rgb(44 54 68 / 0.9);
+}
+
+.chat-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 6px 4px 6px 20px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-row.active {
+  background: rgb(255 255 255 / 0.06);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.chat-open[aria-current="true"] {
+  color: var(--text);
+}
+
+.chat-open:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.chat-open:focus-visible,
+.chat-menu:focus-visible {
+  outline-offset: -2px;
+}
+
+.chat-star {
+  display: inline-flex;
+  flex: none;
+  color: var(--accent);
+}
+
+.chat-star .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.chat-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-meta {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.chat-time {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Working replaces the age: it is being written to right now. */
+.pill {
+  padding: 2px 8px;
+  border: 1px solid rgb(251 146 60 / 0.5);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chat-menu {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 52px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.chat-menu:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+@media (hover: hover) {
+  .chat-open:not(:disabled):hover,
+  .chat-menu:not(:disabled):hover {
+    background: rgb(255 255 255 / 0.05);
+    color: var(--text);
+  }
+}
+
+.drawer-empty {
+  display: grid;
+  gap: 8px;
+  padding: 36px 24px;
+  text-align: center;
+}
+
+.empty-title,
+.empty-detail {
+  margin: 0;
+}
+
+.empty-title {
+  font-weight: 600;
+}
+
+.empty-detail {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+/* The one thing in the drawer that is not a chat, so the one thing floating over them: on ground of
+   its own, faded in from above, so the rows dim as they reach it instead of being cut off. */
+.drawer-foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 28px 16px calc(14px + env(safe-area-inset-bottom));
+  background: linear-gradient(rgb(17 24 39 / 0), var(--ground) 45%);
+  pointer-events: none;
+}
+
+.new-chat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid rgb(75 85 99 / 0.45);
+  border-radius: 24px;
+  color: var(--text);
+  font-weight: 500;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 0.15s;
+}
+
+.new-chat .icon {
+  width: 18px;
+  height: 18px;
+}
+
+@media (hover: hover) {
+  .new-chat:hover {
+    background: var(--border);
+  }
+}
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (min-width: 900px) {
+  .app {
+    --sidebar-w: 300px;
+  }
+
+  .stage {
+    left: var(--sidebar-w);
+  }
+
+  .drawer {
+    inset: 0 auto 0 0;
+    width: var(--sidebar-w);
+    visibility: visible;
+    pointer-events: auto;
+    transition: none;
+  }
+
+  .drawer-backdrop,
+  .drawer-close {
+    display: none;
+  }
+
+  .drawer-panel {
+    width: 100%;
+    background: var(--ground);
+    box-shadow: none;
+    transform: none;
+    transition: none;
+  }
+
+  .drawer-head {
+    padding-right: 20px;
+  }
+
+  /* Nothing to open: the button keeps its room, so the name stays where it is. */
+  .chats-button {
+    visibility: hidden;
   }
 }
 

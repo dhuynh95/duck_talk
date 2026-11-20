@@ -1,11 +1,12 @@
 // @ts-check
 // Boot: find the access key, and draw either the form that asks for it or the app: one chat,
 // typed or spoken, on a VoiceSession whose socket, audio pipe, timers and clock are the
-// browser's own, handed in here.
+// browser's own, handed in here — with the chats drawer beside it, and the verbs under each line.
 //
 // Everything on the page is built with `h` (see dom.js): no markup is ever parsed from a
 // string.
 
+import { actions } from './actions.js';
 import { AudioPipe } from './audio.js';
 import { h } from './dom.js';
 import { keepKey, socketUrl, takeKey } from './key.js';
@@ -14,10 +15,14 @@ import { VoiceSession } from './session.js';
 import { loadSettings, normalizeSettings, saveSettings } from './settings.js';
 import { createStore } from './store.js';
 import { composer } from './ui/composer.js';
+import { chatsDrawer } from './ui/drawer.js';
 import { header } from './ui/header.js';
 import { transcriptView } from './ui/transcript-view.js';
 
 const LOGO = '/logo.svg';
+/** How long a notice put up by the page itself stays, in ms. */
+const NOTICE_FOR = 4000;
+const RELAY_DOWN = "The relay isn't answering.";
 
 /** localStorage, or null where the browser will not hand it over (blocked site data throws on the property itself). */
 function localStore() {
@@ -133,9 +138,128 @@ function app(key, storage) {
   const relay = new RelayStore({ store, urlFor: () => socketUrl(location, { data: '1' }, key), makeSocket, setTimer });
   relay.connect();
 
-  const view = transcriptView(store);
+  // MARK: the conversation, and what the relay says about it
+
+  /** A notice from the page itself, taken down by the page itself — and only if it is still the one up. @param {string} message */
+  const notify = (message) => {
+    store.set({ notice: message });
+    setTimeout(() => {
+      if (store.get()['notice'] === message) store.set({ notice: null });
+    }, NOTICE_FOR);
+  };
+
+  /** A blank conversation, which is what "New chat" is and what deleting the chat on screen leaves. */
+  const startNewChat = () => session.show([], null);
+
+  /**
+   * Branch the chat on screen at one of its messages, and let the answer — the new chat, already
+   * loaded — land where every chat does. A session is stopped first, never left running beside
+   * the fork: there is one session, and it belongs to whatever is on screen.
+   * @param {string | undefined} at the message to cut at
+   */
+  const forkFrom = (at) => {
+    const source = store.get()['chatId'];
+    if (typeof source !== 'string' || !at) return false;
+    if (store.get()['connected'] === false) {
+      notify(RELAY_DOWN); // a fork asked of no relay would put words in the field and change nothing else
+      return false;
+    }
+    session.stopListening();
+    relay.fork(source, at);
+    return true;
+  };
+
+  /** @type {import('./ui/line-actions.js').LineHandlers & { image: (id: number) => Promise<Blob | null> }} */
+  const lineHandlers = {
+    // An edit is a fork you get to retype: branch just before the message, put what you said in the
+    // field, and the arrow that is already there runs it. The first message of a chat has nothing
+    // before it to branch from, and needs nothing: a conversation with its opening line changed is
+    // a new conversation.
+    edit(line) {
+      if (line.after === undefined) startNewChat();
+      else if (!forkFrom(line.after)) return;
+      bottom.setDraft(line.text, true);
+    },
+    fork(line) {
+      forkFrom(line.uuid);
+    },
+    fix(line) {
+      actions.openCorrections({ at: Date.now(), heard: line.text, meant: line.text, clip: line.clip });
+    },
+    notify,
+    clip: (id) => relay.clip(id),
+    image: (id) => relay.image(id),
+  };
+
+  const view = transcriptView(store, lineHandlers);
   const bottom = composer(store, session, change);
-  const root = h('div', { class: 'app' }, view.el, header(store), bottom.el);
+  const drawer = chatsDrawer(store, {
+    // What you were writing belonged to the chat you left.
+    open(id) {
+      bottom.setDraft('');
+      relay.openChat(id);
+    },
+    newChat() {
+      bottom.setDraft('');
+      startNewChat();
+    },
+    star: (id, on) => relay.star(id, on),
+    rename: (id, title) => relay.rename(id, title),
+    remove(id) {
+      relay.deleteChat(id);
+      if (store.get()['chatId'] === id) startNewChat();
+    },
+  });
+  const root = h(
+    'div',
+    { class: 'app' },
+    drawer.el,
+    h('div', { class: 'stage' }, view.el, header(store, { openChats: (button) => drawer.open(button) }), bottom.el),
+  );
+
+  // What the data socket says, carried into the conversation on screen: a chat that was asked for
+  // (or a fork, which arrives as one) is shown; the chat being Working is the session's third reason
+  // to hold its socket, so a working chat streams in; and the chat on screen is the one the page
+  // reopens next time.
+  /** @type {import('./relay.js').LoadedChat | null} the chat last put on screen */
+  let shown = null;
+  /** @type {unknown} */
+  let seenChats;
+  /** @type {unknown} */
+  let seenId;
+  /** Waiting for the first list of chats to say whether the one that was open still exists. */
+  let restoring = settings.lastChat !== null;
+  /** @type {string | null} the chat on screen as last looked at, for `lastChat` */
+  let lastId = null;
+  store.subscribe((state) => {
+    const loaded = state['loaded'];
+    if (loaded && loaded !== shown) {
+      shown = loaded;
+      session.show(loaded.messages, loaded.id);
+    }
+
+    const chats = state['chats'];
+    const id = typeof state['chatId'] === 'string' ? state['chatId'] : null;
+
+    if (restoring && Array.isArray(chats)) {
+      restoring = false;
+      const idle = id === null && !state['lines']?.length && !state['utterance']; // nothing begun in the meantime
+      if (settings.lastChat !== null && idle) {
+        if (chats.some((c) => c?.id === settings.lastChat)) relay.openChat(settings.lastChat);
+        else change({ lastChat: null }); // it is gone
+      }
+    }
+    if (!restoring && id !== lastId) {
+      lastId = id;
+      if (id !== settings.lastChat) change({ lastChat: id });
+    }
+
+    if (chats !== seenChats || id !== seenId) {
+      seenChats = chats;
+      seenId = id;
+      session.working = (Array.isArray(chats) ? chats : []).find((c) => c?.id === id)?.working === true;
+    }
+  });
 
   // The conversation pads itself clear of the composer, which grows as you type: its height
   // is measured, not guessed, and the end of the conversation stays in view as it changes.

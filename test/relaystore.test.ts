@@ -353,164 +353,262 @@ describe('RelayStore: chats', () => {
   });
 });
 
+// Media is asked for on a socket of its own, as the phone does (Relay.ask): a clip or a picture is
+// one question and one binary frame back, and the relay answers it AHEAD of the state frames every
+// message gets. On the page's one data socket that cannot be told from the chat list the relay
+// pushes to every data connection whenever a chat starts or stops working: see the first test.
 describe('RelayStore: clips and images', () => {
-  it('sends clip_get and resolves with the next binary frame, as audio/wav', async () => {
-    const { relay, up } = rig();
-    const s = up();
+  const asked = (s: FakeSocket) => s.frames.filter((f) => f.type === 'clip_get' || f.type === 'image_get');
+  /** A request whose promise is watched, so a test can say "not yet". */
+  const watched = <T>(p: Promise<T>) => {
+    const out = { done: false, value: undefined as T | undefined };
+    void p.then((v) => {
+      out.done = true;
+      out.value = v;
+    });
+    return out;
+  };
+
+  it('a chat list pushed while a clip is being asked for is not taken for the answer, and the audio is not handed to the next request', async () => {
+    const { relay, sockets, up } = rig();
+    up();
+    const first = relay.clip(1);
+    const second = relay.image(2);
+    const [a, b] = [sockets[1]!, sockets[2]!];
+    a.open();
+    b.open();
+    // The relay pushes a fresh chat list to every data connection when a chat's working status
+    // changes. Here it lands on both sockets between the request and the relay's answer.
+    a.receive({ type: 'chats', chats: [] });
+    b.receive({ type: 'chats', chats: [] });
+    a.receiveBinary([1, 1, 1]); // clip 1's own audio, which the relay did have
+    a.burst();
+    b.receiveBinary([2, 2]);
+    b.burst();
+    assert.deepEqual(await bytes((await first)!), [1, 1, 1]);
+    assert.deepEqual(await bytes((await second)!), [2, 2]);
+  });
+
+  it('asks on a socket of its own, at the data address, and says nothing on the data socket', () => {
+    const { relay, sockets, up } = rig();
+    const data = up();
+    void relay.clip(7);
+    assert.equal(sockets.length, 2);
+    const shot = sockets[1]!;
+    assert.equal(shot.url, 'ws://relay/?data=1');
+    assert.equal(shot.binaryType, 'arraybuffer');
+    assert.deepEqual(shot.frames, [], 'nothing is said until the socket is open');
+    shot.open();
+    assert.deepEqual(shot.frames, [{ type: 'clip_get', id: 7 }]);
+    assert.deepEqual(asked(data), []);
+  });
+
+  it('resolves with the first binary frame as audio/wav, once it is past the relay\'s greeting, and lets the socket go', async () => {
+    const { relay, sockets, up } = rig();
+    up();
     const clip = relay.clip(7);
-    assert.deepEqual(s.frames.at(-1), { type: 'clip_get', id: 7 });
-    s.receiveBinary([82, 73, 70, 70]);
+    const shot = sockets[1]!;
+    shot.open();
+    shot.receive({ type: 'relay', version: '1.2.3' });
+    const pending = watched(clip);
+    await tick();
+    assert.equal(pending.done, false, 'the greeting is not an answer');
+    shot.receiveBinary([82, 73, 70, 70]);
     const blob = await clip;
     assert.ok(blob);
     assert.equal(blob.type, 'audio/wav');
     assert.deepEqual(await bytes(blob), [82, 73, 70, 70]);
+    assert.equal(shot.readyState, 3, 'closed: nothing more is wanted from it');
   });
 
-  it('sends image_get and resolves with a JPEG', async () => {
-    const { relay, up } = rig();
-    const s = up();
+  it('resolves an image with a JPEG', async () => {
+    const { relay, sockets, up } = rig();
+    up();
     const image = relay.image(3);
-    assert.deepEqual(s.frames.at(-1), { type: 'image_get', id: 3 });
-    s.receiveBinary([255, 216, 255]);
+    const shot = sockets[1]!;
+    shot.open();
+    assert.deepEqual(shot.frames, [{ type: 'image_get', id: 3 }]);
+    shot.receiveBinary([255, 216, 255]);
     const blob = await image;
     assert.equal(blob?.type, 'image/jpeg');
     assert.deepEqual(await bytes(blob!), [255, 216, 255]);
   });
 
-  it('resolves null for a clip that is gone: the answer is text, with no audio before it', async () => {
-    const { relay, up } = rig();
-    const s = up();
+  it('resolves null for a clip that is gone: the answer starts with the state frames, corrections first', async () => {
+    const { relay, sockets, up } = rig();
+    up();
     const clip = relay.clip(7);
-    s.receive({ type: 'corrections', items: [] });
+    const shot = sockets[1]!;
+    shot.open();
+    shot.receive({ type: 'relay', version: '1' });
+    shot.receive({ type: 'corrections', items: [] });
     assert.equal(await clip, null);
+    assert.equal(shot.readyState, 3);
   });
 
-  it('answers overlapping requests in order, sending the second only when the first is answered in full', async () => {
-    const { relay, up } = rig();
-    const s = up();
-    const first = relay.clip(1);
-    const second = relay.image(2);
-    const asked = () => s.frames.filter((f) => f.type === 'clip_get' || f.type === 'image_get');
-    assert.deepEqual(asked(), [{ type: 'clip_get', id: 1 }], 'one outstanding at a time');
-
-    s.receiveBinary([1, 1]);
-    assert.deepEqual(await bytes((await first)!), [1, 1]);
-    assert.equal(asked().length, 1, 'the rest of the first answer is still on its way');
-    s.receive({ type: 'corrections', items: [] });
-    s.receive({ type: 'prompts', prompts: [] });
-    assert.equal(asked().length, 1, 'text that belongs to the first answer is not the second one');
-
-    s.receive({ type: 'chats', chats: [] }); // the end of the first answer
-    assert.deepEqual(asked(), [{ type: 'clip_get', id: 1 }, { type: 'image_get', id: 2 }]);
-    s.receiveBinary([2, 2]);
-    assert.deepEqual(await bytes((await second)!), [2, 2]);
-  });
-
-  it('does not take the tail of a missing clip answer for the answer to the next request', async () => {
-    const { relay, up } = rig();
-    const s = up();
+  it('a chat list pushed ahead of a missing file\'s state frames is not a second answer, and one pushed ahead of the audio is not the answer', async () => {
+    const { relay, sockets, up } = rig();
+    up();
     const gone = relay.clip(1);
     const there = relay.clip(2);
-    s.receive({ type: 'corrections', items: [] });
+    sockets[1]!.open();
+    sockets[2]!.open();
+    sockets[1]!.receive({ type: 'chats', chats: [] }); // a push
+    const early = watched(gone);
+    await tick();
+    assert.equal(early.done, false, 'a push is nobody\'s answer');
+    sockets[1]!.burst(); // the answer: corrections first, so there was no file
     assert.equal(await gone, null);
-    s.receive({ type: 'prompts', prompts: [] });
-    s.receive({ type: 'models', models: [] });
-    s.receive({ type: 'skills', skills: [] });
-    s.receive({ type: 'chats', chats: [] });
-    assert.deepEqual(s.frames.filter((f) => f.type === 'clip_get'), [{ type: 'clip_get', id: 1 }, { type: 'clip_get', id: 2 }]);
-    s.receiveBinary([9]);
+
+    sockets[2]!.receive({ type: 'chats', chats: [] }); // a push ahead of the audio
+    sockets[2]!.receiveBinary([9]);
     assert.deepEqual(await bytes((await there)!), [9]);
   });
 
-  it('holds a request made before the first answer to `read` until that answer is whole', async () => {
-    const { relay, last } = rig();
-    relay.connect();
-    last().open();
-    const clip = relay.clip(4);
-    assert.deepEqual(last().frames, [{ type: 'read' }]);
-    last().receive({ type: 'relay', version: '1' });
-    last().receive({ type: 'corrections', items: [] });
-    assert.deepEqual(last().frames, [{ type: 'read' }], 'the greeting and the state are not an answer about a clip');
-    last().receive({ type: 'chats', chats: [] });
-    assert.deepEqual(last().frames.at(-1), { type: 'clip_get', id: 4 });
-    last().receiveBinary([5]);
-    assert.deepEqual(await bytes((await clip)!), [5]);
-  });
-
-  it('holds a request made while the socket is still opening, and sends it once the relay has answered', async () => {
-    const { relay, last } = rig();
-    relay.connect();
-    const clip = relay.clip(4);
-    last().open();
-    last().burst();
-    assert.deepEqual(last().frames.at(-1), { type: 'clip_get', id: 4 });
-    last().receiveBinary([6]);
-    assert.deepEqual(await bytes((await clip)!), [6]);
-  });
-
-  it('resolves null at once when there is no socket', async () => {
-    const never = rig();
-    assert.equal(await never.relay.clip(1), null, 'never connected');
-    const dropped = rig();
-    dropped.up().drop();
-    assert.equal(await dropped.relay.image(1), null, 'dropped, and waiting to redial');
-  });
-
-  it('resolves a pending request null when the socket drops, and every request queued behind it, and says not connected', async () => {
-    const { relay, state, up } = rig();
-    const s = up();
-    const first = relay.clip(1);
-    const second = relay.clip(2);
-    s.drop();
-    assert.equal(await first, null);
-    assert.equal(await second, null);
-    assert.equal(state()['connected'], false);
-  });
-
-  it('resolves pending requests null on disconnect', async () => {
-    const { relay, up } = rig();
-    up();
+  it('what the data socket hears cannot answer a request made on another socket', async () => {
+    const { relay, sockets, up } = rig();
+    const data = up();
     const clip = relay.clip(1);
-    relay.disconnect();
-    assert.equal(await clip, null);
-  });
-
-  it('times a request out after 10 s with null, as it does everything queued behind it, and redials clean', async () => {
-    const { relay, sockets, last, advance, up } = rig();
-    const old = up();
-    const stuck = relay.clip(1);
-    const behind = relay.clip(2);
-    advance(9_999);
-    let settled = false;
-    void stuck.then(() => (settled = true));
+    const shot = sockets[1]!;
+    shot.open();
+    data.receiveBinary([5, 5, 5]); // nobody asked the data socket for audio
+    data.burst(); // the answer to a star sent a moment before, say
+    const pending = watched(clip);
     await tick();
-    assert.equal(settled, false);
-    advance(1);
-    assert.equal(await stuck, null);
-    assert.equal(await behind, null, 'a relay that is not answering is not asked again at once');
-    assert.equal(sockets.length, 1, 'redialled after the backoff, not at once');
-    advance(250);
-    assert.equal(sockets.length, 2, 'a late reply on the old socket can never be taken for the next one');
-    last().open();
-    last().burst();
-    const next = relay.clip(3);
-    old.receiveBinary([0]); // the old socket's late audio
-    last().receiveBinary([7]);
-    assert.deepEqual(await bytes((await next)!), [7]);
+    assert.equal(pending.done, false);
+    shot.receiveBinary([1]);
+    assert.deepEqual(await bytes((await clip)!), [1]);
   });
 
-  it('does not time out a request that was answered', async () => {
+  it('answers two requests each with its own bytes, whichever socket answers first', async () => {
+    const { relay, sockets, up } = rig();
+    up();
+    const first = relay.clip(1);
+    const second = relay.image(2);
+    sockets[1]!.open();
+    sockets[2]!.open();
+    sockets[2]!.receiveBinary([2, 2]);
+    sockets[1]!.receiveBinary([1, 1]);
+    assert.deepEqual(await bytes((await second)!), [2, 2]);
+    assert.deepEqual(await bytes((await first)!), [1, 1]);
+  });
+
+  it('asks on at most three sockets at once, and opens the next as one of them finishes', async () => {
+    const { relay, sockets, up } = rig();
+    up();
+    const all = [1, 2, 3, 4, 5].map((id) => relay.image(id));
+    assert.equal(sockets.length, 1 + 3, 'the data socket and three');
+    sockets[1]!.open();
+    sockets[1]!.receiveBinary([1]);
+    assert.deepEqual(await bytes((await all[0])!), [1]);
+    assert.equal(sockets.length, 1 + 4, 'the fourth starts as the first ends');
+    sockets[4]!.open();
+    assert.deepEqual(sockets[4]!.frames, [{ type: 'image_get', id: 4 }], 'in the order they were asked');
+    sockets[4]!.receiveBinary([4]);
+    sockets[2]!.open();
+    sockets[2]!.receive({ type: 'corrections', items: [] });
+    assert.equal(await all[1], null);
+    assert.equal(sockets.length, 1 + 5);
+    assert.deepEqual(await bytes((await all[3])!), [4]);
+    sockets[3]!.open();
+    sockets[3]!.receiveBinary([3]);
+    sockets[5]!.open();
+    sockets[5]!.receiveBinary([5]);
+    assert.deepEqual(await bytes((await all[2])!), [3]);
+    assert.deepEqual(await bytes((await all[4])!), [5]);
+  });
+
+  it('a socket that fails or closes before it answers is a null, and the next request still goes out', async () => {
+    const { relay, sockets, up } = rig();
+    up();
+    const reqs = [1, 2, 3, 4].map((id) => relay.clip(id));
+    sockets[1]!.onerror?.({});
+    sockets[1]!.drop();
+    assert.equal(await reqs[0], null, 'refused');
+    sockets[2]!.open();
+    sockets[2]!.drop();
+    assert.equal(await reqs[1], null, 'dropped after it opened');
+    assert.equal(sockets.length, 1 + 4, 'both slots were given to the next two');
+    assert.deepEqual(sockets[4]!.frames, []);
+    sockets[3]!.open();
+    sockets[3]!.receiveBinary([3]);
+    assert.deepEqual(await bytes((await reqs[2])!), [3]);
+  });
+
+  it('gives up after 10 s with null, closes the socket, and goes on to the next request', async () => {
     const { relay, sockets, advance, up } = rig();
-    const s = up();
+    up();
+    const reqs = [1, 2, 3, 4].map((id) => relay.clip(id));
+    sockets[1]!.open();
+    advance(9_999);
+    const stuck = watched(reqs[0]!);
+    await tick();
+    assert.equal(stuck.done, false);
+    advance(1);
+    assert.equal(await reqs[0], null);
+    assert.equal(sockets[1]!.readyState, 3, 'a late answer on it can never be taken for another');
+    assert.equal(sockets.length, 1 + 4, 'the fourth request now has its socket');
+  });
+
+  it('does not time out a request that was answered, and does not let the data socket go', async () => {
+    const { relay, sockets, advance, up } = rig();
+    const data = up();
     const clip = relay.clip(1);
-    s.receiveBinary([1]);
-    s.burst();
+    sockets[1]!.open();
+    sockets[1]!.receiveBinary([1]);
     assert.ok(await clip);
     advance(60_000);
-    assert.equal(sockets.length, 1);
+    assert.equal(sockets.length, 2, 'no redial: the data socket was never touched');
+    assert.equal(data.readyState, 1);
   });
 
-  it('ignores a binary frame nobody asked for', () => {
+  it('ignores whatever a socket says after its request was settled', async () => {
+    const { relay, sockets, up } = rig();
+    up();
+    const first = relay.clip(1);
+    const second = relay.clip(2);
+    const [a, b] = [sockets[1]!, sockets[2]!];
+    a.open();
+    b.open();
+    a.receiveBinary([1]);
+    await first;
+    a.receiveBinary([9, 9]); // late
+    a.receive({ type: 'corrections', items: [] });
+    b.receiveBinary([2]);
+    assert.deepEqual(await bytes((await second)!), [2]);
+  });
+
+  it('disconnect resolves what is outstanding and what is queued with null, closes the sockets, and asks nothing more', async () => {
+    const { relay, sockets, up } = rig();
+    up();
+    const reqs = [1, 2, 3, 4].map((id) => relay.clip(id));
+    sockets[1]!.open();
+    relay.disconnect();
+    for (const r of reqs) assert.equal(await r, null);
+    assert.ok(sockets.slice(1).every((s) => s.readyState === 3));
+    assert.equal(sockets.length, 1 + 3, 'the queued request was never given a socket');
+    assert.equal(await relay.clip(5), null, 'and nothing is asked after');
+    assert.equal(sockets.length, 1 + 3);
+  });
+
+  it('is null at once, opening no socket, when nobody wants the relay', async () => {
+    const { relay, sockets } = rig();
+    assert.equal(await relay.clip(1), null);
+    assert.equal(await relay.image(1), null);
+    assert.equal(sockets.length, 0);
+  });
+
+  it('still asks while the data socket is between a drop and its redial: the relay may be back already', async () => {
+    const { relay, sockets, up } = rig();
+    up().drop();
+    const image = relay.image(1);
+    assert.equal(sockets.length, 2);
+    sockets[1]!.open();
+    sockets[1]!.receiveBinary([7]);
+    assert.deepEqual(await bytes((await image)!), [7]);
+  });
+
+  it('ignores a binary frame on the data socket that nobody asked for', () => {
     const { state, up } = rig();
     const s = up();
     s.receiveBinary([1, 2, 3]);
@@ -519,74 +617,32 @@ describe('RelayStore: clips and images', () => {
 });
 
 // The store tells its subscribers synchronously, inside the write that a frame causes, and a
-// subscriber that opens a chat's pictures asks for them right there. The frame that caused the
-// write must already be over, as far as the media queue is concerned, or it is read as the first
-// frame of the answer to a request it never preceded.
+// subscriber that opens a chat's pictures asks for them right there.
 describe('RelayStore: media asked for from a store subscriber', () => {
-  const asked = (s: FakeSocket) => s.frames.filter((f) => f.type === 'clip_get' || f.type === 'image_get');
-
-  it('a picture asked for when the chat frame lands gets the relay\'s reply, not null', async () => {
-    const { relay, store, up } = rig();
+  it('pictures asked for as the chat frame lands each get their own answer, on their own socket', async () => {
+    const { relay, store, sockets, up } = rig();
     const s = up();
-    let picture: Promise<Blob | null> | undefined;
+    const pictures: Promise<Blob | null>[] = [];
     let seen: unknown;
     store.subscribe((state) => {
       if (state['loaded'] && state['loaded'] !== seen) {
         seen = state['loaded'];
-        picture = relay.image(5);
+        pictures.push(relay.image(5), relay.image(6));
       }
     });
     relay.openChat('c1');
     s.burst(); // the relay's answer to chat_open: the state frames, the chat list last...
     s.receive({ type: 'chat', id: 'c1', messages: [], forked: false }); // ...then the chat
-    assert.deepEqual(asked(s), [{ type: 'image_get', id: 5 }]);
-
-    let settled = false;
-    void picture!.then(() => (settled = true));
-    await tick();
-    assert.equal(settled, false, 'nothing has been said about the picture yet');
-    s.receiveBinary([5, 5]);
-    assert.deepEqual(await bytes((await picture)!), [5, 5]);
-  });
-
-  it('two pictures asked for when the chat list lands go out one at a time, each answered with its own', async () => {
-    const { relay, store, up } = rig();
-    const s = up();
-    let first: Promise<Blob | null> | undefined;
-    let second: Promise<Blob | null> | undefined;
-    let done = false;
-    store.subscribe((state) => {
-      if (!done && state['chats']?.length === 1) {
-        done = true;
-        first = relay.image(1);
-        second = relay.image(2);
-      }
-    });
-    s.receive({ type: 'chats', chats: [{ id: 'x', at: 1, title: 'T' }] });
-    assert.deepEqual(asked(s), [{ type: 'image_get', id: 1 }], 'the second waits');
-
-    s.receiveBinary([1, 1]);
-    assert.deepEqual(await bytes((await first)!), [1, 1]);
-    assert.equal(asked(s).length, 1, 'still waiting for the end of the first answer');
-    s.burst(); // the end of the first answer
-    assert.deepEqual(asked(s), [{ type: 'image_get', id: 1 }, { type: 'image_get', id: 2 }]);
-    s.receiveBinary([2, 2]);
-    assert.deepEqual(await bytes((await second)!), [2, 2], 'not the first picture\'s bytes');
-  });
-
-  it('a subscriber that throws does not leave the media slot unsettled: the next request still goes out', async () => {
-    const { relay, store, up } = rig();
-    const s = up();
-    const first = relay.clip(1);
-    const second = relay.clip(2);
-    store.subscribe(() => {
-      throw new Error('boom');
-    });
-    s.receiveBinary([1]);
-    assert.deepEqual(await bytes((await first)!), [1]);
-    assert.throws(() => s.receive({ type: 'chats', chats: [] }), /boom/); // the end of the first answer
-    assert.deepEqual(asked(s), [{ type: 'clip_get', id: 1 }, { type: 'clip_get', id: 2 }]);
-    s.receiveBinary([2]);
-    assert.deepEqual(await bytes((await second)!), [2]);
+    assert.equal(pictures.length, 2);
+    assert.equal(sockets.length, 3);
+    sockets[1]!.open();
+    sockets[2]!.open();
+    assert.deepEqual(sockets[1]!.frames, [{ type: 'image_get', id: 5 }]);
+    assert.deepEqual(sockets[2]!.frames, [{ type: 'image_get', id: 6 }]);
+    sockets[2]!.receiveBinary([6]);
+    sockets[1]!.receiveBinary([5]);
+    assert.deepEqual(await bytes((await pictures[0])!), [5]);
+    assert.deepEqual(await bytes((await pictures[1])!), [6]);
+    assert.equal(s.frames.filter((f) => f.type === 'image_get').length, 0);
   });
 });

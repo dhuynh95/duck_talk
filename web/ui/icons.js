@@ -52,6 +52,52 @@ const SHAPES = {
   'chevron-right': [
     ['path', { d: 'M9 5l7 7-7 7' }],
   ],
+  plus: [
+    ['path', { d: 'M12 5v14M5 12h14' }],
+  ],
+  search: [
+    ['circle', { cx: '11', cy: '11', r: '6.5' }],
+    ['path', { d: 'M16 16l4.5 4.5' }],
+  ],
+  star: [
+    ['path', { d: 'M12 3.8l2.5 5.2 5.7.8-4.1 4 1 5.7-5.1-2.7-5.1 2.7 1-5.7-4.1-4 5.7-.8z' }],
+  ],
+  'star-filled': [
+    ['path', { d: 'M12 3.8l2.5 5.2 5.7.8-4.1 4 1 5.7-5.1-2.7-5.1 2.7 1-5.7-4.1-4 5.7-.8z', fill: 'currentColor' }],
+  ],
+  dots: [
+    ['circle', { cx: '5.5', cy: '12', r: '1.7', fill: 'currentColor', stroke: 'none' }],
+    ['circle', { cx: '12', cy: '12', r: '1.7', fill: 'currentColor', stroke: 'none' }],
+    ['circle', { cx: '18.5', cy: '12', r: '1.7', fill: 'currentColor', stroke: 'none' }],
+  ],
+  trash: [
+    ['path', { d: 'M4 7h16M10 7V4.5h4V7M6.5 7l1 13h9l1-13M10 11v6M14 11v6' }],
+  ],
+  // The verbs under a line: fix what was heard, fork from here, copy, and the clip's own controls.
+  waveform: [
+    ['path', { d: 'M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2' }],
+  ],
+  branch: [
+    ['path', { d: 'M6 3v12M18 9a9 9 0 0 1-9 9' }],
+    ['circle', { cx: '18', cy: '6', r: '3' }],
+    ['circle', { cx: '6', cy: '18', r: '3' }],
+  ],
+  copy: [
+    ['rect', { x: '9', y: '9', width: '12', height: '12', rx: '2' }],
+    ['path', { d: 'M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5' }],
+  ],
+  play: [
+    ['path', { d: 'M8 5.5v13l11-6.5z', fill: 'currentColor', stroke: 'none' }],
+  ],
+  pause: [
+    ['rect', { x: '6.5', y: '5', width: '3.8', height: '14', rx: '1', fill: 'currentColor', stroke: 'none' }],
+    ['rect', { x: '13.7', y: '5', width: '3.8', height: '14', rx: '1', fill: 'currentColor', stroke: 'none' }],
+  ],
+  photo: [
+    ['rect', { x: '3.5', y: '5', width: '17', height: '14', rx: '2.5' }],
+    ['circle', { cx: '9', cy: '10', r: '1.5' }],
+    ['path', { d: 'M4 17l5-5 4 4 3-3 4 4' }],
+  ],
   // Permission: what Claude may do, from looking to doing anything.
   eye: [
     ['path', { d: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z' }],
