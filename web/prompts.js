@@ -42,6 +42,16 @@ export function liveNote(prompt) {
 }
 
 /**
+ * Whether the editor adds `liveNote` under the prompt's own detail. The relay's details already
+ * end with when an edit takes effect, so saying it again would be the same sentence twice; a
+ * detail that says nothing about it (a prompt added later, or a shorter one) still gets the line.
+ * @param {Pick<Prompt, 'detail'>} prompt
+ */
+export function showLiveNote(prompt) {
+  return !(typeof prompt.detail === 'string' && /takes effect/i.test(prompt.detail));
+}
+
+/**
  * The quiet line under a prompt in the list: when it takes effect, or why it cannot be opened now.
  * @param {Pick<Prompt, 'live'>} prompt
  * @param {boolean} sessionLive

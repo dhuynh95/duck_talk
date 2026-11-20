@@ -20,10 +20,10 @@ const writes = { out: process.stdout.write, err: process.stderr.write };
 const mode = (path: string) => statSync(path).mode & 0o777;
 
 /** openLog at a moment the test chose, so the file it names is one the test can have made already. */
-function openAt(at: Date): string {
+function openAt(at: Date, tighten?: Parameters<typeof openLog>[0]): string {
   mock.timers.enable({ apis: ['Date'], now: at });
   try {
-    return openLog();
+    return openLog(tighten);
   } finally {
     mock.timers.reset();
   }
@@ -96,3 +96,54 @@ describe('openLog: the log is the owner\'s alone', () => {
     assert.equal(dirname(old), logs);
   });
 });
+
+describe('openLog: a filesystem that will not change modes does not stop the relay', () => {
+  /** What a filesystem like exFAT, some network mounts, or a file owned by someone else answers to chmod. */
+  const refuses = () => {
+    throw Object.assign(new Error("EPERM: operation not permitted, fchmod '<fd>'"), { code: 'EPERM' });
+  };
+  /** What process.stderr is asked to write from here on, as the tee passes it on. */
+  function listening() {
+    const heard: string[] = [];
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      heard.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    return heard;
+  }
+
+  it('starts anyway, returns the path, and the file is still the owner\'s alone because it was made that way', () => {
+    listening();
+    const path = openAt(NOW, refuses);
+    assert.equal(path, join(logs, NAME));
+    assert.equal(existsSync(path), true);
+    assert.equal(mode(path) & 0o077, 0, `mode is ${mode(path).toString(8)}`);
+  });
+
+  it('says so once, in a line, on stderr and in the log, and names the reason', async () => {
+    const heard = listening();
+    const path = openAt(NOW, refuses);
+    await new Promise((r) => setTimeout(r, 50));
+    const said = heard.filter((line) => /could not tighten the log file's permissions/.test(line));
+    assert.equal(said.length, 1, `heard: ${JSON.stringify(heard)}`);
+    assert.equal(said[0]!.trim().split('\n').length, 1, 'one line');
+    assert.match(said[0]!, /EPERM/);
+    assert.equal((readFileSync(path, 'utf8').match(/could not tighten/g) ?? []).length, 1, 'the log itself says it too, once');
+  });
+
+  it('still tees the terminal into the file afterwards', async () => {
+    listening();
+    const path = openAt(NOW, refuses);
+    process.stdout.write('after the warning\n');
+    await new Promise((r) => setTimeout(r, 50));
+    assert.match(readFileSync(path, 'utf8'), /after the warning/);
+  });
+
+  it('says nothing when the file could be closed', async () => {
+    const heard = listening();
+    openAt(NOW);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(heard.filter((line) => /could not tighten/.test(line)).length, 0);
+  });
+});
+

@@ -25,16 +25,20 @@ import { state } from './paths.ts';
 const KEEP_DAYS = 7;
 
 /** Start keeping the terminal, and forget the logs nothing needs any more.
- *  Returns the file's path, so the startup lines can say where the terminal went. */
-export function openLog(): string {
+ *  Returns the file's path, so the startup lines can say where the terminal went.
+ *  `tighten` is how the file is closed to other users, handed in so a test can make it fail. */
+export function openLog(tighten: typeof fchmodSync = fchmodSync): string {
   const dir = logsDir();
   prune(dir);
   const path = state('logs', `${stamp(new Date())}.log`);
   // Opened here rather than by the stream, which opens in the background: the file is there, and
   // closed to everyone else, before anything is written to it. `mode` only applies to a file this
   // call makes, and one left by an earlier start of the same second needs closing too.
-  const fd = openSync(path, 'a', 0o600);
-  fchmodSync(fd, 0o600);
+  const fd = openSync(path, 'a', 0o600); // a real problem (a folder that cannot be written) stops the start, as it always did
+  // A filesystem that will not change modes (exFAT, some network mounts) or a file that is someone
+  // else's refuses this. The relay still starts: a file made here is 0600 already.
+  let untightened: unknown = null;
+  try { tighten(fd, 0o600); } catch (err) { untightened = err; }
   const file = createWriteStream(path, { fd });
   for (const stream of [process.stdout, process.stderr] as const) {
     const write = stream.write.bind(stream) as (...args: unknown[]) => boolean;
@@ -43,6 +47,8 @@ export function openLog(): string {
       return write(chunk, ...rest);
     }) as typeof stream.write;
   }
+  // Said once the tee is in, so that the log says it too.
+  if (untightened !== null) console.error(`could not tighten the log file's permissions: ${untightened instanceof Error ? untightened.message : String(untightened)}`);
   return path;
 }
 

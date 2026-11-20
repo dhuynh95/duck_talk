@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { LOCKED_NOTE, liveNote, promptDirty, promptEditable, promptNote } from '../web/prompts.js';
+import { LOCKED_NOTE, liveNote, promptDirty, promptEditable, promptNote, showLiveNote } from '../web/prompts.js';
 
 // The rules the prompts screen goes by: when a prompt may be opened, when it has been changed,
 // and what it says about when it takes effect. The sheet itself is looked at in Chrome.
@@ -64,3 +64,29 @@ describe('promptNote: what a row says under it', () => {
     assert.match(LOCKED_NOTE, /stop listening/i);
   });
 });
+
+describe('showLiveNote: the editor adds the live note only when the relay\'s own words do not already say it', () => {
+  // The two details the relay really sends (server/prompts.ts): each ends with when it takes effect.
+  const VOICE = 'Said before every sentence. There is no speed setting — the wording is it. Asking for a brisk pace is about 1.5× faster than leaving this empty; asking for a slow one is about 1.5× slower. Takes effect on the next sentence.';
+  const CLAUDE = 'How Claude answers: how long, in what tone, and what to do before it speaks. Remember it is being read aloud, not printed. Added to Claude Code’s own instructions rather than replacing them, so this is a way of speaking and not the whole brief. Fixed when a session starts, so it takes effect the next time you press listen.';
+
+  it('is false for the details the relay really sends, which end with that sentence themselves', () => {
+    assert.equal(showLiveNote({ detail: VOICE }), false);
+    assert.equal(showLiveNote({ detail: CLAUDE }), false);
+  });
+
+  it('is true for a short detail that says nothing about when', () => {
+    assert.equal(showLiveNote({ detail: 'What the voice model is told.' }), true);
+    assert.equal(showLiveNote({ detail: '' }), true);
+  });
+
+  it('ignores the case of the phrase, and does not take a different phrase for it', () => {
+    assert.equal(showLiveNote({ detail: 'TAKES EFFECT at once.' }), false);
+    assert.equal(showLiveNote({ detail: 'It has an effect on how it speaks.' }), true);
+  });
+
+  it('is true for a prompt whose detail is missing, which the relay may leave out', () => {
+    assert.equal(showLiveNote({} as { detail: string }), true);
+  });
+});
+

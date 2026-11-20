@@ -8,7 +8,8 @@
 // — greyed, not openable, and saying why on the row itself — rather than letting an edit promise
 // what it cannot do. The rules are in prompts.js.
 //
-// The editor opens with the cursor in the text and says, under it, when an edit takes effect. Its
+// The editor opens with the cursor in the text and says, under it, when an edit takes effect (once:
+// the relay's own detail usually says it already, and then nothing is added). Its
 // draft is seeded once, from the row as it was opened, and never from the socket: the
 // relay's echo of your own save, or of anyone else's, cannot overwrite what you are typing. A draft
 // that differs from the relay's text is not thrown away by accident: Back, the X, Esc and a tap
@@ -16,7 +17,7 @@
 // relay answering would go nowhere and say nothing, so then Save is off and the sheet says why.
 
 import { h } from '../dom.js';
-import { liveNote, promptDirty, promptEditable, promptNote } from '../prompts.js';
+import { liveNote, promptDirty, promptEditable, promptNote, showLiveNote } from '../prompts.js';
 import { icon } from './icons.js';
 import { backButton, confirmPane, loadingPane, offlineNote, paneBar, paneNote, watchKeys } from './panes.js';
 import { openSheet } from './sheet.js';
@@ -107,14 +108,17 @@ export function openPrompts({ store, relay }) {
 
   /** @param {Prompt} p */
   function openEditor(p) {
-    const when = paneNote(liveNote(p));
-    when.id = 'prompt-when';
+    // What the relay says about the prompt, and — unless that already says when an edit takes effect — when it does.
+    const about = paneNote(p.detail);
+    about.id = 'prompt-about';
+    const when = showLiveNote(p) ? paneNote(liveNote(p)) : null;
+    if (when) when.id = 'prompt-when';
     const input = h('textarea', {
       id: 'prompt-text',
       class: 'field area prompt-text',
       rows: 14,
       'aria-label': p.title,
-      'aria-describedby': when.id,
+      'aria-describedby': when ? `${about.id} ${when.id}` : about.id,
       dataset: { autofocus: '' }, // you came here to write: the cursor is in it, and is back in it after "Keep editing"
       // Never "corrected": the words are an instruction, and a phone rewriting them changes what it says.
       autocomplete: 'off',
@@ -141,7 +145,7 @@ export function openPrompts({ store, relay }) {
       if (dirty()) askDiscard(showList);
       else showList();
     };
-    const el = h('div', { class: 'pane' }, paneBar(backButton('Prompts', leave), save), input, paneNote(p.detail), when, note);
+    const el = h('div', { class: 'pane' }, paneBar(backButton('Prompts', leave), save), input, about, when, note);
 
     const stop = watchKeys(store, ['connected'], sync);
     editor = {
