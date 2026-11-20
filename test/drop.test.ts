@@ -18,20 +18,30 @@ const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 
 const image = (id: number) => join(dir, '.duck-talk', 'images', `${id}.jpg`);
 const tick = () => new Promise((r) => setImmediate(r));
 
-function rig() {
+function rig(opts: { mode?: 'direct' | 'review'; ai?: unknown; autocorrect?: boolean } = {}) {
   const log: string[] = [];
   const sent: { instruction: string; given: any[] }[] = [];
   const events: any[] = [];
+  const records: any[] = [];
   const session: any = new Session(
     { pcm: () => {}, event: (e: unknown) => void events.push(e) },
-    {} as never, // the Gemini client: never called, because nothing here opens the ears or the voice
-    'direct',
-    { sttModel: 'stt', voiceModel: 'voice', autocorrect: false, readback: false },
+    // The Gemini client: never called unless a test hands one in, because nothing here opens the ears or the voice
+    (opts.ai ?? {}) as never,
+    opts.mode ?? 'direct',
+    { sttModel: 'stt', voiceModel: 'voice', autocorrect: opts.autocorrect ?? false, readback: false },
     (m: string) => void log.push(m),
   );
   session.claude = { send: (instruction: string, given: any[]) => void sent.push({ instruction, given }), interrupt: () => {} };
-  session.voice = { interrupt: () => {} };
-  return { session, log, sent, events };
+  session.voice = { interrupt: () => {}, say: () => {}, finish: () => {} };
+  session.record = async (t: unknown) => void records.push(t); // the turn log is not what is under test
+  return { session, log, sent, events, records };
+}
+
+/** A correction call that answers when the test says so, so a test can stand inside the wait for it. */
+function slowCorrection(answer: string) {
+  let answerNow: () => void = () => {};
+  const waiting = new Promise<{ text: string }>((resolve) => { answerNow = () => resolve({ text: answer }); });
+  return { ai: { models: { generateContent: () => waiting } }, answerNow };
 }
 
 before(() => mkdirSync(join(dir, '.duck-talk'), { recursive: true }));
@@ -129,7 +139,7 @@ describe('Session: a drop frame takes back a pending attachment', () => {
     assert.deepEqual(session.turn.images, [30], 'the record still names what Claude was given');
     assert.deepEqual(session.attached, [{ id: 30, data: JPEG }]);
     assert.ok(existsSync(image(30)), 'a chat reopened later still shows it');
-    assert.ok(log.some((l) => l.includes('turn already carries attachment 30')));
+    assert.ok(log.some((l) => l.includes('turn already sent with attachment 30')));
   });
 
   it('takes one back after a retract, which re-runs the turn with whatever is still held', async () => {
@@ -144,5 +154,47 @@ describe('Session: a drop frame takes back a pending attachment', () => {
     session.run('look at this');
     assert.deepEqual(sent.at(-1), { instruction: 'look at this', given: [{ image: JPEG }] });
     assert.deepEqual(session.turn.images, [41]);
+  });
+
+  // A retract puts the turn back in the user's hands, but the joined sentence is not run at once:
+  // with auto-correct on, `propose` takes the floor again and waits for the correction first. The
+  // turn has not been sent in that wait, so a picture handed back can still be taken back.
+  it('takes one back while the re-run waits for its correction, and the re-run is not given it', async () => {
+    const { ai, answerNow } = slowCorrection('look at this, as meant');
+    const { session, sent, log } = rig({ ai, autocorrect: true });
+    session.corrections = [{ at: 1, heard: 'look', proposed: 'look', meant: 'look at' }];
+    session.frame({ type: 'attach', id: 50, data: JPEG });
+    session.frame({ type: 'attach', id: 51, data: JPEG });
+    session.frame({ type: 'text', text: 'look at' });
+    await tick();
+    assert.equal(sent.length, 1, 'the fragment ran with both pictures');
+    session.retract();
+    const proposing = session.propose('look at this');
+    assert.equal(session.state, 'claude', 'the floor is taken again, but nothing has been sent');
+    session.frame({ type: 'drop', id: 50 });
+    assert.deepEqual(session.attached.map((a: { id: number }) => a.id), [51]);
+    assert.equal(existsSync(image(50)), false);
+    assert.equal(log.some((l) => l.includes('drop ignored')), false, 'a turn that has not been sent holds nothing');
+    answerNow();
+    await proposing;
+    assert.equal(sent.length, 2);
+    assert.deepEqual(sent[1], { instruction: 'look at this, as meant', given: [{ image: JPEG }] });
+    assert.deepEqual(session.turn.images, [51]);
+  });
+
+  it('records no picture that was taken back after a retract, even when the re-run is then refused', async () => {
+    const { session, records } = rig({ mode: 'review' });
+    session.frame({ type: 'attach', id: 60, data: JPEG });
+    await session.propose('look at');
+    session.frame({ type: 'approve' });
+    assert.deepEqual(session.turn.images, [60], 'the fragment ran with it');
+    session.retract();
+    await session.propose('look at this');
+    assert.equal(session.state, 'held');
+    session.frame({ type: 'drop', id: 60 });
+    assert.equal(existsSync(image(60)), false);
+    session.decide(false);
+    assert.equal(records.length, 1);
+    assert.deepEqual(records[0].images, [], 'the record does not name a picture that no longer exists');
   });
 });

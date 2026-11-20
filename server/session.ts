@@ -561,17 +561,18 @@ export class Session {
    * Take a pending picture or paste back, so the instruction that runs next is not given it
    * and a picture that was never said is not left in the chat's history.
    *
-   * Only what has not gone to Claude. A running turn already holds what it was given and
-   * its record names the pictures, so letting go of one then would leave a chat reopened
-   * later with a gap. The phone never asks — a piece given to a line is no longer pending
-   * there — so it is refused, and said. After a retract the turn is taken back and re-runs
-   * with whatever is still held, so a piece the phone was handed back can be dropped.
+   * Only what has not gone to Claude. A turn that has been sent (`ran_at`) already holds
+   * what it was given and its record names the pictures, so letting go of one then would
+   * leave a chat reopened later with a gap. The phone never asks — a piece given to a line
+   * is no longer pending there — so it is refused, and said. After a retract the turn is
+   * taken back and has not been sent, even while auto-correct holds the floor for the
+   * joined sentence, so a piece the phone was handed back can be dropped until `run`.
    */
   private drop(id: number): void {
     const i = this.attached.findIndex((a) => a.id === id);
     if (i < 0) return; // never held, or already taken back
-    if (this.state === 'claude' && this.turn.images.includes(id)) {
-      this.log(`drop ignored: turn already carries attachment ${id}`);
+    if (this.turn.ran_at !== null && this.turn.images.includes(id)) {
+      this.log(`drop ignored: turn already sent with attachment ${id}`);
       return;
     }
     const [taken] = this.attached.splice(i, 1);
@@ -741,6 +742,7 @@ export class Session {
     t.claude_start_at = t.claude_opens = t.claude_first_at = null;
     t.tts_sent_at = t.voice_out_at = t.reply_in_at = null;
     t.voice_ms = 0;
+    t.images = []; // `run` names them again, from whatever is still held
     this.state = 'user';
   }
 
