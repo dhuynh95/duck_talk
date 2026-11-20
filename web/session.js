@@ -359,10 +359,31 @@ export class VoiceSession {
     if (this.#open) this.#sendAttachment(item);
   }
 
-  /** Take one back, before it has been sent with an instruction. @param {number} id */
+  /**
+   * Take one off the list this screen shows for the next instruction — and that is all it does.
+   * Whether the attachment is really taken back depends on whether it has left:
+   *  - no socket open: its `attach` frame has not been sent and now never will be;
+   *  - a socket open (`attachmentsSent`): the frame went out when it was attached, or when the
+   *    socket opened, the relay already holds it, and the protocol has no frame to let go of it —
+   *    so the chip is gone but the next turn on that socket is still given the picture or text.
+   * This is the case in voice mode, where the microphone keeps a socket open. Making removal real
+   * takes a `drop` frame and the relay's side of it (follow-up 13b); until then whoever offers
+   * removal should say so (attach-chips.js does), and this is the comment to update when it lands.
+   * @param {number} id
+   */
   drop(id) {
     this.#t.drop(id);
     this.#sync();
+  }
+
+  /**
+   * Whether the relay already holds what is attached: true while a socket is open, since every
+   * pending attachment goes out on an open socket the moment it is made, or the moment the socket
+   * opens. Nothing that has gone can be taken back (see `drop`). The store is written when the
+   * socket opens and when it closes, so a screen can redraw from this.
+   */
+  get attachmentsSent() {
+    return this.#open;
   }
 
   // MARK: the microphone

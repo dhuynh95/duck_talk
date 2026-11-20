@@ -209,6 +209,46 @@ describe('VoiceSession: frames out', () => {
     session.drop(1);
     assert.deepEqual(state().attached, []);
   });
+
+  // Removal is only on this screen: there is no frame that lets the relay forget an attachment,
+  // so one already on an open socket is still given to the next turn. Until the protocol has one,
+  // `attachmentsSent` is how the screen can say so.
+  it('drop() of an attachment already on an open socket sends nothing: the relay cannot take it back', () => {
+    const { session, last, state } = rig();
+    session.send('go');
+    last().open();
+    session.attach({ id: 5, text: 'sensitive' });
+    assert.deepEqual(last().frames.at(-1), { type: 'attach', id: 5, text: 'sensitive' });
+    const before = last().frames.length;
+    session.drop(5);
+    assert.deepEqual(state().attached, []);
+    assert.equal(last().frames.length, before, 'no frame says the attachment was taken back');
+  });
+
+  it('attachmentsSent is true exactly while a socket is open, which is when attachments are on the relay', () => {
+    const { session, last } = rig();
+    assert.equal(session.attachmentsSent, false, 'no socket: nothing has left');
+    session.send('go');
+    assert.equal(session.attachmentsSent, false, 'a socket still connecting has sent nothing');
+    last().open();
+    assert.equal(session.attachmentsSent, true);
+    last().receive({ type: 'turn_start', session: 'c1' });
+    last().receive({ type: 'turn_end', session: 'c1' });
+    assert.equal(session.attachmentsSent, false, 'the socket closed with the turn');
+  });
+
+  it('writes the store when the socket opens and when it closes, so a screen reading attachmentsSent redraws', () => {
+    const { session, store, last } = rig();
+    /** What attachmentsSent said at each write. */
+    const seen: boolean[] = [];
+    store.subscribe(() => void seen.push(session.attachmentsSent));
+    session.send('go');
+    last().open();
+    assert.equal(seen.at(-1), true, 'the open is written, and says sent');
+    last().receive({ type: 'turn_start', session: 'c1' });
+    last().receive({ type: 'turn_end', session: 'c1' });
+    assert.equal(seen.at(-1), false, 'the close is written, and says not sent');
+  });
 });
 
 describe('VoiceSession: the socket', () => {

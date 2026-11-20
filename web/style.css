@@ -1149,6 +1149,12 @@ select {
   min-height: 44px;
 }
 
+/* The round buttons keep their circle; it is the capsule beside them that gives way. A flex item
+   shrinks by default, and the plus was squeezed to a sliver by a long model name. */
+.bar-start .round {
+  flex: none;
+}
+
 .bar-end {
   justify-self: end;
   display: flex;
