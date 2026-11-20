@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { forgetKey, keepKey, socketUrl, takeKey } from '../web/key.js';
+import { forgetKey, hasStoredKey, keepKey, socketUrl, takeKey } from '../web/key.js';
 
 /** A Storage that remembers what it is given, and can be told to refuse. */
 function memory(initial: Record<string, string> = {}, refuse: 'get' | 'set' | 'remove' | null = null) {
@@ -100,6 +100,25 @@ describe('forgetKey', () => {
   it('tolerates storage that throws, and storage that is not there', () => {
     forgetKey(memory({ 'duck-talk-key': 'abc' }, 'remove'));
     forgetKey(null);
+  });
+});
+
+describe('hasStoredKey', () => {
+  it('is true when a key is kept, false when none is', () => {
+    assert.equal(hasStoredKey(memory({ 'duck-talk-key': 'abc' })), true);
+    assert.equal(hasStoredKey(memory()), false);
+  });
+
+  it('is false for an empty key, for storage that throws, and for storage that is not there', () => {
+    assert.equal(hasStoredKey(memory({ 'duck-talk-key': '' })), false);
+    assert.equal(hasStoredKey(memory({ 'duck-talk-key': 'abc' }, 'get')), false);
+    assert.equal(hasStoredKey(null), false);
+  });
+
+  it('turns false once the key is forgotten', () => {
+    const storage = memory({ 'duck-talk-key': 'abc' });
+    forgetKey(storage);
+    assert.equal(hasStoredKey(storage), false);
   });
 });
 

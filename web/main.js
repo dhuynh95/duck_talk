@@ -3,6 +3,10 @@
 // typed or spoken, on a VoiceSession whose socket, audio pipe, timers and clock are the
 // browser's own, handed in here — with the chats drawer beside it, and the verbs under each line.
 //
+// The gear's menu opens the three screens that are about the relay rather than the conversation
+// (prompts, corrections, connection), and "Fix what was heard" under a line opens the corrections
+// one straight onto it.
+//
 // Everything on the page is built with `h` (see dom.js): no markup is ever parsed from a
 // string.
 
@@ -16,8 +20,12 @@ import { VoiceSession } from './session.js';
 import { loadSettings, normalizeSettings, saveSettings } from './settings.js';
 import { createStore } from './store.js';
 import { composer } from './ui/composer.js';
+import { openConnection } from './ui/connection.js';
+import { openCorrections } from './ui/corrections.js';
 import { chatsDrawer } from './ui/drawer.js';
 import { header } from './ui/header.js';
+import { openPrompts } from './ui/prompts.js';
+import { settingsMenu } from './ui/settings-menu.js';
 import { transcriptView } from './ui/transcript-view.js';
 
 const LOGO = '/logo.svg';
@@ -139,6 +147,18 @@ function app(key, storage) {
   const relay = new RelayStore({ store, urlFor: () => socketUrl(location, { data: '1' }, key), makeSocket, setTimer });
   relay.connect();
 
+  // MARK: what the relay owns: prompts, corrections, and the way to leave
+
+  const screens = { store, relay };
+  // The editor a line asks for (line-actions.js) is this one: the same sheet the menu opens, onto that line.
+  actions.openCorrections = (seed) => openCorrections(screens, seed);
+  const menu = settingsMenu(store, {
+    change,
+    prompts: () => openPrompts(screens),
+    corrections: () => openCorrections(screens),
+    connection: () => openConnection({ store, key, storage: localStore(), address: location.origin, reload: () => location.reload() }),
+  });
+
   // MARK: the conversation, and what the relay says about it
 
   /** A notice from the page itself, taken down by the page itself — and only if it is still the one up. @param {string} message */
@@ -209,7 +229,7 @@ function app(key, storage) {
     'div',
     { class: 'app' },
     drawer.el,
-    h('div', { class: 'stage' }, view.el, header(store, { openChats: (button) => drawer.open(button) }), bottom.el),
+    h('div', { class: 'stage' }, view.el, header(store, { openChats: (button) => drawer.open(button), openSettings: (button, edge) => menu.toggle(button, edge) }), bottom.el),
   );
 
   // What the data socket says about chats, carried into the conversation on screen (chat-flow.js).

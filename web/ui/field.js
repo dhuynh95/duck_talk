@@ -5,11 +5,16 @@
 /** The field grows with what is typed up to this, then scrolls. */
 const MAX_FIELD = 168;
 
-/** Fit `input` to its text, up to a limit. @param {HTMLTextAreaElement} input */
+/**
+ * Fit `input` to its text, up to a limit. A border is part of a border-box height and not of
+ * `scrollHeight`, so a field with one is made that much taller, or it would scroll by two pixels.
+ * @param {HTMLTextAreaElement} input
+ */
 export function autosize(input) {
   input.style.height = 'auto';
-  input.style.height = `${Math.min(input.scrollHeight, MAX_FIELD)}px`;
-  input.classList.toggle('scrolls', input.scrollHeight > MAX_FIELD);
+  const border = input.offsetHeight - input.clientHeight;
+  input.style.height = `${Math.min(input.scrollHeight + border, MAX_FIELD)}px`;
+  input.classList.toggle('scrolls', input.scrollHeight + border > MAX_FIELD);
 }
 
 /**

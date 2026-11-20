@@ -10,6 +10,10 @@
 // nothing else on the screen to do. A row's check is drawn on every row and shown on one, so
 // picking a different choice cannot reflow the text beside it.
 //
+// A sheet that holds something half-written can ask before it goes (`beforeDismiss`): the X, Esc
+// and a tap outside are the ways a person closes one by accident, and each asks it first.
+// Closing from code (`close()`) never does, so a sheet being replaced is never held up.
+//
 // Everything a row says is set as text, so a model description or a chat title can never be markup.
 
 import { h } from '../dom.js';
@@ -48,10 +52,13 @@ function tabbable(root) {
  * Open a sheet over the page. `onClose` is called once, however it was closed. Focus goes back
  * to `opener` then — the button that was pressed, which only some browsers focus when it is
  * pressed, so it can be named — or else to whatever had focus when this opened.
- * @param {{ title: string, content: HTMLElement, onClose?: () => void, opener?: HTMLElement | null }} options
+ *
+ * `beforeDismiss` is asked when the person closes it (the X, Esc, a tap outside): false keeps it
+ * open, and whoever said so is now showing why.
+ * @param {{ title: string, content: HTMLElement, onClose?: () => void, opener?: HTMLElement | null, beforeDismiss?: () => boolean }} options
  * @returns {Sheet}
  */
-export function openSheet({ title, content, onClose, opener: named }) {
+export function openSheet({ title, content, onClose, opener: named, beforeDismiss }) {
   current?.close(); // the first goes, and focus goes back to what opened it — which is what opens this one
 
   const active = document.activeElement;
@@ -59,7 +66,10 @@ export function openSheet({ title, content, onClose, opener: named }) {
 
   const titleId = `sheet-title-${++serial}`;
   const titleEl = h('h2', { class: 'sheet-title', id: titleId }, title);
-  const closeButton = h('button', { class: 'round plain sheet-close', type: 'button', 'aria-label': 'Close', onclick: () => sheet.close() }, icon('close'));
+  const dismiss = () => {
+    if (beforeDismiss?.() !== false) sheet.close();
+  };
+  const closeButton = h('button', { class: 'round plain sheet-close', type: 'button', 'aria-label': 'Close', onclick: dismiss }, icon('close'));
   const body = h('div', { class: 'sheet-body' }, content);
   const panel = h(
     'div',
@@ -67,7 +77,7 @@ export function openSheet({ title, content, onClose, opener: named }) {
     h('div', { class: 'sheet-head' }, closeButton, titleEl),
     body,
   );
-  const backdrop = h('div', { class: 'sheet-backdrop', onclick: () => sheet.close() });
+  const backdrop = h('div', { class: 'sheet-backdrop', onclick: dismiss });
   const layer = h('div', { class: 'sheet-layer' }, backdrop, panel);
 
   const focusInto = () => {
@@ -82,7 +92,7 @@ export function openSheet({ title, content, onClose, opener: named }) {
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      sheet.close();
+      dismiss();
       return;
     }
     if (event.key !== 'Tab') return;

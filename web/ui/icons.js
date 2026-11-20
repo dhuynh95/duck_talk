@@ -122,6 +122,34 @@ const SHAPES = {
     ['circle', { cx: '12', cy: '12', r: '9' }],
     ['path', { d: 'M8 12.5l2.8 2.8L16 9.5' }],
   ],
+  'x-circle': [
+    ['circle', { cx: '12', cy: '12', r: '9' }],
+    ['path', { d: 'M9 9l6 6M15 9l-6 6' }],
+  ],
+  // The settings menu: what Claude is told, what the ears keep getting wrong, fixing it for you,
+  // and the way out to the relay. `arrow-turn` is a correction's "meant" line; `chevron-left` is Back.
+  prompts: [
+    ['path', { d: 'M5 4h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-8l-4 4v-4H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z' }],
+    ['path', { d: 'M8 9h8M8 12.5h5' }],
+  ],
+  corrections: [
+    ['path', { d: 'M4 6h12M4 12h6M4 18h8' }],
+    ['path', { d: 'M13 17l2.5 2.5L21 14' }],
+  ],
+  wand: [
+    ['path', { d: 'M5 19L15 9M13 7l4 4' }],
+    ['path', { d: 'M18 3v4M16 5h4M19 13v3M17.5 14.5h3' }],
+  ],
+  network: [
+    ['circle', { cx: '12', cy: '12', r: '9' }],
+    ['path', { d: 'M3 12h18M12 3c2.5 2.6 3.7 5.6 3.7 9s-1.2 6.4-3.7 9c-2.5-2.6-3.7-5.6-3.7-9S9.5 5.6 12 3z' }],
+  ],
+  'arrow-turn': [
+    ['path', { d: 'M5 5v6a3 3 0 0 0 3 3h11M15 10l4 4-4 4' }],
+  ],
+  'chevron-left': [
+    ['path', { d: 'M15 5l-7 7 7 7' }],
+  ],
 };
 
 /** Every name `icon` draws, so a caller that names one from a table can be checked. */

@@ -53,7 +53,16 @@ export function keepKey(storage, key) {
   }
 }
 
-/** Drops the stored key, for a relay that refused it. @param {KeyStorage | null} storage */
+/** Whether a key is kept in storage, as opposed to held for this page load only. @param {Pick<KeyStorage, 'getItem'> | null} storage */
+export function hasStoredKey(storage) {
+  try {
+    return !!storage?.getItem(STORAGE_NAME);
+  } catch {
+    return false;
+  }
+}
+
+/** Drops the stored key: a relay that refused it, or the person asking to be rid of it. @param {KeyStorage | null} storage */
 export function forgetKey(storage) {
   try {
     storage?.removeItem(STORAGE_NAME);
