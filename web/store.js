@@ -21,9 +21,18 @@ export function createStore(initial) {
     get: () => state,
 
     // A new object each time, so a state handed out earlier never changes under its holder.
+    // Each subscriber is told on its own: one that throws is reported and the rest still hear about
+    // the write, since they are the screens and none of them may go stale for another's bug.
     set(patch) {
       state = { ...state, ...patch };
-      for (const fn of [...subscribers]) fn(state); // a copy: a subscriber may unsubscribe as it is called
+      for (const fn of [...subscribers]) { // a copy: a subscriber may unsubscribe as it is called
+        if (!subscribers.has(fn)) continue; // ...and one that an earlier subscriber removed is not called
+        try {
+          fn(state);
+        } catch (error) {
+          console.error('store: a subscriber threw', error);
+        }
+      }
     },
 
     /** Calls `fn` with the new state after each `set` — not at once with the current one. */

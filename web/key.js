@@ -21,13 +21,18 @@ const STORAGE_NAME = 'duck-talk-key';
  */
 export function takeKey(loc, storage, replace) {
   const params = new URLSearchParams(loc.search);
-  const fromUrl = params.get('key');
+  const fromUrl = params.getAll('key').find(Boolean); // `?key=&key=abc` has one, and `?key=` has none
 
   if (fromUrl) {
     keepKey(storage, fromUrl); // if it cannot be kept it still opens this page
-    params.delete('key');
+    params.delete('key'); // every one of them, empty or not
     const rest = params.toString();
-    replace(loc.pathname + (rest ? `?${rest}` : '') + loc.hash);
+    try {
+      replace(loc.pathname + (rest ? `?${rest}` : '') + loc.hash);
+    } catch {
+      // history.replaceState refuses some addresses (`//index.html` reads as another origin) and
+      // some sandboxes: the key is in the address bar a little longer, and the page still opens.
+    }
     return fromUrl;
   }
 

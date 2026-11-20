@@ -65,6 +65,48 @@ const MEDIA_TIMEOUT = 10_000;
 const CONCURRENT = 3;
 const DOWN = 'The relay is not answering.';
 
+// MARK: rows
+
+// The relay's lists are drawn row by row by code that reads a field and calls a string method on
+// it, inside a store write that tells every screen at once. One row of the wrong shape would throw
+// there — and a screen that did not hear about the write is a screen that is wrong until the next
+// one — so a row that could not be drawn is not stored: the others are. A field that is missing is
+// fine; only one that is there and of a type the page would trip on is not.
+
+/** @param {unknown} v @returns {v is Record<string, any>} */
+const isRow = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+/** @param {unknown} v */
+const isString = (v) => typeof v === 'string';
+/** @param {unknown} v @param {'string' | 'number'} type */
+const maybe = (v, type) => v === undefined || typeof v === type;
+
+/**
+ * The rows of a list the page can draw.
+ * @template T
+ * @param {unknown[]} rows
+ * @param {(row: Record<string, any>) => boolean} fits
+ * @returns {T[]}
+ */
+function keep(rows, fits) {
+  return /** @type {T[]} */ (rows.filter((row) => isRow(row) && fits(row)));
+}
+
+/** @param {Record<string, any>} m */
+const isModel = (m) =>
+  isString(m['value']) &&
+  maybe(m['displayName'], 'string') &&
+  maybe(m['description'], 'string') &&
+  maybe(m['resolvedModel'], 'string') &&
+  (m['supportedEffortLevels'] === undefined || (Array.isArray(m['supportedEffortLevels']) && m['supportedEffortLevels'].every(isString)));
+/** @param {Record<string, any>} c */
+const isCorrection = (c) => typeof c['at'] === 'number' && isString(c['heard']) && isString(c['meant']) && maybe(c['clip'], 'number');
+/** @param {Record<string, any>} p */
+const isPrompt = (p) => isString(p['name']) && isString(p['title']) && isString(p['text']) && maybe(p['detail'], 'string');
+/** @param {Record<string, any>} k */
+const isSkill = (k) => isString(k['name']) && maybe(k['description'], 'string') && maybe(k['argumentHint'], 'string');
+/** @param {Record<string, any>} c */
+const isChat = (c) => isString(c['id']) && maybe(c['title'], 'string') && maybe(c['at'], 'number');
+
 export class RelayStore {
   #store;
   #urlFor;
@@ -188,19 +230,19 @@ export class RelayStore {
         if (typeof f.version === 'string') patch['relayVersion'] = f.version;
         break;
       case 'corrections':
-        if (Array.isArray(f.items)) patch['corrections'] = [...f.items].reverse(); // newest first
+        if (Array.isArray(f.items)) patch['corrections'] = keep(f.items, isCorrection).reverse(); // newest first
         break;
       case 'prompts':
-        if (Array.isArray(f.prompts)) patch['prompts'] = f.prompts;
+        if (Array.isArray(f.prompts)) patch['prompts'] = keep(f.prompts, isPrompt);
         break;
       case 'models':
-        if (Array.isArray(f.models)) patch['models'] = f.models;
+        if (Array.isArray(f.models)) patch['models'] = keep(f.models, isModel); // [] is an answer: none, which is not "not yet"
         break;
       case 'skills':
-        if (Array.isArray(f.skills)) patch['skills'] = f.skills;
+        if (Array.isArray(f.skills)) patch['skills'] = keep(f.skills, isSkill);
         break;
       case 'chats':
-        if (Array.isArray(f.chats)) patch['chats'] = f.chats; // already newest first
+        if (Array.isArray(f.chats)) patch['chats'] = keep(f.chats, isChat); // already newest first
         break;
       case 'chat':
         if (typeof f.id === 'string' && Array.isArray(f.messages)) patch['loaded'] = { id: f.id, messages: f.messages, forked: f.forked === true };

@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { ICON_NAMES } from '../web/ui/icons.js';
 import { MODE_IDS, PERMISSION_IDS } from '../web/settings.js';
-import { MODES, PERMISSIONS, effortChoices, effortFor, effortTitle, modeLocked, modelLabel, modelShortName } from '../web/ui/pickers.js';
+import { createStore } from '../web/store.js';
+import { MODES, NO_MODELS, PERMISSIONS, effortChoices, effortFor, effortTitle, modeLocked, modelLabel, modelShortName, modelSheet, modelsState } from '../web/ui/pickers.js';
 
 // The rules the pickers draw by, and the words they say. The sheets themselves are looked at in
 // Chrome.
@@ -35,12 +36,16 @@ describe('modelShortName', () => {
   });
 });
 
-describe('modelLabel: what the capsule says', () => {
-  const models = [model('default', { resolvedModel: 'claude-opus-5[1m]' }), model('sonnet')];
+const models = [model('default', { resolvedModel: 'claude-opus-5[1m]' }), model('sonnet')];
 
+describe('modelLabel: what the capsule says', () => {
   it('is "…" until the relay has sent its list', () => {
     assert.equal(modelLabel(undefined, 'default'), '…');
-    assert.equal(modelLabel([], 'default'), '…');
+  });
+
+  it('is "None" when the relay sent an empty list, which is an answer and not a wait', () => {
+    assert.equal(modelLabel([], 'default'), 'None');
+    assert.notEqual(modelLabel([], 'default'), modelLabel(undefined, 'default'));
   });
 
   it('is the family of the selected row', () => {
@@ -50,6 +55,19 @@ describe('modelLabel: what the capsule says', () => {
 
   it('shows a model the relay no longer lists as it is stored, and does not fail', () => {
     assert.equal(modelLabel(models, 'claude-retired-1'), 'claude-retired-1');
+  });
+});
+
+describe('modelsState: waiting, none, or rows', () => {
+  it('tells a list that has not come from one that came empty', () => {
+    assert.equal(modelsState(undefined), 'loading');
+    assert.equal(modelsState([]), 'none');
+    assert.equal(modelsState(models), 'loaded');
+  });
+
+  it('is the same for a new array of the same rows: a reconnect sends the list again', () => {
+    assert.equal(modelsState([...models]), modelsState(models));
+    assert.equal(modelsState([model('other')]), modelsState(models));
   });
 });
 
@@ -146,3 +164,96 @@ describe('modeLocked', () => {
     assert.equal(modeLocked({ status: 'idle', working: true }), true);
   });
 });
+
+describe('modelSheet: when its rows are drawn again', () => {
+  /** A sheet that records what it was opened with and every time its content was swapped, standing in for the one on the page. */
+  function rig(initial: unknown) {
+    const store = createStore<Record<string, any>>({ models: initial, settings: { model: 'default', effort: 'default' } });
+    const opened: any[] = [];
+    const swaps: any[] = [];
+    const changes: any[] = [];
+    let closed = () => {};
+    const open = ((options: any) => {
+      opened.push(options);
+      closed = options.onClose;
+      return { close: () => closed(), setContent() {}, swap: (o: unknown) => void swaps.push(o) };
+    }) as never;
+    const sheet = modelSheet(store as never, (patch) => void changes.push(patch), null, open);
+    return { store, opened, swaps, changes, sheet, close: () => closed() };
+  }
+
+  it('opens on a spinner while the list has not come, and swaps to the rows once, when it lands', () => {
+    const { store, opened, swaps } = rig(undefined);
+    assert.equal(opened[0].loading, true);
+    assert.equal(opened[0].empty, undefined);
+    store.set({ models });
+    assert.equal(swaps.length, 1);
+    assert.equal(swaps[0].loading, false);
+    assert.deepEqual(swaps[0].choices.map((c: any) => c.id), ['default', 'sonnet']);
+  });
+
+  it('opens saying there are none for an empty list, with the reason, and not as a spinner', () => {
+    const { opened } = rig([]);
+    assert.equal(opened[0].loading, false);
+    assert.equal(opened[0].empty, NO_MODELS);
+    assert.match(NO_MODELS, /No models available/);
+    assert.match(NO_MODELS, /signed in/);
+    assert.deepEqual(opened[0].choices, []);
+  });
+
+  it('swaps from the spinner to the reason when the list arrives empty', () => {
+    const { store, swaps } = rig(undefined);
+    store.set({ models: [] });
+    assert.equal(swaps.length, 1);
+    assert.equal(swaps[0].loading, false);
+    assert.equal(swaps[0].empty, NO_MODELS);
+  });
+
+  it('swaps from the reason to the rows if the relay finds its models after all', () => {
+    const { store, swaps } = rig([]);
+    store.set({ models });
+    assert.equal(swaps.length, 1);
+    assert.equal(swaps[0].empty, undefined);
+    assert.equal(swaps[0].choices.length, 2);
+  });
+
+  it('does not redraw the rows for a new array of the same list, which a reconnect sends: focus stays where it is', () => {
+    const { store, swaps } = rig(models);
+    store.set({ models: models.map((m) => ({ ...m })) });
+    store.set({ models: [...models] });
+    assert.deepEqual(swaps, []);
+  });
+
+  it('does not redraw on the writes the microphone makes, or on any other key', () => {
+    const { store, swaps } = rig(models);
+    for (let i = 0; i < 5; i++) store.set({ level: i / 5 });
+    store.set({ connected: false });
+    store.set({ connected: true });
+    assert.deepEqual(swaps, []);
+  });
+
+  it('does not redraw the rows over the effort levels', () => {
+    const { store, swaps, opened } = rig([model('default', { supportsEffort: true, supportedEffortLevels: ['low', 'high'] })]);
+    opened[0].trailing.open();
+    assert.equal(swaps.length, 1);
+    assert.equal(swaps[0].title, 'Effort');
+    store.set({ models: [] });
+    assert.equal(swaps.length, 1, 'the levels stay until they are picked');
+  });
+
+  it('stops listening once it is closed', () => {
+    const { store, swaps, close } = rig(undefined);
+    close();
+    store.set({ models });
+    assert.deepEqual(swaps, []);
+  });
+
+  it('picks from the list as it is now, not as it was when the rows were drawn', () => {
+    const effortful = [model('opus', { supportsEffort: true, supportedEffortLevels: ['low', 'high'] }), model('haiku')];
+    const { store, opened, changes } = rig(effortful);
+    store.set({ settings: { model: 'opus', effort: 'high' }, models: [model('opus', { supportsEffort: true, supportedEffortLevels: ['low'] }), model('haiku')] });
+    opened[0].onPick('opus');
+    assert.deepEqual(changes, [{ model: 'opus', effort: 'default' }], 'high is not one of the levels it takes any more');
+  });
+});
+

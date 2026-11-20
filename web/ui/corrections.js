@@ -48,6 +48,12 @@ export function openCorrections({ store, relay }, seed) {
   let view = 'list';
   /** @type {{ el: HTMLElement, destroy: () => void, show: () => void } | null} the correction being written, kept while its delete is being asked */
   let detail = null;
+  /** Where the delete question's own listener on the relay is stopped: when it is answered, and when the sheet goes. */
+  let stopAsking = () => {};
+  const endAsk = () => {
+    stopAsking();
+    stopAsking = () => {};
+  };
 
   // MARK: the list
 
@@ -182,6 +188,7 @@ export function openCorrections({ store, relay }, seed) {
         if (detail?.el === el) detail = null;
       },
       show() {
+        endAsk();
         view = 'detail';
         sheet.setContent(el, isNew ? 'New correction' : 'Correction');
         autosize(heard);
@@ -193,24 +200,27 @@ export function openCorrections({ store, relay }, seed) {
 
   /** @param {Correction} c the correction as the relay has it, not as it is being edited */
   function askDelete(c) {
+    endAsk();
     view = 'confirm';
-    sheet.setContent(
-      confirmPane({
-        subject: `${c.heard.trim()} → ${c.meant.trim()}`,
-        text: 'It will no longer bias the recogniser or auto-correct what you said.',
-        cancel: 'Cancel',
-        confirm: 'Delete',
-        onCancel: () => detail?.show(),
-        onConfirm: () => {
-          relay.deleteCorrection(c.at);
-          showList();
-        },
-      }),
-      'Delete this correction?',
-    );
+    // With the relay gone Delete is off and says why: a delete sent to no socket is dropped without a word.
+    const question = confirmPane({
+      subject: `${c.heard.trim()} → ${c.meant.trim()}`,
+      text: 'It will no longer bias the recogniser or auto-correct what you said.',
+      cancel: 'Cancel',
+      confirm: 'Delete',
+      store,
+      onCancel: () => detail?.show(),
+      onConfirm: () => {
+        relay.deleteCorrection(c.at);
+        showList();
+      },
+    });
+    stopAsking = question.destroy;
+    sheet.setContent(question.el, 'Delete this correction?');
   }
 
   function showList() {
+    endAsk();
     detail?.destroy();
     view = 'list';
     sheet.setContent(list, 'Corrections');
@@ -223,6 +233,7 @@ export function openCorrections({ store, relay }, seed) {
     content: list,
     onClose: () => {
       stop();
+      endAsk();
       detail?.destroy();
     },
     // Esc and a tap outside on the question are "no", not "leave without answering".

@@ -69,6 +69,31 @@ describe('takeKey', () => {
     assert.equal(takeKey({ search: '', pathname: '/', hash: '' }, memory(), () => {}), null);
   });
 
+  it('still returns the key when replace throws, as history.replaceState does for a path like //index.html or in a sandbox', () => {
+    const storage = memory();
+    const key = takeKey({ search: '?key=abc', pathname: '//index.html', hash: '' }, storage, () => {
+      throw new DOMException('cannot be created in a document with a different origin', 'SecurityError');
+    });
+    assert.equal(key, 'abc');
+    assert.equal(storage.items.get('duck-talk-key'), 'abc', 'and it was kept before the address bar was touched');
+  });
+
+  it('takes the first key that is not empty when the parameter is repeated, and removes every one of them from the address', () => {
+    const storage = memory();
+    const replaced: string[] = [];
+    const key = takeKey({ search: '?key=&a=1&key=abc&key=def', pathname: '/', hash: '' }, storage, (url) => replaced.push(url));
+    assert.equal(key, 'abc');
+    assert.equal(storage.items.get('duck-talk-key'), 'abc');
+    assert.deepEqual(replaced, ['/?a=1'], 'none of the three is left in the address bar');
+  });
+
+  it('treats a repeated key that is empty every time as no key at all', () => {
+    const replaced: string[] = [];
+    const storage = memory({ 'duck-talk-key': 'kept' });
+    assert.equal(takeKey({ search: '?key=&key=', pathname: '/', hash: '' }, storage, (url) => replaced.push(url)), 'kept');
+    assert.deepEqual(replaced, []);
+  });
+
   it('tolerates storage that throws, and storage that is not there', () => {
     const loc = { search: '', pathname: '/', hash: '' };
     assert.equal(takeKey(loc, memory({ 'duck-talk-key': 'kept' }, 'get'), () => {}), null);

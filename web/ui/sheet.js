@@ -170,12 +170,18 @@ export function openSheet({ title, content, onClose, opener: named, beforeDismis
  *   onPick: (id: string) => void,
  *   trailing?: { title: string, value: string, open: () => void },
  *   loading?: boolean,
+ *   empty?: string,
  * }} options
  * @returns {HTMLElement}
  */
-function choiceContent({ label, choices, picked, onPick, trailing, loading }) {
+function choiceContent({ label, choices, picked, onPick, trailing, loading, empty }) {
   if (loading) {
     return h('div', { class: 'choices' }, h('div', { class: 'choice-loading', role: 'status' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), 'Loading…'));
+  }
+  if (empty !== undefined && choices.length === 0) {
+    // Focus goes to the words, which is how a screen reader is told: there is nothing to pick. It is
+    // not a tab stop, and shows no ring, because nothing can be done to it.
+    return h('div', { class: 'choices' }, h('p', { class: 'choice-empty', role: 'status', tabindex: '-1', dataset: { autofocus: '' } }, empty));
   }
 
   // One tab stop for the list, on the row that is picked, and the arrows move within it.
@@ -231,7 +237,8 @@ function choiceContent({ label, choices, picked, onPick, trailing, loading }) {
 
 /**
  * What a choice sheet shows. `loading` is a spinner where the rows will be, for a list still on
- * its way; `trailing` is a row under the list that opens something related.
+ * its way; `empty` is what is said instead of the rows when there are none and none are coming;
+ * `trailing` is a row under the list that opens something related.
  * @typedef {{
  *   title: string,
  *   choices: Choice[],
@@ -239,6 +246,7 @@ function choiceContent({ label, choices, picked, onPick, trailing, loading }) {
  *   onPick: (id: string) => void,
  *   trailing?: { title: string, value: string, open: () => void },
  *   loading?: boolean,
+ *   empty?: string,
  * }} ChoiceOptions
  */
 

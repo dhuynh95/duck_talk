@@ -128,7 +128,7 @@ export function openConnection({ store, key, storage, address, reload }) {
           sheet.close();
           reload();
         },
-      }),
+      }).el,
       'Forget the access key?',
     );
   };

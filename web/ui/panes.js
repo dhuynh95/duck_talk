@@ -48,21 +48,34 @@ export function loadingPane() {
 /**
  * The question that comes before something that cannot be undone: what it is about, what it
  * costs, and two buttons — the safe one first, and focused, so Enter is never the dangerous answer.
- * @param {{ subject?: string, text: string, cancel: string, confirm: string, onCancel: () => void, onConfirm: () => void }} options
+ *
+ * Given a `store`, the answer is for something done on the relay, which sends nothing while no
+ * socket is open: so while `connected` is false the confirming button is off and the offline note
+ * is shown, instead of a Delete that is pressed and does nothing. `destroy` stops listening, and
+ * is to be called when the question is put away.
+ * @param {{ subject?: string, text: string, cancel: string, confirm: string, onCancel: () => void, onConfirm: () => void, store?: Store }} options
+ * @returns {{ el: HTMLElement, destroy: () => void }}
  */
-export function confirmPane({ subject, text, cancel, confirm, onCancel, onConfirm }) {
-  return h(
+export function confirmPane({ subject, text, cancel, confirm, onCancel, onConfirm, store }) {
+  const note = offlineNote();
+  const yes = h('button', { class: 'button danger', type: 'button', onclick: onConfirm }, confirm);
+  const el = h(
     'div',
     { class: 'dialog' },
     subject ? h('p', { class: 'dialog-subject' }, subject) : null,
     h('p', { class: 'dialog-text' }, text),
-    h(
-      'div',
-      { class: 'dialog-actions' },
-      h('button', { class: 'button', type: 'button', dataset: { autofocus: '' }, onclick: onCancel }, cancel),
-      h('button', { class: 'button danger', type: 'button', onclick: onConfirm }, confirm),
-    ),
+    store ? note : null,
+    h('div', { class: 'dialog-actions' }, h('button', { class: 'button', type: 'button', dataset: { autofocus: '' }, onclick: onCancel }, cancel), yes),
   );
+  if (!store) return { el, destroy() {} };
+  return {
+    el,
+    destroy: watchKeys(store, ['connected'], (state) => {
+      const away = state['connected'] === false;
+      yes.disabled = away;
+      note.hidden = !away;
+    }),
+  };
 }
 
 /**

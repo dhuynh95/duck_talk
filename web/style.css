@@ -1619,6 +1619,19 @@ html.sheet-open body {
   color: var(--text-tertiary);
 }
 
+/* Said where the rows would be, for a list that is empty and not coming: the reason, centred, quiet. */
+.choice-empty {
+  margin: 0;
+  padding: 36px 16px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  text-align: center;
+}
+
+.choice-empty:focus {
+  outline: none;
+}
+
 .spinner {
   width: 22px;
   height: 22px;

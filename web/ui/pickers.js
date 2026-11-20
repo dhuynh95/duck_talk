@@ -40,14 +40,32 @@ export function modelShortName(model) {
 }
 
 /**
- * What the model capsule says: "…" until the relay has sent its list, the family of the selected
- * row once it has, and the stored value as it is for a model the list no longer has — the
- * relay's list can change under a choice made last week, and the capsule must still say something.
+ * What the relay has said about its models: nothing yet (`loading`), a list with nothing in it
+ * (`none` — the CLI is not signed in, or could not say), or rows to pick from (`loaded`). The
+ * relay answers with `[]` for the second, so it must not be read as the first: a spinner that is
+ * never going to stop tells a person nothing, and the reason is the thing they can act on.
+ * @param {ClaudeModel[] | undefined} models
+ * @returns {'loading' | 'none' | 'loaded'}
+ */
+export function modelsState(models) {
+  if (!models) return 'loading';
+  return models.length === 0 ? 'none' : 'loaded';
+}
+
+/** What the capsule says, and the sheet shows where the rows would be, when the relay has no model to offer. */
+export const NO_MODELS = 'No models available — is Claude Code signed in?';
+
+/**
+ * What the model capsule says: "…" until the relay has sent its list, "None" if it sent an empty
+ * one, the family of the selected row once it has rows, and the stored value as it is for a model
+ * the list no longer has — the relay's list can change under a choice made last week, and the
+ * capsule must still say something.
  * @param {ClaudeModel[] | undefined} models
  * @param {string} value
  */
 export function modelLabel(models, value) {
-  if (!models?.length) return '…';
+  if (!models) return '…';
+  if (models.length === 0) return 'None';
   const row = models.find((m) => m.value === value);
   return row ? modelShortName(row) : value;
 }
@@ -165,7 +183,8 @@ export function modelCapsule(store, change) {
     /** @type {Settings} */
     const settings = state['settings'];
     const row = models?.find((m) => m.value === settings.model);
-    c.draw({ label: modelLabel(models, settings.model), title: row?.displayName ?? 'Model', loading: !models?.length });
+    const known = modelsState(models);
+    c.draw({ label: modelLabel(models, settings.model), title: known === 'none' ? NO_MODELS : (row?.displayName ?? 'Model'), loading: known === 'loading' });
   };
   draw(store.get());
   store.subscribe(draw);
@@ -234,15 +253,21 @@ export function permissionSheet(store, change, opener) {
  * rather than a fourth capsule in the bar: it is a property of the model chosen — which levels
  * exist is the model's own — and this is where that choice is being made. Picking it swaps this
  * sheet's rows for the levels, in place.
+ *
+ * The rows are drawn again only when what the sheet can say changes — the list arriving, or
+ * turning out empty — and not whenever a new array of the same rows comes in: the relay sends
+ * the whole list again on every reconnect, and redrawing then would take the focus off a row
+ * someone is reading.
  * @param {Store} store
  * @param {Change} change
  * @param {HTMLElement | null} [opener]
+ * @param {typeof choiceSheet} [open] how the sheet is put on the page; a test hands in its own
  */
-export function modelSheet(store, change, opener) {
+export function modelSheet(store, change, opener, open = choiceSheet) {
   /** @type {'model' | 'effort'} */
   let view = 'model';
-  /** @type {ClaudeModel[] | undefined} the list the model rows were drawn from */
-  let seen;
+  /** @type {ReturnType<typeof modelsState>} what the model rows were last drawn as */
+  let drawn = 'loading';
   let unsubscribe = () => {};
 
   const models = () => /** @type {ClaudeModel[] | undefined} */ (store.get()['models']);
@@ -250,15 +275,17 @@ export function modelSheet(store, change, opener) {
 
   /** @returns {import('./sheet.js').ChoiceOptions} */
   const modelOptions = () => {
-    seen = models();
-    const list = seen ?? [];
+    drawn = modelsState(models());
+    const list = models() ?? [];
     const row = list.find((m) => m.value === settings().model);
     return {
       title: 'Model',
       choices: list.map((m) => ({ id: m.value, title: m.displayName, detail: m.description })),
       picked: settings().model,
-      loading: list.length === 0,
-      onPick: (id) => change({ model: id, effort: effortFor(list.find((m) => m.value === id), settings().effort) }),
+      loading: drawn === 'loading',
+      empty: drawn === 'none' ? NO_MODELS : undefined,
+      // Read when it is picked, not when the rows were drawn: the list may have been sent again since.
+      onPick: (id) => change({ model: id, effort: effortFor(models()?.find((m) => m.value === id), settings().effort) }),
       trailing: row?.supportsEffort === true
         ? {
             title: 'Effort',
@@ -280,10 +307,10 @@ export function modelSheet(store, change, opener) {
     onPick: (id) => change({ effort: id }),
   });
 
-  const sheet = choiceSheet({ ...modelOptions(), opener, onClose: () => unsubscribe() });
+  const sheet = open({ ...modelOptions(), opener, onClose: () => unsubscribe() });
   // The list may still be on its way when this opens: the rows replace the spinner when it lands.
   unsubscribe = store.subscribe((state) => {
-    if (view === 'model' && state['models'] !== seen) sheet.swap(modelOptions());
+    if (view === 'model' && modelsState(state['models']) !== drawn) sheet.swap(modelOptions());
   });
   return sheet;
 }

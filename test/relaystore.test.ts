@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createStore } from '../web/store.js';
 import { RelayStore } from '../web/relay.js';
+import { modelLabel } from '../web/ui/pickers.js';
 
 // The data socket is handed its socket and its timers, so a test plays the relay by hand: it
 // opens and drops sockets, answers frames the way server.ts does, and moves time.
@@ -178,6 +179,100 @@ describe('RelayStore: connecting', () => {
     s.receive({ type: 'models', models: [{ value: 'a', displayName: 'A', description: '' }] });
     s.receive({ type: 'models', models: 'not a list' });
     assert.equal(state()['models'].length, 1);
+  });
+});
+
+describe('RelayStore: rows that cannot be drawn are not stored', () => {
+  const good = { value: 'sonnet', displayName: 'Sonnet', description: 'fast' };
+
+  it('keeps `models` undefined until the relay has answered, and an empty list is an answer', () => {
+    const { relay, state, last } = rig();
+    relay.connect();
+    last().open();
+    assert.equal(state()['models'], undefined, 'not yet');
+    last().receive({ type: 'models', models: [] });
+    assert.deepEqual(state()['models'], [], 'none, which is not the same as not yet');
+  });
+
+  it('drops a model row that is not an object, or has no string value, and keeps the good ones in order', () => {
+    const { state, up } = rig();
+    up().receive({ type: 'models', models: [null, 'sonnet', 7, [], {}, { value: 5 }, { value: null }, good, { value: 'haiku', displayName: 'Haiku', description: '' }] });
+    assert.deepEqual(state()['models'].map((m: any) => m.value), ['sonnet', 'haiku']);
+  });
+
+  it('drops a model row whose optional fields are of a type that would break drawing it', () => {
+    const { state, up } = rig();
+    up().receive({
+      type: 'models',
+      models: [
+        { value: 'a', resolvedModel: 5 },
+        { value: 'b', supportedEffortLevels: 'high' },
+        { value: 'c', supportedEffortLevels: ['low', 3] },
+        { value: 'd', displayName: { text: 'D' } },
+        { value: 'e', description: 4 },
+        { value: 'ok', resolvedModel: 'claude-opus-5', supportedEffortLevels: ['low', 'high'], supportsEffort: true },
+        { value: 'plain' },
+      ],
+    });
+    assert.deepEqual(state()['models'].map((m: any) => m.value), ['ok', 'plain']);
+  });
+
+  it('a list of nothing but bad rows is an empty list, which the page words as "none", not as "loading"', () => {
+    const { state, up } = rig();
+    up().receive({ type: 'models', models: [null, {}] });
+    assert.deepEqual(state()['models'], []);
+  });
+
+  it('a malformed row cannot make the label throw inside the store write', () => {
+    const { store, up } = rig();
+    const labels: string[] = [];
+    store.subscribe((state) => labels.push(modelLabel(state['models'], 'sonnet')));
+    up().receive({ type: 'models', models: [{ value: 'x', resolvedModel: 5 }, null, good] });
+    assert.equal(labels.at(-1), 'Sonnet');
+  });
+
+  it('drops corrections without a numeric at or without text on both sides, and still lists newest first', () => {
+    const { state, up } = rig();
+    up().receive({
+      type: 'corrections',
+      items: [{ at: 1, heard: 'a', meant: 'A' }, null, { at: 'x', heard: 'b', meant: 'B' }, { at: 2, heard: 'b' }, { at: 3, meant: 'C' }, { at: 4, heard: 'd', meant: 'D', clip: 'not a number' }, { at: 5, heard: 'e', meant: 'E', clip: 9 }],
+    });
+    assert.deepEqual(state()['corrections'].map((c: any) => c.at), [5, 1]);
+  });
+
+  it('drops prompts without a name, title and text', () => {
+    const { state, up } = rig();
+    up().receive({
+      type: 'prompts',
+      prompts: [
+        { name: 'voice', title: 'Voice', detail: 'd', live: true, text: 't' },
+        'voice',
+        { title: 'T', text: 't' },
+        { name: 'x', text: 't' },
+        { name: 'y', title: 'Y' },
+        { name: 'z', title: 'Z', text: 't', detail: 5 },
+        { name: 'claude', title: 'Claude', detail: '', live: false, text: '' },
+      ],
+    });
+    assert.deepEqual(state()['prompts'].map((p: any) => p.name), ['voice', 'claude']);
+  });
+
+  it('drops skills without a string name, and chats without a string id', () => {
+    const { state, up } = rig();
+    const s = up();
+    s.receive({ type: 'skills', skills: [{ name: 'review', description: 'd', argumentHint: '' }, { description: 'nameless' }, { name: 7 }, null, { name: 'x', description: [] }] });
+    s.receive({ type: 'chats', chats: [{ id: 'a', at: 1, title: 'A' }, { at: 2, title: 'no id' }, { id: 3, at: 3 }, 'b', { id: 'c', at: 'yesterday' }, { id: 'd', at: 4, title: 'D', starred: true }] });
+    assert.deepEqual(state()['skills'].map((k: any) => k.name), ['review']);
+    assert.deepEqual(state()['chats'].map((c: any) => c.id), ['a', 'd'], 'order as sent, newest first');
+  });
+
+  it('a frame whose every row is bad replaces the list with an empty one, and is still proof of a relay', () => {
+    const { state, up } = rig();
+    const s = up();
+    s.receive({ type: 'chats', chats: [{ id: 'a', at: 1, title: 'A' }] });
+    s.receive({ type: 'chats', chats: [{ at: 1 }] });
+    assert.equal(state()['connected'], true);
+    assert.deepEqual(state()['chats'], []);
   });
 });
 
