@@ -9,9 +9,8 @@
 // a text is set as text, and the one URL made from data is `data:image/jpeg;base64,…` around what
 // attach.js produced.
 //
-// Removing a chip does not always take the attachment back. While a socket is open the relay
-// already holds it — it went out when the chip was made — and has no frame to let go of it, so the
-// next turn is still given it. The × says so when that is the case (see `SENT`).
+// Removing a chip takes the attachment back for real: with a socket open the relay already holds
+// it, so the session sends a `drop` frame; with none open it was never sent, and nothing is.
 
 import { h } from '../dom.js';
 import { icon } from './icons.js';
@@ -19,20 +18,6 @@ import { pasteLabel } from './pieces.js';
 
 /** @typedef {import('../transcript.js').Attachment} Attachment */
 /** @typedef {{ get: () => Record<string, any>, subscribe: (fn: (state: Record<string, any>) => void) => () => void }} Store */
-
-/** What the × says once the relay has the attachment, and again, in the line above the field, when it is pressed. */
-const SENT = 'Already sent — Claude may still receive it';
-
-/** @param {HTMLElement} remove @param {boolean} sent */
-function describeRemove(remove, sent) {
-  if (sent) {
-    remove.title = SENT;
-    remove.setAttribute('aria-description', SENT);
-  } else {
-    remove.removeAttribute('title');
-    remove.removeAttribute('aria-description');
-  }
-}
 
 /**
  * @param {Attachment} a
@@ -49,32 +34,24 @@ function chip(a, remove) {
 /**
  * The row of pending attachments: hidden while there are none.
  * @param {Store} store
- * @param {{ drop: (id: number) => void, focusField: () => void, sent: () => boolean, remind: (text: string) => void }} actions
- *   `drop` takes one off the row; `focusField` is where the keyboard goes when the last is gone;
- *   `sent` says whether the relay already holds what is attached (read on every write to the store,
- *   which the session makes when its socket opens and closes); `remind` says something in words
+ * @param {{ drop: (id: number) => void, focusField: () => void }} actions `drop` takes one back; `focusField` is where the keyboard goes when the last is gone
  * @returns {HTMLElement}
  */
-export function attachChips(store, { drop, focusField, sent, remind }) {
+export function attachChips(store, { drop, focusField }) {
   const el = h('ul', { class: 'attach-row', 'aria-label': 'Attachments', hidden: true });
   /** @type {Map<number, HTMLElement>} */
   const chips = new Map();
   /** @type {Attachment[] | undefined} */
   let drawn;
-  let held = sent();
 
   /** @param {Attachment} a */
   function make(a) {
     const remove = h('button', { class: 'attach-remove', type: 'button', 'aria-label': 'Remove attachment' }, icon('close'));
-    describeRemove(remove, held);
     const item = chip(a, remove);
     remove.addEventListener('click', (event) => {
       // Taken back with the keyboard, the keyboard stays in the row (or goes back to the field);
       // with a pointer there is nothing to keep.
       const beside = item.nextElementSibling ?? item.previousElementSibling;
-      // Off this screen only: with a socket open the relay already has it and cannot give it back
-      // (VoiceSession.drop, until the `drop` frame of follow-up 13b), so say what it still will do.
-      if (sent()) remind(SENT);
       drop(a.id);
       if (event.detail !== 0) return;
       const next = beside?.querySelector('.attach-remove');
@@ -86,11 +63,6 @@ export function attachChips(store, { drop, focusField, sent, remind }) {
 
   /** @param {Record<string, any>} state */
   function draw(state) {
-    const now = sent();
-    if (now !== held) {
-      held = now;
-      for (const remove of el.querySelectorAll('.attach-remove')) describeRemove(/** @type {HTMLElement} */ (remove), held);
-    }
     /** @type {Attachment[]} */
     const attached = Array.isArray(state['attached']) ? state['attached'] : [];
     if (attached === drawn) return;

@@ -17,10 +17,11 @@
  * Nothing is pruned. A clip is evidence for a correction and ages out once no correction
  * points at it; a picture is part of what was said, and a chat reopened in a month should
  * still show it. The turn log it is indexed by is never trimmed either, so this is the
- * same stance in both files rather than a second rule.
+ * same stance in both files rather than a second rule. The one exception is a picture
+ * taken back before any instruction carried it: it was never said, so `remove` unfiles it.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { state } from './paths.ts';
 
 const file = (id: number) => state('images', `${id}.jpg`);
@@ -28,6 +29,11 @@ const file = (id: number) => state('images', `${id}.jpg`);
 /** Keep this picture under the id the phone minted for it. */
 export function save(jpeg: Buffer, id: number): void {
   writeFileSync(file(id), jpeg);
+}
+
+/** Unfile a picture that was taken back before it went to Claude. None there is already done. */
+export function remove(id: number): void {
+  rmSync(file(id), { force: true });
 }
 
 /** One picture, or null when there is no such file — which the phone draws as a gap

@@ -360,30 +360,18 @@ export class VoiceSession {
   }
 
   /**
-   * Take one off the list this screen shows for the next instruction — and that is all it does.
-   * Whether the attachment is really taken back depends on whether it has left:
-   *  - no socket open: its `attach` frame has not been sent and now never will be;
-   *  - a socket open (`attachmentsSent`): the frame went out when it was attached, or when the
-   *    socket opened, the relay already holds it, and the protocol has no frame to let go of it —
-   *    so the chip is gone but the next turn on that socket is still given the picture or text.
-   * This is the case in voice mode, where the microphone keeps a socket open. Making removal real
-   * takes a `drop` frame and the relay's side of it (follow-up 13b); until then whoever offers
-   * removal should say so (attach-chips.js does), and this is the comment to update when it lands.
+   * Take one back before it is sent with an instruction, for real. If it is still pending and a
+   * socket is open, the relay already holds it — it went out when it was attached, or when the
+   * socket opened — so it is told to let go with a `drop` frame. With no socket open it was never
+   * sent and nothing is: the next socket is only told what is still pending. A piece already moved
+   * onto a line, or one never attached, is no longer pending and says nothing.
    * @param {number} id
    */
   drop(id) {
+    if (!this.#t.state.attached.some((a) => a.id === id)) return;
     this.#t.drop(id);
     this.#sync();
-  }
-
-  /**
-   * Whether the relay already holds what is attached: true while a socket is open, since every
-   * pending attachment goes out on an open socket the moment it is made, or the moment the socket
-   * opens. Nothing that has gone can be taken back (see `drop`). The store is written when the
-   * socket opens and when it closes, so a screen can redraw from this.
-   */
-  get attachmentsSent() {
-    return this.#open;
+    if (this.#open) this.#send({ type: 'drop', id });
   }
 
   // MARK: the microphone

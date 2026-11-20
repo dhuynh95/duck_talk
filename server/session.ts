@@ -42,7 +42,7 @@ import { save as saveClip } from './clips.ts';
 import { correct, CORRECT_MODEL } from './correct.ts';
 import { add, load, type Correction } from './corrections.ts';
 import { openEars, keyword, type Ears, type Keyword } from './ears.ts';
-import { save as saveImage } from './images.ts';
+import { remove as removeImage, save as saveImage } from './images.ts';
 import { append, type Mode, type Turn } from './turns.ts';
 import { openVoice, type Voice } from './voice.ts';
 
@@ -118,10 +118,10 @@ export class Session {
   private corrections: Correction[] = [];
 
   // What this turn was given — pictures and pasted texts — held from the moment they
-  // are picked until the turn they belong to is over. Not a field on the frame that
-  // starts the turn, because there is no such frame when you speak: the instruction is
-  // made here, from the ears, long after the picture was chosen. Held, all three ways of
-  // instructing are one path.
+  // are picked until the turn they belong to is over, or the phone takes one back with
+  // `drop`. Not a field on the frame that starts the turn, because there is no such frame
+  // when you speak: the instruction is made here, from the ears, long after the picture
+  // was chosen. Held, all three ways of instructing are one path.
   //
   // A picture's bytes arrive once and are used twice — sent to Claude from memory here,
   // written to disk by images.ts only so a chat reopened next week can still show it. A
@@ -448,6 +448,8 @@ export class Session {
     // A picture picked, or a text pasted. Says nothing about when the turn runs — see `attached`.
     else if (msg.type === 'attach' && typeof msg.id === 'number' && typeof msg.data === 'string') this.attach(msg.id, msg.data);
     else if (msg.type === 'attach' && typeof msg.id === 'number' && typeof msg.text === 'string') this.paste(msg.id, msg.text);
+    // The same pick taken back, before the instruction that would have carried it runs.
+    else if (msg.type === 'drop' && typeof msg.id === 'number') this.drop(msg.id);
     else if (msg.type === 'approve') this.decide(true, msg.text);
     // The stop button, as a frame. Stop means everything in this chat: the turn, and
     // the background tasks an interrupt deliberately spares. Hanging up is the
@@ -553,6 +555,34 @@ export class Session {
     if (this.attached.some((a) => a.id === id)) return;
     this.attached.push({ id, text });
     this.log(`attached paste ${id} (${text.length} chars)`);
+  }
+
+  /**
+   * Take a pending picture or paste back, so the instruction that runs next is not given it
+   * and a picture that was never said is not left in the chat's history.
+   *
+   * Only what has not gone to Claude. A running turn already holds what it was given and
+   * its record names the pictures, so letting go of one then would leave a chat reopened
+   * later with a gap. The phone never asks — a piece given to a line is no longer pending
+   * there — so it is refused, and said. After a retract the turn is taken back and re-runs
+   * with whatever is still held, so a piece the phone was handed back can be dropped.
+   */
+  private drop(id: number): void {
+    const i = this.attached.findIndex((a) => a.id === id);
+    if (i < 0) return; // never held, or already taken back
+    if (this.state === 'claude' && this.turn.images.includes(id)) {
+      this.log(`drop ignored: turn already carries attachment ${id}`);
+      return;
+    }
+    const [taken] = this.attached.splice(i, 1);
+    this.log(`dropped attachment ${id}`);
+    if (taken && 'data' in taken) {
+      try {
+        removeImage(id);
+      } catch (e) {
+        this.log(`image removal failed: ${e}`);
+      }
+    }
   }
 
   /**

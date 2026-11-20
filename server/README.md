@@ -54,6 +54,7 @@ published package, which cannot assume that of a stranger's Node.
 | phone → server | text | `{"type":"approve","text"?}` — run a held instruction, as edited |
 | phone → server | text | `{"type":"stop"}` — stop everything in this chat: the turn and its background tasks |
 | phone → server | text | `{"type":"attach","id","data"\|"text"}` — a picture (base64 JPEG) or a pasted text, for the next instruction |
+| phone → server | text | `{"type":"drop","id"}` — take back a pending attachment before the instruction runs |
 | phone → server | text | `{"type":"claude","model"?,"permission"?,"effort"?}` — which model answers, what it may do, how hard it thinks |
 | server → phone | binary | raw PCM Int16 LE, 24 kHz, mono (Claude's voice) |
 | server → phone | text | `{"type":"user"\|"model"\|"tool"\|"approval"\|"turn_start"\|"interrupted"\|"turn_end"\|"error","text"?}` |
@@ -117,6 +118,14 @@ attached and gives it to whichever instruction runs next, typed, spoken or appro
 because it has to exist before a socket does. A picture is filed under it and the turn
 record names it, which is how a chat reopened next week still shows it; a paste is filed
 nowhere, because the transcript keeps the block and `chat` reads it back from there.
+
+`drop` takes one back: the piece with that id is forgotten, and a picture that was filed is
+unfiled, so the next instruction is not given it and a chat reopened later does not show
+something that was never said. It applies to what is still pending — a turn that is already
+running holds what it was given, and a `drop` naming one of its pictures is ignored — and an
+id the relay does not hold is ignored too, so sending it twice is harmless. A client that
+never sends it, and a relay that never reads it, still work with each other: the attachment
+is then simply given to the next instruction, as before.
 
 `?data=1` opens a connection that edits what the relay owns and nothing else — no
 voice session, no Gemini, no Claude. It opens with `{"type":"relay","version":"…"}`

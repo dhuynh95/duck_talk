@@ -33,7 +33,7 @@ import { skillList } from './skill-list.js';
 import { isWorking } from './transcript-view.js';
 
 /** @typedef {{ get: () => Record<string, any>, subscribe: (fn: (state: Record<string, any>) => void) => () => void }} Store */
-/** @typedef {Pick<import('../session.js').VoiceSession, 'send' | 'approve' | 'attach' | 'drop' | 'attachmentsSent' | 'listen' | 'stopListening' | 'stopAll' | 'toggleMute' | 'output'>} SessionLike */
+/** @typedef {Pick<import('../session.js').VoiceSession, 'send' | 'approve' | 'attach' | 'drop' | 'listen' | 'stopListening' | 'stopAll' | 'toggleMute' | 'output'>} SessionLike */
 
 const BARS = 7;
 /** How long a reason something was not added stays up, in ms. */
@@ -87,28 +87,23 @@ export function composer(store, session, change) {
     noteText.textContent = text;
     note.dataset['kind'] = text ? kind : '';
   };
-  const status = {
-    /** @param {string | null} text */
-    busy(text) {
-      clearTimeout(noteTimer);
-      if (text !== null) say(text, 'busy');
-      else if (note.dataset['kind'] === 'busy') say('', 'busy');
+  const intake = createIntake({
+    session,
+    status: {
+      busy(text) {
+        clearTimeout(noteTimer);
+        if (text !== null) say(text, 'busy');
+        else if (note.dataset['kind'] === 'busy') say('', 'busy');
+      },
+      error(text) {
+        clearTimeout(noteTimer);
+        say(text, 'error');
+        noteTimer = setTimeout(() => say('', 'error'), NOTE_FOR);
+      },
     },
-    /** @param {string} text */
-    error(text) {
-      clearTimeout(noteTimer);
-      say(text, 'error');
-      noteTimer = setTimeout(() => say('', 'error'), NOTE_FOR);
-    },
-  };
-  const intake = createIntake({ session, status });
-
-  const chips = attachChips(store, {
-    drop: (id) => session.drop(id),
-    focusField: () => input.focus(),
-    sent: () => session.attachmentsSent,
-    remind: (text) => status.error(text),
   });
+
+  const chips = attachChips(store, { drop: (id) => session.drop(id), focusField: () => input.focus() });
 
   const skills = skillList(input, store, (skill) => {
     const typed = `/${skill.name} `;

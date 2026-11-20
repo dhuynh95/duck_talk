@@ -210,44 +210,110 @@ describe('VoiceSession: frames out', () => {
     assert.deepEqual(state().attached, []);
   });
 
-  // Removal is only on this screen: there is no frame that lets the relay forget an attachment,
-  // so one already on an open socket is still given to the next turn. Until the protocol has one,
-  // `attachmentsSent` is how the screen can say so.
-  it('drop() of an attachment already on an open socket sends nothing: the relay cannot take it back', () => {
+  // Taking one back is real: with a socket open the relay already holds the attachment, so
+  // removing it says so with a `drop` frame; with none open it was never sent and still is not.
+  it('drop() of an attachment on an open socket tells the relay to let go of it', () => {
+    const { session, last, state } = rig();
+    session.send('go');
+    last().open();
+    session.attach({ id: 7, data: 'JPEG' });
+    session.drop(7);
+    assert.deepEqual(state().attached, []);
+    assert.deepEqual(last().frames.slice(-2), [
+      { type: 'attach', id: 7, data: 'JPEG' },
+      { type: 'drop', id: 7 },
+    ]);
+  });
+
+  it('drop() of a pasted text on an open socket sends the same frame', () => {
     const { session, last, state } = rig();
     session.send('go');
     last().open();
     session.attach({ id: 5, text: 'sensitive' });
-    assert.deepEqual(last().frames.at(-1), { type: 'attach', id: 5, text: 'sensitive' });
-    const before = last().frames.length;
     session.drop(5);
     assert.deepEqual(state().attached, []);
-    assert.equal(last().frames.length, before, 'no frame says the attachment was taken back');
+    assert.deepEqual(last().frames.slice(-2), [
+      { type: 'attach', id: 5, text: 'sensitive' },
+      { type: 'drop', id: 5 },
+    ]);
   });
 
-  it('attachmentsSent is true exactly while a socket is open, which is when attachments are on the relay', () => {
+  it('drop() of an attachment that no socket has seen sends nothing, then or later', () => {
+    const { session, sockets, last, state } = rig();
+    session.attach({ id: 1, data: 'x' });
+    session.drop(1);
+    assert.deepEqual(state().attached, []);
+    assert.equal(sockets.length, 0, 'nothing wanted a socket');
+    session.send('go');
+    last().open();
+    assert.deepEqual(last().frames, [{ type: 'text', text: 'go' }], 'neither the attach nor a drop for it');
+  });
+
+  it('drop() made while the socket is still connecting sends nothing: the attach never went', () => {
     const { session, last } = rig();
-    assert.equal(session.attachmentsSent, false, 'no socket: nothing has left');
     session.send('go');
-    assert.equal(session.attachmentsSent, false, 'a socket still connecting has sent nothing');
+    session.attach({ id: 2, text: 'held' });
+    session.drop(2);
     last().open();
-    assert.equal(session.attachmentsSent, true);
-    last().receive({ type: 'turn_start', session: 'c1' });
-    last().receive({ type: 'turn_end', session: 'c1' });
-    assert.equal(session.attachmentsSent, false, 'the socket closed with the turn');
+    assert.deepEqual(last().frames, [{ type: 'text', text: 'go' }]);
   });
 
-  it('writes the store when the socket opens and when it closes, so a screen reading attachmentsSent redraws', () => {
-    const { session, store, last } = rig();
-    /** What attachmentsSent said at each write. */
-    const seen: boolean[] = [];
-    store.subscribe(() => void seen.push(session.attachmentsSent));
+  it('drop() of an id that is not pending sends nothing', () => {
+    const { session, last } = rig();
     session.send('go');
     last().open();
-    assert.equal(seen.at(-1), true, 'the open is written, and says sent');
+    const before = last().frames.length;
+    session.drop(99);
+    assert.equal(last().frames.length, before);
+  });
+
+  it('drop() of an attachment already given to an instruction sends nothing: it is on a line now, not pending', () => {
+    const { session, last } = rig();
+    session.attach({ id: 4, data: 'J' });
+    session.send('look');
+    last().open();
+    const before = last().frames.length;
+    session.drop(4);
+    assert.equal(last().frames.length, before);
+  });
+
+  it('drop() of a piece a retract handed back tells the relay, which still holds it for the re-run', async () => {
+    const { session, last, state } = await live();
+    session.attach({ id: 3, data: 'J' });
+    last().receive({ type: 'user', text: 'look at this', partial: false });
     last().receive({ type: 'turn_start', session: 'c1' });
-    last().receive({ type: 'turn_end', session: 'c1' });
-    assert.equal(seen.at(-1), false, 'the close is written, and says not sent');
+    assert.deepEqual(state().attached, [], 'given to the line');
+    last().receive({ type: 'interrupted', retract: true });
+    assert.deepEqual(state().attached, [{ id: 3, data: 'J' }], 'handed back under the same id');
+    session.drop(3);
+    assert.deepEqual(state().attached, []);
+    assert.deepEqual(last().frames.at(-1), { type: 'drop', id: 3 });
+    assert.equal(last().frames.filter((f) => f.type === 'attach').length, 1, 'never sent again');
+  });
+
+  it('a dropped attachment is not sent again when the socket reconnects', () => {
+    const { session, last, advance } = rig();
+    session.send('go');
+    last().open();
+    session.attach({ id: 8, text: 'pasted' });
+    session.attach({ id: 9, data: 'J' });
+    session.drop(8);
+    last().drop();
+    advance(250);
+    last().open();
+    assert.deepEqual(last().frames, [{ type: 'attach', id: 9, data: 'J' }], 'only what is still pending');
+  });
+
+  it('drop() while the socket is down sends nothing, and the reconnect leaves it out', () => {
+    const { session, last, advance } = rig();
+    session.send('go');
+    last().open();
+    session.attach({ id: 6, text: 't' });
+    last().drop();
+    session.drop(6);
+    advance(250);
+    last().open();
+    assert.deepEqual(last().frames, []);
   });
 });
 
