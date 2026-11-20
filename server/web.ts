@@ -8,6 +8,11 @@
  * stranger chooses the name, so anything that resolves outside `root` is simply not
  * found — a 404, never a 403 that confirms there was something there. These files
  * hold no secrets (the key rides the WebSocket, not a page), so there is no gate here.
+ *
+ * One address is not a file: `/access.json`, which says whether the relay wants a key.
+ * A page with no key stored cannot tell a relay that is open from one that is shut, and
+ * would ask for a key that an open relay never checks. It is a yes or a no and nothing
+ * more — the function that answers it is handed a boolean, not the key.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -105,8 +110,26 @@ async function serve(base: string, req: IncomingMessage, res: ServerResponse): P
   }
 }
 
+type Handler = (req: IncomingMessage, res: ServerResponse) => void;
+
+/**
+ * `next`, with `/access.json` answered first: `{"required":true}` or `{"required":false}`,
+ * served without the key like the files beside it. Never cached, because a relay restarted
+ * with or without `--open` on the same port must be believed the next time the page asks.
+ */
+export function accessNotice(required: boolean, next: Handler): Handler {
+  const body = JSON.stringify({ required });
+  const headers = { ...HEADERS, 'Cache-Control': 'no-store' };
+  return (req, res) => {
+    if ((req.url ?? '').split(/[?#]/, 1)[0] !== '/access.json') return next(req, res);
+    if (req.method !== 'GET' && req.method !== 'HEAD') return refuse(res, 405, 'Method not allowed', { ...headers, Allow: 'GET, HEAD' });
+    res.writeHead(200, { ...headers, 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) });
+    res.end(req.method === 'HEAD' ? undefined : body);
+  };
+}
+
 /** A request handler serving the files under `root`: `GET` and `HEAD`, `/` being `index.html`. */
-export function webHandler(root: string): (req: IncomingMessage, res: ServerResponse) => void {
+export function webHandler(root: string): Handler {
   const base = resolve(root);
   return (req, res) => {
     serve(base, req, res).catch(() => {

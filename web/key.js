@@ -72,6 +72,27 @@ export function forgetKey(storage) {
 }
 
 /**
+ * Whether this relay wants a key, for a page that has none. A relay started with `--open`
+ * checks nothing, and says so at `/access.json`; false is only ever that answer, read whole.
+ * Everything else — no answer, a refusal, a body that is not that — is true, because the
+ * mistake that costs a person a form they can fill in is better than the one that boots an
+ * app whose every socket is refused.
+ *
+ * @param {(url: string, init: { cache: 'no-store' }) => Promise<Pick<Response, 'ok' | 'json'>>} fetchImpl
+ * @returns {Promise<boolean>}
+ */
+export async function needsKey(fetchImpl) {
+  try {
+    const res = await fetchImpl('/access.json', { cache: 'no-store' });
+    if (!res.ok) return true;
+    const body = await res.json();
+    return !(typeof body === 'object' && body !== null && !Array.isArray(body) && body.required === false);
+  } catch {
+    return true;
+  }
+}
+
+/**
  * The relay's WebSocket address for this page's origin. The key goes last, and only if
  * there is one.
  *

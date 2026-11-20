@@ -28,7 +28,8 @@
  * One port serves both the browser client's files (web/, see web.ts) and the sockets, so
  * a page and its relay share an origin. A socket brings `?key=`, the key the relay keeps
  * in `.duck-talk/key` (access.ts), and one without it is refused with a 401 on the
- * upgrade, before anything below runs — `--open` turns the check off.
+ * upgrade, before anything below runs — `--open` turns the check off, and `GET /access.json`
+ * says which it is (`{"required":true|false}`, never the key) so a page knows whether to ask.
  *
  * Audio is what buys audio: the ears open on the first microphone buffer and the voice
  * speaks only where there are ears, so a connection that is only typed to reaches
@@ -88,7 +89,7 @@ import { watch, working } from './live.ts';
 import { packaged, state, VERSION } from './paths.ts';
 import { all as prompts, isName, write as writePrompt } from './prompts.ts';
 import { reach, webLines } from './reach.ts';
-import { webHandler } from './web.ts';
+import { accessNotice, webHandler } from './web.ts';
 
 const PORT = Number(process.env['PORT'] ?? 8765);
 // Two jobs, two models: one Live session transcribes what you say, and a
@@ -112,8 +113,10 @@ const key: string | null = isOpen(process.argv.slice(2), process.env) ? null : l
 // One port, two kinds of caller. A request is the browser client's files; an upgrade is
 // a socket, and it is let in or refused here, before a `connection` exists — so a
 // refused caller is never a session, a data connection or a log line, whatever it asked
-// for in the query (`?data=1` is the chat history, the clips and the pictures).
-const server = createServer(webHandler(packaged('../web/')));
+// for in the query (`?data=1` is the chat history, the clips and the pictures). The one
+// thing a request may learn without the key is whether there is one: a page that has none
+// stored asks before it shows a form.
+const server = createServer(accessNotice(key !== null, webHandler(packaged('../web/'))));
 const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   if (key !== null && !keyMatches(suppliedKey(req.url), key)) {

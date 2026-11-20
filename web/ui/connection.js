@@ -8,6 +8,9 @@
 // question could disagree. The sheet redraws in place when it changes, so a relay that stops while
 // you look says so.
 //
+// A relay started with --open checks no key, and the page learns that from the relay (main.js,
+// `keyRequired`): the row then says so, and there is nothing to forget.
+//
 // Forget key is the way back to the key form: the key is dropped from this browser's storage and the
 // page reloads. It asks first, in the sheet, because the key is typed or pasted from somewhere and
 // forgetting it is not undone by pressing back. If the browser will not let go of the key (storage
@@ -37,11 +40,13 @@ export function reachOf(state) {
 
 /**
  * What the sheet says about the access key. `kept`: it is in this browser's storage, as opposed
- * to held for this visit because storage would not take it.
- * @param {{ inUse: boolean, kept: boolean }} key
+ * to held for this visit because storage would not take it. `required`: false when the relay
+ * said it is open; anything else is not something to say.
+ * @param {{ inUse: boolean, kept: boolean, required?: boolean }} key
  * @returns {{ text: string, canForget: boolean }}
  */
-export function keyLine({ inUse, kept }) {
+export function keyLine({ inUse, kept, required }) {
+  if (required === false) return { text: 'Not required (this relay was started with --open)', canForget: false };
   if (!inUse) return { text: 'No access key saved', canForget: false };
   return { text: kept ? 'Saved in this browser' : 'Used for this visit only', canForget: true };
 }
@@ -66,7 +71,7 @@ export function openConnection({ store, key, storage, address, reload }) {
   problem.hidden = true;
   problem.setAttribute('role', 'alert');
 
-  const line = keyLine({ inUse: key !== null, kept: hasStoredKey(storage) });
+  const line = keyLine({ inUse: key !== null, kept: hasStoredKey(storage), required: store.get()['keyRequired'] });
   const forget = h('button', { class: 'kv-action', type: 'button', onclick: () => askForget() }, 'Forget key');
   forget.hidden = !line.canForget;
 

@@ -39,4 +39,21 @@ describe('keyLine: what the sheet says about the access key', () => {
   it('no key: nothing to forget', () => {
     assert.deepEqual(keyLine({ inUse: false, kept: false }), { text: 'No access key saved', canForget: false });
   });
+
+  it('a relay started with --open: not required, and nothing to forget', () => {
+    assert.deepEqual(keyLine({ inUse: false, kept: false, required: false }), {
+      text: 'Not required (this relay was started with --open)',
+      canForget: false,
+    });
+  });
+
+  it('a relay that is open says so whatever the browser holds', () => {
+    assert.equal(keyLine({ inUse: true, kept: true, required: false }).canForget, false);
+    assert.equal(keyLine({ inUse: false, kept: true, required: false }).text, 'Not required (this relay was started with --open)');
+  });
+
+  it('only a false `required` means open: unknown is the same as before', () => {
+    assert.deepEqual(keyLine({ inUse: true, kept: true, required: undefined }), { text: 'Saved in this browser', canForget: true });
+    assert.deepEqual(keyLine({ inUse: false, kept: false, required: true }), { text: 'No access key saved', canForget: false });
+  });
 });

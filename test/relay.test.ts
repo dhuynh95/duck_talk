@@ -101,6 +101,20 @@ function firstFrame(url: string): Promise<Record<string, unknown>> {
   });
 }
 
+/** What a relay answers at `/access.json`, with the headers that matter and the body as sent. */
+async function access(relay: Relay, method = 'GET', path = '/access.json') {
+  const res = await fetch(`http://127.0.0.1:${relay.port}${path}`, { method });
+  return { status: res.status, headers: res.headers, body: await res.text() };
+}
+
+/** What every answer about the gate says about how it may be kept and read. */
+function assertGuarded(headers: Headers) {
+  assert.equal(headers.get('content-type'), 'application/json; charset=utf-8');
+  assert.equal(headers.get('cache-control'), 'no-store');
+  assert.equal(headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(headers.get('referrer-policy'), 'no-referrer');
+}
+
 describe('a relay with a key', () => {
   let relay: Relay;
   let key: string;
@@ -165,6 +179,57 @@ describe('a relay with a key', () => {
     assert.deepEqual(await firstFrame(at(`?data=1&key=${key}`)), { type: 'relay', version: VERSION });
   });
 
+  it('says at /access.json, with no key, that one is required — and says nothing else', async () => {
+    const res = await access(relay);
+    assert.equal(res.status, 200);
+    assertGuarded(res.headers);
+    assert.equal(res.body, '{"required":true}');
+    assert.equal(res.headers.get('content-length'), String(res.body.length));
+    assert.ok(!res.body.includes(key));
+  });
+
+  it('does not echo what /access.json is brought, key or not', async () => {
+    for (const query of ['?key=x', `?key=${key}`, '?key=', '?required=false']) {
+      const res = await access(relay, 'GET', `/access.json${query}`);
+      assert.equal(res.status, 200, query);
+      assert.equal(res.body, '{"required":true}', query);
+      assert.ok(!res.body.includes(key), query);
+    }
+  });
+
+  it('answers HEAD /access.json with the headers and no body', async () => {
+    const get = await access(relay);
+    const head = await access(relay, 'HEAD');
+    assert.equal(head.status, 200);
+    assertGuarded(head.headers);
+    assert.equal(head.headers.get('content-length'), String(get.body.length));
+    assert.equal(head.body, '');
+  });
+
+  it('refuses any other method at /access.json with 405, and says what is allowed', async () => {
+    for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
+      const res = await access(relay, method);
+      assert.equal(res.status, 405, method);
+      assert.equal(res.headers.get('allow'), 'GET, HEAD', method);
+      assert.equal(res.headers.get('cache-control'), 'no-store', method);
+      assert.ok(!res.body.includes(key), method);
+    }
+  });
+
+  it('answers /access.json only at that address: near misses are plain 404s', async () => {
+    for (const path of ['/access.json/', '/access.json.bak', '/Access.json', '/x/access.json', '/access']) {
+      const res = await access(relay, 'GET', path);
+      assert.equal(res.status, 404, path);
+      assert.ok(!res.body.includes('required'), path);
+      assert.ok(!res.body.includes(key), path);
+    }
+  });
+
+  it('is still the gate after /access.json has been read: a socket with no key is refused', async () => {
+    await access(relay);
+    assert.deepEqual(await refusal(at('?data=1')), { status: 401, length: '0' });
+  });
+
   it('prints the key in its startup addresses and nowhere else', async () => {
     const before = opened();
     await firstFrame(at(`?data=1&key=${key}`));
@@ -194,6 +259,29 @@ describe('a relay started with --open', () => {
   it('prints its addresses with no key in them', () => {
     assert.match(relay.output(), new RegExp(`^ {2}localhost +http://localhost:${relay.port}/$`, 'm'));
     assert.ok(!relay.output().includes('?key='));
+  });
+
+  it('says at /access.json that no key is required', async () => {
+    const res = await access(relay);
+    assert.equal(res.status, 200);
+    assertGuarded(res.headers);
+    assert.equal(res.body, '{"required":false}');
+  });
+
+  it('says so whatever key it is brought, and answers HEAD and 405 as a relay with a key does', async () => {
+    assert.equal((await access(relay, 'GET', '/access.json?key=whatever')).body, '{"required":false}');
+    const head = await access(relay, 'HEAD');
+    assert.equal(head.status, 200);
+    assert.equal(head.body, '');
+    const post = await access(relay, 'POST');
+    assert.equal(post.status, 405);
+    assert.equal(post.headers.get('allow'), 'GET, HEAD');
+  });
+
+  it('still serves the client over plain HTTP', async () => {
+    const res = await fetch(`http://127.0.0.1:${relay.port}/`);
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /<title>/);
   });
 
   it('does not mind what key it is brought', async () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { forgetKey, hasStoredKey, keepKey, socketUrl, takeKey } from '../web/key.js';
+import { forgetKey, hasStoredKey, keepKey, needsKey, socketUrl, takeKey } from '../web/key.js';
 
 /** A Storage that remembers what it is given, and can be told to refuse. */
 function memory(initial: Record<string, string> = {}, refuse: 'get' | 'set' | 'remove' | null = null) {
@@ -140,5 +140,57 @@ describe('socketUrl', () => {
   it('encodes values', () => {
     const url = socketUrl({ protocol: 'http:', host: 'h' }, { chat: 'a b&c=d' }, 'k/+');
     assert.equal(url, 'ws://h/?chat=a%20b%26c%3Dd&key=k%2F%2B');
+  });
+});
+
+describe('needsKey: does this relay want a key at all', () => {
+  /** A fetch that answers with `body` and `status`, and remembers what it was asked. */
+  function answering(body: string, status = 200) {
+    const asked: { url: string; init: unknown }[] = [];
+    const fetchImpl = async (url: string, init?: unknown) => {
+      asked.push({ url, init });
+      return new Response(body, { status });
+    };
+    return { asked, fetchImpl };
+  }
+  const verdict = async (body: string, status = 200) => needsKey(answering(body, status).fetchImpl);
+
+  it('asks /access.json, and not from the cache', async () => {
+    const { asked, fetchImpl } = answering('{"required":true}');
+    await needsKey(fetchImpl);
+    assert.deepEqual(asked, [{ url: '/access.json', init: { cache: 'no-store' } }]);
+  });
+
+  it('is false only for a relay that says it is open', async () => {
+    assert.equal(await verdict('{"required":false}'), false);
+  });
+
+  it('is true for a relay that says it wants a key', async () => {
+    assert.equal(await verdict('{"required":true}'), true);
+  });
+
+  it('only the field matters: anything else in the object is ignored', async () => {
+    assert.equal(await verdict('{"required":false,"extra":1}'), false);
+  });
+
+  it('fails closed, to the key form, on anything it cannot be sure of', async () => {
+    assert.equal(await verdict('{"required":false}', 500), true, 'a server error');
+    assert.equal(await verdict('{"required":false}', 404), true, 'an older relay with no such address');
+    assert.equal(await verdict('not json'), true, 'a body that is not JSON');
+    assert.equal(await verdict(''), true, 'an empty body');
+    assert.equal(await verdict('{}'), true, 'no field');
+    assert.equal(await verdict('{"required":"false"}'), true, 'the word, not the boolean');
+    assert.equal(await verdict('{"required":0}'), true, 'falsy is not false');
+    assert.equal(await verdict('{"required":null}'), true);
+    assert.equal(await verdict('null'), true);
+    assert.equal(await verdict('false'), true, 'a bare false is not an object');
+    assert.equal(await verdict('[false]'), true);
+    assert.equal(await verdict('[]'), true);
+  });
+
+  it('fails closed when the request fails, however it fails', async () => {
+    assert.equal(await needsKey(() => Promise.reject(new Error('offline'))), true);
+    assert.equal(await needsKey(() => { throw new Error('no fetch here'); }), true);
+    assert.equal(await needsKey(async () => ({ ok: true, json: () => Promise.reject(new Error('cut off')) }) as unknown as Response), true);
   });
 });

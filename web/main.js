@@ -2,6 +2,8 @@
 // Boot: find the access key, and draw either the form that asks for it or the app: one chat,
 // typed or spoken, on a VoiceSession whose socket, audio pipe, timers and clock are the
 // browser's own, handed in here — with the chats drawer beside it, and the verbs under each line.
+// A browser with no key asks the relay whether it wants one, because a relay started with --open
+// checks none and the form would only make someone type a key up.
 //
 // The gear's menu opens the three screens that are about the relay rather than the conversation
 // (prompts, corrections, connection), and "Fix what was heard" under a line opens the corrections
@@ -14,7 +16,7 @@ import { actions } from './actions.js';
 import { AudioPipe } from './audio.js';
 import { chatFlow } from './chat-flow.js';
 import { h } from './dom.js';
-import { keepKey, socketUrl, takeKey } from './key.js';
+import { keepKey, needsKey, socketUrl, takeKey } from './key.js';
 import { RelayStore } from './relay.js';
 import { VoiceSession } from './session.js';
 import { loadSettings, normalizeSettings, saveSettings } from './settings.js';
@@ -98,14 +100,15 @@ function setTimer(fn, ms) {
 
 /**
  * The app: the conversation, and the header and composer floating over it.
- * @param {string} key
+ * @param {string | null} key null for a relay that asks for none
  * @param {import('./settings.js').SettingsStorage | null} storage where the choices are kept
+ * @param {boolean} [keyRequired] false when the relay said it is open; left out when it was not asked
  */
-function app(key, storage) {
+function app(key, storage, keyRequired) {
   // What the pickers chose, as last kept. The store holds the one copy the screens read; this
   // variable is the same object, for the socket's address to read when it is next dialled.
   let settings = loadSettings(storage);
-  const store = createStore(/** @type {Record<string, any>} */ ({ settings }));
+  const store = createStore(/** @type {Record<string, any>} */ ({ settings, keyRequired }));
   const session = new VoiceSession({
     store,
     // Mode and auto-correct ride the address, so changing either redials (see `change`).
@@ -253,10 +256,14 @@ function app(key, storage) {
   return root;
 }
 
-export function boot() {
+export async function boot() {
   const storage = localStore();
   const key = takeKey(location, storage, (url) => history.replaceState(null, '', url));
-  document.body.replaceChildren(key ? app(key, storage) : gate(storage));
+  if (key) {
+    document.body.replaceChildren(app(key, storage));
+    return;
+  }
+  document.body.replaceChildren((await needsKey(fetch)) ? gate(storage) : app(null, storage, false));
 }
 
 // Importing this file in Node, where there is no page, must not boot one.
