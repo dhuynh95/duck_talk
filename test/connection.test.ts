@@ -22,6 +22,18 @@ describe('reachOf: one line about whether a relay is answering', () => {
     assert.deepEqual(reachOf({}), { kind: 'checking', text: 'Checking…' });
   });
 
+  it('Key refused, not Offline, when the relay is there and will not take this key — and it points at Forget key', () => {
+    const reach = reachOf({ connected: false, keyRefused: true, relayError: 'The relay refused this key — it may belong to another project.' });
+    assert.equal(reach.kind, 'offline');
+    assert.equal(reach.text, 'Key refused');
+    assert.match(reach.detail ?? '', /Forget key/);
+  });
+
+  it('a relay that took the key again is Reachable, whatever was refused before', () => {
+    assert.equal(reachOf({ connected: true, keyRefused: true }).text, 'Reachable');
+    assert.equal(reachOf({ connected: false, keyRefused: false, relayError: 'The relay is not answering.' }).text, 'Offline');
+  });
+
   it('connected wins over a stale error', () => {
     assert.equal(reachOf({ connected: true, relayError: 'old' }).kind, 'reachable');
   });

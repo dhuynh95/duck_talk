@@ -51,11 +51,15 @@
 /** @typedef {{ get: () => Record<string, any>, set: (patch: Record<string, any>) => void }} RelayStoreLike */
 
 /**
+ * `checkAccess` and `onOpenRelay` are for a page that connects with a key: what the relay says
+ * about its key (key.js `accessState`), and what to do when it says it no longer wants one.
  * @typedef {{
  *   store: RelayStoreLike,
  *   urlFor: () => string,
  *   makeSocket: (url: string) => SocketLike,
  *   setTimer: (fn: () => void, ms: number) => () => void,
+ *   checkAccess?: () => Promise<'open' | 'keyed' | 'unknown'>,
+ *   onOpenRelay?: () => void,
  * }} RelayDeps
  */
 
@@ -71,6 +75,9 @@ const MEDIA_TIMEOUT = 10_000;
 /** How many media sockets are open at once: a chat of twenty pictures is a queue, not twenty connections. */
 const CONCURRENT = 3;
 const DOWN = 'The relay is not answering.';
+const REFUSED = 'The relay refused this key — it may belong to another project.';
+/** One failure is asked about once; a failure that has gone on this long is asked about again. */
+const RECHECK = 30_000;
 // Why a media request failed, for whoever draws the Retry.
 const NOT_CONNECTED = 'The relay is not connected.';
 const UNREACHABLE = 'Could not reach the relay.';
@@ -135,17 +142,26 @@ export class RelayStore {
   /** @type {(() => void) | null} fires once this socket has lasted: the next drop starts the backoff over */
   #cancelStable = null;
 
+  #checkAccess;
+  #onOpenRelay;
+  /** Whether the next socket that fails before answering is asked about: once per failure. */
+  #mayCheck = true;
+  /** @type {(() => void) | null} */
+  #cancelRecheck = null;
+
   /** @type {MediaRequest[]} asked for, no socket yet */
   #queue = [];
   /** @type {Set<() => void>} how to abandon each media request that has a socket */
   #active = new Set();
 
   /** @param {RelayDeps} deps */
-  constructor({ store, urlFor, makeSocket, setTimer }) {
+  constructor({ store, urlFor, makeSocket, setTimer, checkAccess, onOpenRelay }) {
     this.#store = store;
     this.#urlFor = urlFor;
     this.#makeSocket = makeSocket;
     this.#setTimer = setTimer;
+    this.#checkAccess = checkAccess;
+    this.#onOpenRelay = onOpenRelay;
   }
 
   // MARK: holding the socket
@@ -165,6 +181,9 @@ export class RelayStore {
     this.#cancelRetry = null;
     this.#cancelStable?.();
     this.#cancelStable = null;
+    this.#cancelRecheck?.();
+    this.#cancelRecheck = null;
+    this.#mayCheck = true;
     const socket = this.#socket;
     this.#socket = null; // first, so its close is not mistaken for a drop
     socket?.close();
@@ -184,14 +203,42 @@ export class RelayStore {
         this.#backoff = FIRST_BACKOFF;
       }, LASTED + 1);
     };
+    let answered = false;
     socket.onmessage = (ev) => {
-      if (this.#socket === socket) this.#receive(ev.data);
+      if (this.#socket !== socket) return;
+      answered = true;
+      this.#receive(ev.data);
     };
     // a failure is followed by a close, which is where it is answered
     socket.onerror = () => {};
     socket.onclose = () => {
-      if (this.#socket === socket) this.#lose();
+      if (this.#socket !== socket) return;
+      this.#lose();
+      if (!answered) this.#askWhy();
     };
+  }
+
+  /**
+   * A socket that never said a word may have been refused rather than unanswered — and a browser
+   * cannot tell: a WebSocket turned away with a 401 on the upgrade closes exactly like one that
+   * found no relay. The key is kept per browser and made per project folder, so a key from another
+   * project's relay is the likely one. So the relay is asked, once per failure, what it wants:
+   * a key (this one was refused, and the page says so and offers the form), none (it was restarted
+   * --open, and the page starts again without one), or nothing could be learned (it is down).
+   */
+  #askWhy() {
+    if (!this.#checkAccess || !this.#mayCheck) return;
+    this.#mayCheck = false;
+    this.#cancelRecheck = this.#setTimer(() => {
+      this.#cancelRecheck = null;
+      this.#mayCheck = true;
+    }, RECHECK);
+    void this.#checkAccess().then((answer) => {
+      // The relay came back, or the page let go of it, while the question was out: moot.
+      if (!this.#wanted || this.#store.get()['connected'] === true) return;
+      if (answer === 'keyed') this.#store.set({ keyRefused: true, relayError: REFUSED });
+      else if (answer === 'open') this.#onOpenRelay?.();
+    });
   }
 
   /** The socket is gone, from under a page that still wants one: say so, and redial. */
@@ -199,8 +246,9 @@ export class RelayStore {
     this.#socket = null;
     this.#cancelStable?.();
     this.#cancelStable = null;
-    if (this.#store.get()['connected'] !== false || this.#store.get()['relayError'] !== DOWN) {
-      this.#store.set({ connected: false, relayError: DOWN });
+    const why = this.#store.get()['keyRefused'] === true ? REFUSED : DOWN;
+    if (this.#store.get()['connected'] !== false || this.#store.get()['relayError'] !== why) {
+      this.#store.set({ connected: false, relayError: why });
     }
     if (!this.#wanted) return;
     const wait = this.#backoff;
@@ -237,6 +285,11 @@ export class RelayStore {
     // A frame came back, so there is a relay there — whatever it said.
     /** @type {Record<string, any>} */
     const patch = { connected: true, relayError: null };
+    // ...and it took the key: whatever failure there was is over, and the next one is asked about.
+    if (this.#store.get()['keyRefused'] === true) patch['keyRefused'] = false;
+    this.#mayCheck = true;
+    this.#cancelRecheck?.();
+    this.#cancelRecheck = null;
     switch (f.type) {
       case 'relay':
         if (typeof f.version === 'string') patch['relayVersion'] = f.version;

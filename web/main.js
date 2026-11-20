@@ -3,7 +3,8 @@
 // typed or spoken, on a VoiceSession whose socket, audio pipe, timers and clock are the
 // browser's own, handed in here — with the chats drawer beside it, and the verbs under each line.
 // A browser with no key asks the relay whether it wants one, because a relay started with --open
-// checks none and the form would only make someone type a key up.
+// checks none and the form would only make someone type a key up. A key the relay later refuses
+// (the key is per project folder) brings the same form back, over the app (ui/key-form.js).
 //
 // The gear's menu opens the three screens that are about the relay rather than the conversation
 // (prompts, corrections, connection), and "Fix what was heard" under a line opens the corrections
@@ -16,7 +17,7 @@ import { actions } from './actions.js';
 import { AudioPipe } from './audio.js';
 import { chatFlow } from './chat-flow.js';
 import { h } from './dom.js';
-import { keepKey, needsKey, socketUrl, takeKey } from './key.js';
+import { accessState, forgetKey, needsKey, socketUrl, takeKey } from './key.js';
 import { RelayStore } from './relay.js';
 import { VoiceSession } from './session.js';
 import { loadSettings, normalizeSettings, saveSettings } from './settings.js';
@@ -26,11 +27,11 @@ import { openConnection } from './ui/connection.js';
 import { openCorrections } from './ui/corrections.js';
 import { chatsDrawer } from './ui/drawer.js';
 import { header } from './ui/header.js';
+import { keyDialog, keyForm } from './ui/key-form.js';
 import { openPrompts } from './ui/prompts.js';
 import { settingsMenu } from './ui/settings-menu.js';
 import { transcriptView } from './ui/transcript-view.js';
 
-const LOGO = '/logo.svg';
 /** How long a notice put up by the page itself stays, in ms. */
 const NOTICE_FOR = 4000;
 const RELAY_DOWN = "The relay isn't answering.";
@@ -44,45 +45,9 @@ function localStore() {
   }
 }
 
-/** The single field that asks for the key. @param {import('./key.js').KeyStorage | null} storage */
+/** The page on a first visit with no key: the form that asks for it (ui/key-form.js), and nothing else. @param {import('./key.js').KeyStorage | null} storage */
 function gate(storage) {
-  const note = h('p', { class: 'gate-note', role: 'alert' });
-  const input = h('input', {
-    id: 'key',
-    class: 'field',
-    name: 'key',
-    type: 'text',
-    required: true,
-    autocomplete: 'off',
-    autocapitalize: 'off',
-    autocorrect: 'off',
-    spellcheck: 'false', // the attribute's value is the word "false"; a bare `false` would leave it off the element
-  });
-
-  /** @param {Event} event */
-  function submit(event) {
-    event.preventDefault();
-    const value = input.value.trim();
-    if (!value) return;
-    if (keepKey(storage, value)) location.reload();
-    else note.textContent = 'This browser would not keep the key. Open the link the relay printed instead, which carries it.';
-  }
-
-  return h(
-    'main',
-    { class: 'gate' },
-    h(
-      'form',
-      { class: 'gate-card', onsubmit: submit },
-      h('img', { class: 'logo', src: LOGO, alt: '' }),
-      h('h1', null, 'Duck Talk'),
-      h('label', { for: 'key' }, 'Enter access key'),
-      input,
-      h('p', { class: 'gate-help' }, 'Paste the key the relay printed when it started, or the one in .duck-talk/key in the project folder.'),
-      note,
-      h('button', { class: 'button primary', type: 'submit' }, 'Continue'),
-    ),
-  );
+  return h('main', { class: 'gate' }, keyForm({ storage, reload: () => location.reload() }).el);
 }
 
 /** @param {string} url */
@@ -147,7 +112,24 @@ function app(key, storage, keyRequired) {
 
   // The data socket: models, skills, chats and the rest of what the relay owns, held for as
   // long as the page is up. It is also what the header's Offline pill reads.
-  const relay = new RelayStore({ store, urlFor: () => socketUrl(location, { data: '1' }, key), makeSocket, setTimer });
+  // With a key, a socket that never opens may be one the relay refused, which a browser cannot
+  // see: the relay is asked (relay.js). Refused, the dialog below asks for another; open now
+  // (restarted with --open), the key is forgotten and the page starts again without one.
+  const relay = new RelayStore({
+    store,
+    urlFor: () => socketUrl(location, { data: '1' }, key),
+    makeSocket,
+    setTimer,
+    ...(key !== null
+      ? {
+          checkAccess: () => accessState(fetch),
+          onOpenRelay: () => {
+            forgetKey(localStore());
+            location.reload();
+          },
+        }
+      : {}),
+  });
   relay.connect();
 
   // MARK: what the relay owns: prompts, corrections, and the way to leave
@@ -233,6 +215,7 @@ function app(key, storage, keyRequired) {
     { class: 'app' },
     drawer.el,
     h('div', { class: 'stage' }, view.el, header(store, { openChats: (button) => drawer.open(button), openSettings: (button, edge) => menu.toggle(button, edge) }), bottom.el),
+    keyDialog(store, { storage: localStore(), reload: () => location.reload() }),
   );
 
   // What the data socket says about chats, carried into the conversation on screen (chat-flow.js).

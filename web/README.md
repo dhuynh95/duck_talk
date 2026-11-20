@@ -28,7 +28,7 @@ node --test test/key.test.ts      # one file
 | `dom.js` | `h()`, the only way an element is made, and its rules (below) |
 | `session.js` | the chat socket: typing, talking, watching; backoff, outbox, `resume=` |
 | `transcript.js` | the reducer over the relay's text frames: lines, tools, retract. No socket, no audio |
-| `relay.js` | the `?data=1` socket: models, skills, chats, prompts, corrections; each clip and picture on a one-shot socket |
+| `relay.js` | the `?data=1` socket: models, skills, chats, prompts, corrections; each clip and picture on a one-shot socket; a key the relay refuses, told apart from a relay that is down |
 | `chat-flow.js` | what the data socket says about chats, carried onto the screen |
 | `audio.js` | the Web Audio glue: microphone, speaker queue, chimes, echo gate, wake lock |
 | `mic-worklet.js` | the AudioWorklet: microphone to 16 kHz Int16 frames. Not type-checked: its scope has other globals |
@@ -36,7 +36,7 @@ node --test test/key.test.ts      # one file
 | `attach.js`, `intake.js` | picture to JPEG (long edge 1568 px, quality 0.8), the 800-character paste rule, and the queue that adds them |
 | `skills.js`, `prompts.js`, `corrections.js` | the `/` filter, and the rules the two editors go by |
 | `actions.js` | how one screen asks for another (a line's "Fix what was heard" opens the editor) |
-| `ui/` | the screens and parts: header, transcript-view, composer (with attach-chips, skill-list, review-card, field), drawer, sheet, settings-menu, pickers, context-sheet, connection, prompts, corrections, line-actions, pieces, clip-chip, panes, icons |
+| `ui/` | the screens and parts: header, transcript-view, composer (with attach-chips, skill-list, review-card, field), drawer, sheet, settings-menu, pickers, context-sheet, connection, key-form (the key form, on a first visit and as the "Key refused" dialog), prompts, corrections, line-actions, pieces, clip-chip, panes, icons |
 | `index.html`, `style.css`, `manifest.webmanifest`, `logo.svg`, `chimes.wav` | what is served as it is |
 
 ## Rules to keep

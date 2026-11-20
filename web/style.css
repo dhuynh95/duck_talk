@@ -198,6 +198,41 @@ select {
   display: none;
 }
 
+.gate-explain {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.gate-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* The same form over the app, when the relay will not take this browser's key. Not dismissable:
+   nothing behind it works until there is a key the relay takes. */
+
+.key-dialog {
+  width: min(calc(100% - 2 * var(--gutter)), 420px);
+  max-width: none;
+  max-height: calc(100% - 32px);
+  padding: 0;
+  overflow: auto;
+  border: none;
+  background: transparent;
+  color: var(--text);
+}
+
+.key-dialog .gate-card {
+  width: 100%;
+  box-shadow: var(--shadow);
+}
+
+.key-dialog::backdrop {
+  background: rgb(0 0 0 / 0.6);
+}
+
 /* The app: the conversation, and what floats over it. */
 
 [hidden] {

@@ -123,6 +123,11 @@ That covers the chat history, the audio clips and the pictures too.
   a screen. A browser that has none is asked for it in one field: paste it from the relay's
   output or from `.duck-talk/key`. Gear ▸ Connection says whether it is saved and has a
   **Forget key** button.
+- **The key is per project folder**, and a browser keeps one per address: start a relay in
+  another folder on the same port and the key this browser kept is refused. The page then
+  says **Key refused** — not Offline — and asks for the new one over the app, with a
+  **Forget key** button; a relay that was restarted with `--open` is noticed too, and the
+  page forgets the key and carries on without one.
 - `DUCK_TALK_KEY=…` sets the key instead, for a relay run from a service manager or a
   container, where a file is the wrong place for it. No file is written then.
 - The key is in the startup rows, so each run's log in `.duck-talk/logs/` holds it too;

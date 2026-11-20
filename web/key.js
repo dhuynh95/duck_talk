@@ -76,25 +76,68 @@ export function forgetKey(storage) {
   }
 }
 
+/** @typedef {(url: string, init: { cache: 'no-store', signal: AbortSignal }) => Promise<Pick<Response, 'ok' | 'json'>>} AccessFetch */
+
+/** How long `/access.json` is waited for before the answer is "could not tell". */
+const ACCESS_TIMEOUT = 4000;
+
+/**
+ * What this relay says about its key, at `/access.json`: `'open'` (started with --open, so no key
+ * is checked), `'keyed'` (one is), or `'unknown'` — no answer in `timeoutMs`, a refusal, a body that
+ * is not that answer. Read whole, as `{"required": <boolean>}`, and nothing else counts.
+ *
+ * Two pages ask. One with no key, deciding whether to show the form; and one whose key the relay
+ * will not take, which a browser cannot see — a WebSocket refused on the upgrade looks exactly like
+ * one that found no relay — and which asks so as to tell those two apart (relay.js).
+ *
+ * @param {AccessFetch} fetchImpl
+ * @param {number} [timeoutMs]
+ * @returns {Promise<'open' | 'keyed' | 'unknown'>}
+ */
+export async function accessState(fetchImpl, timeoutMs = ACCESS_TIMEOUT) {
+  const abort = new AbortController();
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  // A fetch that ignores its signal still loses the race: the page is not held on it either way.
+  const late = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      abort.abort();
+      resolve('unknown');
+    }, timeoutMs);
+  });
+  const asked = (async () => {
+    try {
+      const res = await fetchImpl('/access.json', { cache: 'no-store', signal: abort.signal });
+      if (!res.ok) return 'unknown';
+      const body = await res.json();
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) return 'unknown';
+      if (body.required === false) return 'open';
+      if (body.required === true) return 'keyed';
+      return 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  })();
+  try {
+    return /** @type {'open' | 'keyed' | 'unknown'} */ (await Promise.race([asked, late]));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Whether this relay wants a key, for a page that has none. A relay started with `--open`
  * checks nothing, and says so at `/access.json`; false is only ever that answer, read whole.
- * Everything else — no answer, a refusal, a body that is not that — is true, because the
- * mistake that costs a person a form they can fill in is better than the one that boots an
- * app whose every socket is refused.
+ * Everything else — no answer, one that does not come in time, a refusal, a body that is not
+ * that — is true, because the mistake that costs a person a form they can fill in is better than
+ * the one that boots an app whose every socket is refused, or a page that stays blank.
  *
- * @param {(url: string, init: { cache: 'no-store' }) => Promise<Pick<Response, 'ok' | 'json'>>} fetchImpl
+ * @param {AccessFetch} fetchImpl
+ * @param {number} [timeoutMs]
  * @returns {Promise<boolean>}
  */
-export async function needsKey(fetchImpl) {
-  try {
-    const res = await fetchImpl('/access.json', { cache: 'no-store' });
-    if (!res.ok) return true;
-    const body = await res.json();
-    return !(typeof body === 'object' && body !== null && !Array.isArray(body) && body.required === false);
-  } catch {
-    return true;
-  }
+export async function needsKey(fetchImpl, timeoutMs = ACCESS_TIMEOUT) {
+  return (await accessState(fetchImpl, timeoutMs)) !== 'open';
 }
 
 /**

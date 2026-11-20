@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
-import { forgetKey, hasStoredKey, keepKey, needsKey, socketUrl, takeKey } from '../web/key.js';
+import { describe, it, mock } from 'node:test';
+import { accessState, forgetKey, hasStoredKey, keepKey, needsKey, socketUrl, takeKey } from '../web/key.js';
 
 /** A Storage that remembers what it is given, and can be told to refuse. */
 function memory(initial: Record<string, string> = {}, refuse: 'get' | 'set' | 'remove' | null = null) {
@@ -180,10 +180,27 @@ describe('needsKey: does this relay want a key at all', () => {
   }
   const verdict = async (body: string, status = 200) => needsKey(answering(body, status).fetchImpl);
 
-  it('asks /access.json, and not from the cache', async () => {
+  it('asks /access.json, and not from the cache, with a way to give up on it', async () => {
     const { asked, fetchImpl } = answering('{"required":true}');
     await needsKey(fetchImpl);
-    assert.deepEqual(asked, [{ url: '/access.json', init: { cache: 'no-store' } }]);
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0]!.url, '/access.json');
+    const init = asked[0]!.init as { cache: string; signal: AbortSignal };
+    assert.deepEqual(Object.keys(init).sort(), ['cache', 'signal']);
+    assert.equal(init.cache, 'no-store');
+    assert.ok(init.signal instanceof AbortSignal);
+  });
+
+  it('fails closed, to the key form, when /access.json never answers', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let signal: AbortSignal | undefined;
+    const answer = needsKey((_url, init) => {
+      signal = (init as { signal: AbortSignal }).signal;
+      return new Promise(() => {});
+    });
+    t.mock.timers.tick(4000);
+    assert.equal(await answer, true);
+    assert.equal(signal?.aborted, true, 'the request itself is given up on');
   });
 
   it('is false only for a relay that says it is open', async () => {
@@ -217,5 +234,58 @@ describe('needsKey: does this relay want a key at all', () => {
     assert.equal(await needsKey(() => Promise.reject(new Error('offline'))), true);
     assert.equal(await needsKey(() => { throw new Error('no fetch here'); }), true);
     assert.equal(await needsKey(async () => ({ ok: true, json: () => Promise.reject(new Error('cut off')) }) as unknown as Response), true);
+  });
+});
+
+describe('accessState: what the relay says about its key, for a page whose socket was refused', () => {
+  const answering = (body: string, status = 200) => async () => new Response(body, { status });
+
+  it('is open for a relay that says no key is required', async () => {
+    assert.equal(await accessState(answering('{"required":false}')), 'open');
+  });
+
+  it('is keyed for a relay that says a key is required', async () => {
+    assert.equal(await accessState(answering('{"required":true}')), 'keyed');
+  });
+
+  it('is unknown for anything else', async () => {
+    assert.equal(await accessState(answering('{"required":true}', 503)), 'unknown', 'a 5xx');
+    assert.equal(await accessState(answering('{"required":false}', 500)), 'unknown');
+    assert.equal(await accessState(answering('{"required":false}', 404)), 'unknown', 'an older relay');
+    assert.equal(await accessState(answering('not json')), 'unknown', 'malformed');
+    assert.equal(await accessState(answering('{}')), 'unknown');
+    assert.equal(await accessState(answering('{"required":"true"}')), 'unknown');
+    assert.equal(await accessState(answering('[true]')), 'unknown');
+    assert.equal(await accessState(answering('null')), 'unknown');
+  });
+
+  it('is unknown when the request fails, however it fails', async () => {
+    assert.equal(await accessState(() => Promise.reject(new Error('offline'))), 'unknown');
+    assert.equal(await accessState(() => { throw new Error('no fetch here'); }), 'unknown');
+    assert.equal(await accessState(async () => ({ ok: true, json: () => Promise.reject(new Error('cut off')) }) as unknown as Response), 'unknown');
+  });
+
+  it('is unknown once the timeout passes on a fetch that never answers, and aborts it', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let signal: AbortSignal | undefined;
+    let settled = false;
+    const answer = accessState((_url, init) => {
+      signal = (init as { signal: AbortSignal }).signal;
+      return new Promise(() => {});
+    }, 1000).then((v) => { settled = true; return v; });
+    t.mock.timers.tick(999);
+    await Promise.resolve();
+    assert.equal(settled, false, 'not before the timeout');
+    t.mock.timers.tick(1);
+    assert.equal(await answer, 'unknown');
+    assert.equal(signal?.aborted, true);
+  });
+
+  it('leaves no timer behind when the relay answers in time', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const cleared = mock.method(globalThis, 'clearTimeout');
+    assert.equal(await accessState(answering('{"required":true}')), 'keyed');
+    assert.equal(cleared.mock.callCount(), 1);
+    cleared.mock.restore();
   });
 });

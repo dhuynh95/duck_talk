@@ -26,14 +26,16 @@ import { openSheet } from './sheet.js';
 /** @typedef {{ kind: 'reachable' | 'offline' | 'checking', text: string, detail?: string }} Reach */
 
 /**
- * The one line about whether a relay is answering: Reachable once a frame has come back; Offline,
- * with the relay's own reason, once it has failed; and "Checking…" in between, which is how the page
- * opens — `connected` is false until the first answer, and that is not an outage.
+ * The one line about whether a relay is answering: Reachable once a frame has come back; Key refused
+ * when the relay is there and will not take this browser's key (relay.js asked it), which is not an
+ * outage and has a fix right below; Offline, with the relay's own reason, once it has failed; and
+ * "Checking…" in between, which is how the page opens — `connected` is false until the first answer.
  * @param {Record<string, any>} state
  * @returns {Reach}
  */
 export function reachOf(state) {
   if (state['connected'] === true) return { kind: 'reachable', text: 'Reachable' };
+  if (state['keyRefused'] === true) return { kind: 'offline', text: 'Key refused', detail: 'This key belongs to another relay, or an older one. Forget key below, then enter the key this relay printed.' };
   if (state['connected'] === false && state['relayError']) return { kind: 'offline', text: 'Offline', detail: String(state['relayError']) };
   return { kind: 'checking', text: 'Checking…' };
 }
@@ -145,6 +147,6 @@ export function openConnection({ store, key, storage, address, reload }) {
       return false;
     },
   });
-  stop = watchKeys(store, ['connected', 'relayError', 'relayVersion'], draw);
+  stop = watchKeys(store, ['connected', 'keyRefused', 'relayError', 'relayVersion'], draw);
   return sheet;
 }

@@ -59,12 +59,16 @@ class FakeSocket {
   }
 }
 
-function rig(opts: { dialThrows?: () => boolean } = {}) {
+type Access = 'open' | 'keyed' | 'unknown';
+
+function rig(opts: { dialThrows?: () => boolean; checkAccess?: () => Promise<Access>; onOpenRelay?: () => void } = {}) {
   let time = 1_000_000;
   const timers: { at: number; fn: () => void; live: boolean }[] = [];
   const sockets: FakeSocket[] = [];
   const store = createStore<Record<string, any>>({});
   const relay = new RelayStore({
+    ...(opts.checkAccess ? { checkAccess: opts.checkAccess } : {}),
+    ...(opts.onOpenRelay ? { onOpenRelay: opts.onOpenRelay } : {}),
     store,
     urlFor: () => 'ws://relay/?data=1',
     makeSocket: (url: string) => {
@@ -370,6 +374,136 @@ describe('RelayStore: losing and finding the relay again', () => {
     sockets[1]!.open();
     old.receive({ type: 'chats', chats: [{ id: 'ghost', at: 1, title: 'x' }] });
     assert.deepEqual(state()['chats'], []);
+  });
+});
+
+describe('RelayStore: a key the relay will not take', () => {
+  const REFUSED = 'The relay refused this key — it may belong to another project.';
+
+  /** A rig whose access check answers what the test says, when the test says, and counts the asks. */
+  function keyed(answer: Access = 'keyed') {
+    const asks: ((a: Access) => void)[] = [];
+    let asked = 0;
+    let opened = 0;
+    const r = rig({
+      checkAccess: () => new Promise<Access>((resolve) => { asked++; asks.push(resolve); }),
+      onOpenRelay: () => void opened++,
+    });
+    /** Answers every check asked so far. */
+    const reply = async (a: Access = answer) => {
+      for (const resolve of asks.splice(0)) resolve(a);
+      await tick();
+    };
+    return { ...r, asks, reply, asked: () => asked, opened: () => opened };
+  }
+
+  it('a socket that closes before any frame asks the relay once — and not again on the redials of the same failure', async () => {
+    const { relay, asks, last, advance, sockets } = keyed();
+    relay.connect();
+    last().drop(); // refused on the upgrade: no open, no frame
+    assert.equal(asks.length, 1);
+    for (let i = 0; i < 4; i++) {
+      advance(5000);
+      last().drop();
+    }
+    assert.ok(sockets.length >= 5);
+    assert.equal(asks.length, 1, 'one check per failure, not one per redial');
+  });
+
+  it('asks nothing for a socket that answered before it dropped', () => {
+    const { asks, up } = keyed();
+    up().drop();
+    assert.equal(asks.length, 0);
+  });
+
+  it('a relay that wants a key says the key was refused, and keeps saying it across redials', async () => {
+    const { relay, state, last, reply, advance } = keyed();
+    relay.connect();
+    last().drop();
+    await reply('keyed');
+    assert.equal(state()['keyRefused'], true);
+    assert.equal(state()['relayError'], REFUSED);
+    assert.equal(state()['connected'], false);
+    advance(500);
+    last().drop();
+    assert.equal(state()['relayError'], REFUSED, 'a redial that fails the same way does not turn it back into "not answering"');
+  });
+
+  it('a relay that is open now hands the page back to boot without a key', async () => {
+    const { relay, state, last, reply, opened } = keyed();
+    relay.connect();
+    last().drop();
+    await reply('open');
+    assert.equal(opened(), 1);
+    assert.equal(state()['keyRefused'], undefined);
+  });
+
+  it('a relay that cannot be asked changes nothing: it is Offline, as before', async () => {
+    const { relay, state, last, reply, opened } = keyed();
+    relay.connect();
+    last().drop();
+    const before = { ...state() };
+    await reply('unknown');
+    assert.deepEqual(state(), before);
+    assert.equal(opened(), 0);
+    assert.equal(state()['relayError'], 'The relay is not answering.');
+  });
+
+  it('a frame that comes back clears the refusal and starts a new episode', async () => {
+    const { relay, state, asked, last, reply, advance } = keyed();
+    relay.connect();
+    last().drop();
+    await reply('keyed');
+    advance(250);
+    last().open();
+    last().receive({ type: 'relay', version: '1' });
+    assert.equal(state()['keyRefused'], false);
+    assert.equal(state()['relayError'], null);
+    assert.equal(state()['connected'], true);
+    last().drop(); // dropped after answering: not this kind of failure
+    advance(500);
+    last().drop(); // and now refused again
+    assert.equal(asked(), 2, 'asked again: the success ended the first episode');
+  });
+
+  it('asks again after 30 s of the same failure', () => {
+    const { relay, asks, last, advance } = keyed();
+    relay.connect();
+    last().drop();
+    advance(29_000);
+    last().drop();
+    assert.equal(asks.length, 1);
+    advance(1000);
+    advance(5000);
+    last().drop();
+    assert.equal(asks.length, 2);
+  });
+
+  it('an answer that arrives after the relay came back, or after the page let go, is not acted on', async () => {
+    const late = keyed();
+    late.relay.connect();
+    late.last().drop();
+    late.advance(250);
+    late.last().open();
+    late.last().receive({ type: 'relay', version: '1' });
+    await late.reply('keyed');
+    assert.notEqual(late.state()['keyRefused'], true);
+    assert.equal(late.state()['relayError'], null);
+
+    const gone = keyed();
+    gone.relay.connect();
+    gone.last().drop();
+    gone.relay.disconnect();
+    await gone.reply('open');
+    assert.equal(gone.opened(), 0);
+  });
+
+  it('a page with no key asks nothing', () => {
+    const { relay, state, last } = rig();
+    relay.connect();
+    last().drop();
+    assert.equal(state()['keyRefused'], undefined);
+    assert.equal(state()['relayError'], 'The relay is not answering.');
   });
 });
 
