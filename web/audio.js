@@ -119,7 +119,7 @@ export class AudioPipe {
   constructor() {
     this.#queue = new PlayQueue({
       onDrained: (ms) => {
-        if (!this.#closing) this.onDrained(ms);
+        if (!this.#closing) this.#emit('onDrained', ms);
       },
       onChime: (on) => {
         this.#chimeWanted = on;
@@ -218,7 +218,7 @@ export class AudioPipe {
         channelCountMode: 'explicit',
       });
       worklet.port.onmessage = (e) => this.#frame(e.data);
-      worklet.onprocessorerror = () => this.onProblem('The microphone processing stopped unexpectedly.');
+      worklet.onprocessorerror = () => this.#emit('onProblem', 'The microphone processing stopped unexpectedly.');
       // A node nothing listens to may never be asked for audio, so the worklet runs into a
       // gain of zero that runs into the speaker: the processor is pulled, and nothing is heard.
       const sink = ctx.createGain();
@@ -237,18 +237,23 @@ export class AudioPipe {
       void this.#loadChimes(ctx);
 
       const track = stream.getAudioTracks()[0];
-      if (track) track.onended = () => this.onProblem('The microphone was disconnected.');
+      if (track) track.onended = () => this.#emit('onProblem', 'The microphone was disconnected.');
       ctx.addEventListener('statechange', this.#onState);
       document.addEventListener('visibilitychange', this.#onVisible);
       void this.#lockScreen();
 
       const s = track ? track.getSettings() : {};
-      this.onAudio(
+      this.#emit(
+        'onAudio',
         `mic ${ctx.sampleRate} Hz to 16000 Hz, ${ctx.state}; echoCancellation ${s.echoCancellation}, ` +
           `noiseSuppression ${s.noiseSuppression}, autoGainControl ${s.autoGainControl}, ${s.channelCount} ch`,
       );
     } catch (e) {
-      if (this.#ctx === ctx) this.stop();
+      // Whatever went wrong after a `stop` is that `stop`: a prompt refused, or a worklet load
+      // that failed because the context was closed under it. The caller ended the call and is
+      // not owed an error for it.
+      if (this.#ctx !== ctx) return;
+      this.stop();
       throw e;
     }
   }
@@ -328,8 +333,8 @@ export class AudioPipe {
 
   /** Barge-in: drop whatever is queued for the speaker. */
   flush() {
-    // The queue first, so that when the stopped sources report in they are of a past batch and
-    // are not credited as heard.
+    // The queue first, so a source that still reports in is of a past batch and is not credited
+    // as heard; clearing each `onended` in #dropSources is the second guard on the same thing.
     this.#queue.flush();
     this.#dropSources();
   }
@@ -361,12 +366,29 @@ export class AudioPipe {
       // Zeroed after capture, so the frame is exactly the shape a heard one would be. The meter
       // is skipped rather than fed zeros, so the level drops to nothing at once and the waveform
       // going flat is how the screen says muted.
-      this.onLevel(0);
-      this.onChunk(new ArrayBuffer(data.byteLength));
+      this.#emit('onLevel', 0);
+      this.#emit('onChunk', new ArrayBuffer(data.byteLength));
       return;
     }
-    this.onLevel(this.#meter.process(new Int16Array(data)));
-    this.onChunk(data);
+    this.#emit('onLevel', this.#meter.process(new Int16Array(data)));
+    this.#emit('onChunk', data);
+  }
+
+  /**
+   * Call one of the callbacks the owner assigned. What it does is not this file's business, and
+   * what it does wrong must not be either: a waveform that throws would otherwise cost the relay
+   * its frames (and so, in two seconds, its ears), a session that throws from `onDrained` would
+   * leave a barge-in half done. So the audio path carries on, and the throw is reported, to the
+   * console, where it can be found, rather than lost.
+   * @param {'onChunk' | 'onLevel' | 'onDrained' | 'onProblem' | 'onAudio'} name
+   * @param {ArrayBuffer | number | string} arg
+   */
+  #emit(name, arg) {
+    try {
+      /** @type {(arg: any) => void} */ (this[name]).call(this, arg);
+    } catch (e) {
+      console.error(`AudioPipe: ${name} threw`, e);
+    }
   }
 
   /** Fetched and decoded once per start; if that fails a wait is silent, and the relay's log says so. @param {AudioContext} ctx */
@@ -379,7 +401,7 @@ export class AudioPipe {
       this.#chimeBuffer = buffer;
       this.#applyChime(); // a wait that began while it loaded
     } catch (e) {
-      if (this.#ctx === ctx) this.onAudio(`chimes unavailable, a wait will be silent: ${describe(e)}`);
+      if (this.#ctx === ctx) this.#emit('onAudio', `chimes unavailable, a wait will be silent: ${describe(e)}`);
     }
   }
 
@@ -456,6 +478,6 @@ export class AudioPipe {
 
   #onState = () => {
     const ctx = this.#ctx;
-    if (ctx) this.onAudio(`audio context ${ctx.state}`);
+    if (ctx) this.#emit('onAudio', `audio context ${ctx.state}`);
   };
 }

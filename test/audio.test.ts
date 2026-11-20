@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, describe, it, type TestContext } from 'node:test';
 import { AudioPipe, micErrorMessage } from '../web/audio.js';
 
 // What can be tested here is what does not need a browser: the words a refusal turns into,
@@ -165,5 +165,300 @@ describe('AudioPipe with no audio context', () => {
     pipe.expectReply();
     pipe.flush();
     assert.deepEqual(drained, [100, 0]);
+  });
+});
+
+// The rest is the pipe's lifecycle and its callbacks, run against a stand-in for the few parts
+// of Web Audio it touches. The stand-in has no sound in it: what is asserted is what the pipe
+// does to its nodes, tracks and callbacks, in the orders a real page can produce.
+
+type Deferred<T = void> = { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void };
+function deferred<T = void>(): Deferred<T> {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((a, b) => ((resolve = a), (reject = b)));
+  return { promise, resolve, reject };
+}
+const named = (name: string) => Object.assign(new Error(`stub ${name}`), { name });
+
+const GLOBALS = ['AudioContext', 'AudioWorkletNode', 'fetch', 'document', 'navigator'] as const;
+const saved = new Map<string, PropertyDescriptor | undefined>();
+
+interface Stub {
+  contexts: { closed: boolean }[];
+  tracks: { stopped: boolean; onended: (() => void) | null }[];
+  /** Every buffer source made: the reply's, since nothing here waits and so nothing chimes. */
+  sources: { stopped: number }[];
+  worklets: { port: { onmessage: ((e: { data: unknown }) => void) | null } }[];
+}
+
+/** Puts the stand-in in the globals the pipe reads; `restoreGlobals` puts them back. */
+function installWebAudio(opts: { getUserMedia: (stub: Stub) => Promise<unknown>; addModule?: (ctx: { closed: boolean }) => Promise<void> }): Stub {
+  for (const name of GLOBALS) saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+  const stub: Stub = { contexts: [], tracks: [], sources: [], worklets: [] };
+  class Node {
+    connect() {}
+    disconnect() {}
+  }
+  class Gain extends Node {
+    gain = { value: 1, cancelScheduledValues() {}, setValueAtTime() {}, linearRampToValueAtTime() {} };
+  }
+  class Source extends Node {
+    stopped = 0;
+    onended: unknown = null;
+    constructor() {
+      super();
+      stub.sources.push(this);
+    }
+    start() {}
+    stop() {
+      this.stopped++;
+    }
+  }
+  const define = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+  define('AudioContext', class {
+    state = 'running';
+    currentTime = 0;
+    sampleRate = 48000;
+    closed = false;
+    destination = new Node();
+    audioWorklet = { addModule: () => (opts.addModule ?? (async () => {}))(this) };
+    constructor() {
+      stub.contexts.push(this);
+    }
+    resume() {
+      return Promise.resolve();
+    }
+    close() {
+      this.closed = true;
+      return Promise.resolve();
+    }
+    addEventListener() {}
+    removeEventListener() {}
+    createMediaStreamSource() {
+      return new Node();
+    }
+    createGain() {
+      return new Gain();
+    }
+    createBuffer(_channels: number, length: number) {
+      return { duration: length / 24000, copyToChannel() {} };
+    }
+    createBufferSource() {
+      return new Source();
+    }
+    decodeAudioData() {
+      return Promise.resolve({});
+    }
+  });
+  define('AudioWorkletNode', class extends Node {
+    port = { onmessage: null };
+    onprocessorerror: unknown = null;
+    constructor() {
+      super();
+      stub.worklets.push(this);
+    }
+  });
+  define('fetch', async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(4) }));
+  define('document', { addEventListener() {}, removeEventListener() {}, visibilityState: 'visible' });
+  define('navigator', { mediaDevices: { getUserMedia: () => opts.getUserMedia(stub) } });
+  return stub;
+}
+
+function restoreGlobals() {
+  for (const [name, descriptor] of saved) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else Reflect.deleteProperty(globalThis, name);
+  }
+  saved.clear();
+}
+
+/** A microphone stream with one track, recorded in `stub.tracks`. */
+function micStream(stub: Stub) {
+  const track = { stopped: false, onended: null as (() => void) | null, stop() { this.stopped = true; }, getSettings: () => ({}) };
+  stub.tracks.push(track);
+  return { getTracks: () => [track], getAudioTracks: () => [track] };
+}
+
+/** Tells a start() that settled with an error from one that did not, whichever way it went. */
+const outcome = (p: Promise<unknown>) => p.then(() => 'resolved', (e: Error) => `rejected: ${e.message}`);
+
+/** console.error, replaced for the test and handed back so what it was told can be read. */
+const quietConsole = (t: TestContext) => t.mock.method(console, 'error', () => {});
+
+describe('AudioPipe.start and stop, in the orders a page can produce', () => {
+  afterEach(restoreGlobals);
+
+  it('resolves quietly when stop() came during the permission prompt and the prompt was then granted', async () => {
+    const prompt = deferred<unknown>();
+    const stub = installWebAudio({ getUserMedia: () => prompt.promise });
+    const pipe = new AudioPipe();
+    const started = outcome(pipe.start());
+    pipe.stop();
+    prompt.resolve(micStream(stub));
+    assert.equal(await started, 'resolved');
+    assert.equal(stub.tracks[0]?.stopped, true, 'the microphone that arrived late is let go');
+    assert.equal(stub.contexts[0]?.closed, true);
+  });
+
+  it('resolves quietly when stop() came during the permission prompt and the prompt was then refused', async () => {
+    const prompt = deferred<unknown>();
+    const stub = installWebAudio({ getUserMedia: () => prompt.promise });
+    const pipe = new AudioPipe();
+    const started = outcome(pipe.start());
+    pipe.stop();
+    prompt.reject(named('NotAllowedError'));
+    assert.equal(await started, 'resolved', 'the call was already ended; a refusal is not news');
+    assert.equal(stub.contexts[0]?.closed, true);
+  });
+
+  it('resolves quietly when stop() came while the worklet module was loading, and loading then failed because of it', async () => {
+    const loading = deferred();
+    const entered = deferred();
+    const stub = installWebAudio({
+      getUserMedia: async (s) => micStream(s),
+      addModule: (ctx) => (entered.resolve(), loading.promise.then(() => { if (ctx.closed) throw named('InvalidStateError'); })),
+    });
+    const pipe = new AudioPipe();
+    const started = outcome(pipe.start());
+    await entered.promise;
+    pipe.stop();
+    loading.resolve();
+    assert.equal(await started, 'resolved', 'a context closed under it is why the load failed, and who closed it is no mystery');
+    assert.equal(stub.tracks[0]?.stopped, true);
+    assert.equal(stub.contexts[0]?.closed, true);
+  });
+
+  it('still rejects with the reason when nothing stopped it: a refusal, and a worklet that will not load', async () => {
+    const denied = installWebAudio({ getUserMedia: async () => { throw named('NotAllowedError'); } });
+    assert.equal(await outcome(new AudioPipe().start()), `rejected: ${micErrorMessage(named('NotAllowedError'))}`);
+    assert.equal(denied.contexts[0]?.closed, true);
+    restoreGlobals();
+
+    const broken = installWebAudio({ getUserMedia: async (s) => micStream(s), addModule: async () => { throw named('AbortError'); } });
+    assert.match(await outcome(new AudioPipe().start()), /^rejected: Could not load the microphone processor/);
+    assert.equal(broken.tracks[0]?.stopped, true);
+    assert.equal(broken.contexts[0]?.closed, true);
+  });
+});
+
+describe('AudioPipe when a callback throws', () => {
+  afterEach(restoreGlobals);
+
+  /** A started pipe on the stand-in, and the way to hand it one frame as the worklet would. */
+  async function started() {
+    const stub = installWebAudio({ getUserMedia: async (s) => micStream(s) });
+    const pipe = new AudioPipe();
+    await pipe.start();
+    const frame = (first: number) => {
+      const samples = new Int16Array(640);
+      samples[0] = first;
+      stub.worklets[0]?.port.onmessage?.({ data: samples.buffer });
+    };
+    return { pipe, stub, frame };
+  }
+  const firstSamples = (chunks: ArrayBuffer[]) => chunks.map((c) => new Int16Array(c)[0]);
+
+  it('still delivers every frame, in order, when onLevel throws (a UI that cannot draw must not silence the relay)', async (t) => {
+    const reported = quietConsole(t);
+    const { pipe, frame } = await started();
+    const chunks: ArrayBuffer[] = [];
+    pipe.onChunk = (c) => chunks.push(c);
+    pipe.onLevel = () => { throw new Error('the waveform broke'); };
+    frame(11);
+    frame(22);
+    frame(33);
+    assert.deepEqual(firstSamples(chunks), [11, 22, 33]);
+    assert.equal(reported.mock.calls.length, 3, 'each throw is reported, not swallowed');
+    assert.match(String(reported.mock.calls[0]?.arguments.join(' ')), /onLevel/);
+    pipe.stop();
+  });
+
+  it('still delivers the zeroed frame when muted and onLevel throws', async (t) => {
+    quietConsole(t);
+    const { pipe, frame } = await started();
+    const chunks: ArrayBuffer[] = [];
+    pipe.onChunk = (c) => chunks.push(c);
+    pipe.onLevel = () => { throw new Error('the waveform broke'); };
+    pipe.muted = true;
+    frame(7);
+    frame(8);
+    assert.equal(chunks.length, 2);
+    for (const c of chunks) {
+      assert.equal(c.byteLength, 1280);
+      assert.ok(new Int16Array(c).every((v) => v === 0));
+    }
+    pipe.stop();
+  });
+
+  it('still tells onLevel, and still takes the next frame, when onChunk throws', async (t) => {
+    const reported = quietConsole(t);
+    const { pipe, frame } = await started();
+    const levels: number[] = [];
+    let calls = 0;
+    pipe.onLevel = (l) => levels.push(l);
+    pipe.onChunk = () => { if (calls++ === 0) throw new Error('the socket broke'); };
+    frame(1);
+    frame(2);
+    assert.equal(levels.length, 2);
+    assert.equal(calls, 2);
+    assert.equal(reported.mock.calls.length, 1);
+    assert.match(String(reported.mock.calls[0]?.arguments.join(' ')), /onChunk/);
+    pipe.muted = true;
+    frame(3);
+    assert.deepEqual(levels.slice(2), [0], 'muted: the level still drops to nothing');
+    pipe.stop();
+  });
+
+  it('flush() still stops what is playing when onDrained throws (barge-in must not leave the reply running)', async (t) => {
+    const reported = quietConsole(t);
+    const { pipe, stub } = await started();
+    pipe.play(new ArrayBuffer(4800));
+    pipe.play(new ArrayBuffer(4800));
+    assert.equal(stub.sources.length, 2);
+    pipe.onDrained = () => { throw new Error('the session broke'); };
+    pipe.flush();
+    assert.deepEqual(stub.sources.map((s) => s.stopped), [1, 1]);
+    assert.equal(reported.mock.calls.length, 1);
+    assert.match(String(reported.mock.calls[0]?.arguments.join(' ')), /onDrained/);
+    pipe.stop();
+  });
+
+  it('switching the output off still stops what is playing when onDrained throws', async (t) => {
+    quietConsole(t);
+    const { pipe, stub } = await started();
+    pipe.play(new ArrayBuffer(4800));
+    pipe.play(new ArrayBuffer(4800));
+    pipe.onDrained = () => { throw new Error('the session broke'); };
+    pipe.output = false;
+    assert.equal(pipe.output, false);
+    assert.deepEqual(stub.sources.map((s) => s.stopped), [1, 1]);
+    pipe.stop();
+  });
+
+  it('keeps counting after an onDrained that threw: the next reply is credited from nothing', async (t) => {
+    quietConsole(t);
+    const { pipe } = await started();
+    const drained: number[] = [];
+    pipe.onDrained = (ms) => { drained.push(ms); throw new Error('the session broke'); };
+    pipe.output = false; // consumed on arrival, so the count needs no clock
+    pipe.play(new ArrayBuffer(4800));
+    pipe.expectReply();
+    pipe.play(new ArrayBuffer(2400));
+    assert.deepEqual(drained, [0, 100, 50]);
+    pipe.stop();
+  });
+
+  it('does not let a throwing onAudio fail the start, or a throwing onProblem escape the track', async (t) => {
+    const reported = quietConsole(t);
+    const stub = installWebAudio({ getUserMedia: async (s) => micStream(s) });
+    const pipe = new AudioPipe();
+    pipe.onAudio = () => { throw new Error('the log broke'); };
+    pipe.onProblem = () => { throw new Error('the banner broke'); };
+    assert.equal(await outcome(pipe.start()), 'resolved');
+    assert.equal(stub.contexts[0]?.closed, false, 'the pipe is still running');
+    stub.tracks[0]?.onended?.();
+    assert.deepEqual(reported.mock.calls.map((c) => /onAudio|onProblem/.exec(String(c.arguments.join(' ')))?.[0]), ['onAudio', 'onProblem']);
+    pipe.stop();
   });
 });
