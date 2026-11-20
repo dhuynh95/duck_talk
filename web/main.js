@@ -8,6 +8,7 @@
 
 import { actions } from './actions.js';
 import { AudioPipe } from './audio.js';
+import { chatFlow } from './chat-flow.js';
 import { h } from './dom.js';
 import { keepKey, socketUrl, takeKey } from './key.js';
 import { RelayStore } from './relay.js';
@@ -148,9 +149,6 @@ function app(key, storage) {
     }, NOTICE_FOR);
   };
 
-  /** A blank conversation, which is what "New chat" is and what deleting the chat on screen leaves. */
-  const startNewChat = () => session.show([], null);
-
   /**
    * Branch the chat on screen at one of its messages, and let the answer — the new chat, already
    * loaded — land where every chat does. A session is stopped first, never left running beside
@@ -176,7 +174,7 @@ function app(key, storage) {
     // before it to branch from, and needs nothing: a conversation with its opening line changed is
     // a new conversation.
     edit(line) {
-      if (line.after === undefined) startNewChat();
+      if (line.after === undefined) flow.newChat();
       else if (!forkFrom(line.after)) return;
       bottom.setDraft(line.text, true);
     },
@@ -201,14 +199,11 @@ function app(key, storage) {
     },
     newChat() {
       bottom.setDraft('');
-      startNewChat();
+      flow.newChat();
     },
     star: (id, on) => relay.star(id, on),
     rename: (id, title) => relay.rename(id, title),
-    remove(id) {
-      relay.deleteChat(id);
-      if (store.get()['chatId'] === id) startNewChat();
-    },
+    remove: (id) => flow.deleteChat(id),
   });
   const root = h(
     'div',
@@ -217,49 +212,8 @@ function app(key, storage) {
     h('div', { class: 'stage' }, view.el, header(store, { openChats: (button) => drawer.open(button) }), bottom.el),
   );
 
-  // What the data socket says, carried into the conversation on screen: a chat that was asked for
-  // (or a fork, which arrives as one) is shown; the chat being Working is the session's third reason
-  // to hold its socket, so a working chat streams in; and the chat on screen is the one the page
-  // reopens next time.
-  /** @type {import('./relay.js').LoadedChat | null} the chat last put on screen */
-  let shown = null;
-  /** @type {unknown} */
-  let seenChats;
-  /** @type {unknown} */
-  let seenId;
-  /** Waiting for the first list of chats to say whether the one that was open still exists. */
-  let restoring = settings.lastChat !== null;
-  /** @type {string | null} the chat on screen as last looked at, for `lastChat` */
-  let lastId = null;
-  store.subscribe((state) => {
-    const loaded = state['loaded'];
-    if (loaded && loaded !== shown) {
-      shown = loaded;
-      session.show(loaded.messages, loaded.id);
-    }
-
-    const chats = state['chats'];
-    const id = typeof state['chatId'] === 'string' ? state['chatId'] : null;
-
-    if (restoring && Array.isArray(chats)) {
-      restoring = false;
-      const idle = id === null && !state['lines']?.length && !state['utterance']; // nothing begun in the meantime
-      if (settings.lastChat !== null && idle) {
-        if (chats.some((c) => c?.id === settings.lastChat)) relay.openChat(settings.lastChat);
-        else change({ lastChat: null }); // it is gone
-      }
-    }
-    if (!restoring && id !== lastId) {
-      lastId = id;
-      if (id !== settings.lastChat) change({ lastChat: id });
-    }
-
-    if (chats !== seenChats || id !== seenId) {
-      seenChats = chats;
-      seenId = id;
-      session.working = (Array.isArray(chats) ? chats : []).find((c) => c?.id === id)?.working === true;
-    }
-  });
+  // What the data socket says about chats, carried into the conversation on screen (chat-flow.js).
+  const flow = chatFlow({ store, session, relay, settings: () => settings, change });
 
   // The conversation pads itself clear of the composer, which grows as you type: its height
   // is measured, not guessed, and the end of the conversation stays in view as it changes.
