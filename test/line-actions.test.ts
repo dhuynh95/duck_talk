@@ -99,6 +99,19 @@ describe('pasteLabel: the opening words of a pasted text, for its chip', () => {
     assert.equal(pasteLabel(''), 'Pasted text');
     assert.equal(pasteLabel(' \n\t '), 'Pasted text');
   });
+
+  it('says what a paste of megabytes opens with, and that it goes on, without reading all of it into pieces', () => {
+    const words = 'word '.repeat(2_000_000); // ten million characters
+    assert.equal(pasteLabel(words), 'word word word word word word word word …');
+    assert.equal(pasteLabel(`${'\n'.repeat(3_000_000)}the stack trace begins`), 'the stack trace begins');
+    assert.equal(pasteLabel('🦆'.repeat(5_000_000)), `${'🦆'.repeat(40)}…`);
+  });
+
+  it('does not say "…" for a text that ends in a great deal of blank, which is no more text', () => {
+    assert.equal(pasteLabel(`done${' '.repeat(2_000_000)}`), 'done');
+    assert.equal(pasteLabel(`done${' '.repeat(5000)}more`), 'done more');
+    assert.equal(pasteLabel('a'.repeat(80) + ' ' + 'b'), `${'a'.repeat(40)}…`);
+  });
 });
 
 describe('clipTime: a length of audio as a person reads it', () => {

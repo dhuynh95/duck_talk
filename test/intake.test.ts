@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createIntake } from '../web/intake.js';
+import { createIntake, readPaste } from '../web/intake.js';
 
 // What happens between "these files were chosen" and "they are waiting for the next
 // instruction": one at a time, each under its own id, a failure costing only its own file, and the
@@ -170,5 +170,77 @@ describe('createIntake: pastes', () => {
     const ids = attached.map((a) => a.id);
     assert.equal(new Set(ids).size, 3);
     assert.deepEqual([...ids].sort((p, q) => p - q), ids);
+  });
+});
+
+// What a paste into the field is: words for the field, or something to carry with the next
+// instruction. `DataTransfer` is a bag of flavours, and a copy from a spreadsheet or a document
+// puts several in it at once — the words, the same words as markup, and a picture of the selection.
+describe('readPaste', () => {
+  const png = (name = 'shot.png') => new File(['png'], name, { type: 'image/png' });
+  /** A clipboard with the flavours given: `files` are image items, `html` and `plain` the text ones. */
+  function clipboard({ files = [] as Blob[], html, plain = '', others = [] as { kind: string; type: string; file: Blob | null }[] }: { files?: Blob[]; html?: string; plain?: string; others?: { kind: string; type: string; file: Blob | null }[] }) {
+    const items = [
+      ...files.map((file) => ({ kind: 'file', type: file.type, getAsFile: () => file as File })),
+      ...others.map((o) => ({ kind: o.kind, type: o.type, getAsFile: () => o.file as File | null })),
+    ];
+    const types = [...(files.length || others.length ? ['Files'] : []), ...(html !== undefined ? ['text/html'] : []), ...(plain ? ['text/plain'] : [])];
+    return { items, types, getData: (type: string) => (type === 'text/plain' ? plain : type === 'text/html' ? (html ?? '') : '') };
+  }
+  const long = 'x'.repeat(801);
+
+  it('a picture alone is a picture to attach: a screenshot', () => {
+    const shot = png();
+    assert.deepEqual(readPaste(clipboard({ files: [shot] })), { files: [shot] });
+  });
+
+  it('every picture on it is taken, in order, and nothing that is not a picture', () => {
+    const a = png('a.png');
+    const b = new File(['jpg'], 'b.jpg', { type: 'image/jpeg' });
+    const pdf = new File(['%PDF'], 'c.pdf', { type: 'application/pdf' });
+    const taken = readPaste(clipboard({ files: [a, pdf, b] }));
+    assert.deepEqual(taken, { files: [a, b] });
+  });
+
+  it('an item that says it is a picture but gives no file is passed over', () => {
+    const shot = png();
+    assert.deepEqual(readPaste(clipboard({ files: [shot], others: [{ kind: 'file', type: 'image/png', file: null }] })), { files: [shot] });
+    assert.equal(readPaste(clipboard({ others: [{ kind: 'file', type: 'image/png', file: null }] })), null);
+  });
+
+  it('a copy from a spreadsheet or a document — its words, its markup and a picture of the selection — keeps its words: the field gets them', () => {
+    const picture = png('selection.png');
+    assert.equal(readPaste(clipboard({ files: [picture], html: '<table><tr><td>Q3</td><td>41</td></tr></table>', plain: 'Q3\t41' })), null);
+  });
+
+  it('and when those words are long they become a text chip, still without the picture', () => {
+    const picture = png('selection.png');
+    assert.deepEqual(readPaste(clipboard({ files: [picture], html: '<table></table>', plain: long })), { text: long });
+  });
+
+  it('"Copy image" in a page — markup that is only the image, no words — is the picture', () => {
+    const picture = png();
+    assert.deepEqual(readPaste(clipboard({ files: [picture], html: '<img src="https://example.test/duck.png">' })), { files: [picture] });
+  });
+
+  it('words that are only blank do not outweigh a picture', () => {
+    const picture = png();
+    assert.deepEqual(readPaste(clipboard({ files: [picture], html: '<img src="x">', plain: ' \n' })), { files: [picture] });
+  });
+
+  it('a picture and words with no markup flavour: the picture (the rule is about markup, which is what a document or sheet carries)', () => {
+    const picture = png();
+    assert.deepEqual(readPaste(clipboard({ files: [picture], plain: 'caption' })), { files: [picture] });
+  });
+
+  it('words alone: short ones are left for the field, long ones become a chip', () => {
+    assert.equal(readPaste(clipboard({ plain: 'delete the cache' })), null);
+    assert.equal(readPaste(clipboard({ html: '<b>delete the cache</b>', plain: 'delete the cache' })), null);
+    assert.equal(readPaste(clipboard({ plain: 'x'.repeat(800) })), null);
+    assert.deepEqual(readPaste(clipboard({ plain: long })), { text: long });
+  });
+
+  it('an empty clipboard is nothing', () => {
+    assert.equal(readPaste(clipboard({})), null);
   });
 });

@@ -59,7 +59,7 @@ class FakeSocket {
   }
 }
 
-function rig() {
+function rig(opts: { dialThrows?: () => boolean } = {}) {
   let time = 1_000_000;
   const timers: { at: number; fn: () => void; live: boolean }[] = [];
   const sockets: FakeSocket[] = [];
@@ -68,6 +68,7 @@ function rig() {
     store,
     urlFor: () => 'ws://relay/?data=1',
     makeSocket: (url: string) => {
+      if (opts.dialThrows?.()) throw new SyntaxError("Failed to construct 'WebSocket': The URL is invalid.");
       const s = new FakeSocket(url);
       sockets.push(s);
       return s as any;
@@ -457,10 +458,15 @@ describe('RelayStore: clips and images', () => {
   /** A request whose promise is watched, so a test can say "not yet". */
   const watched = <T>(p: Promise<T>) => {
     const out = { done: false, value: undefined as T | undefined };
-    void p.then((v) => {
-      out.done = true;
-      out.value = v;
-    });
+    void p.then(
+      (v) => {
+        out.done = true;
+        out.value = v;
+      },
+      () => {
+        out.done = true; // refused is an answer to "not yet" too
+      },
+    );
     return out;
   };
 
@@ -613,16 +619,24 @@ describe('RelayStore: clips and images', () => {
     assert.deepEqual(await bytes((await all[4])!), [5]);
   });
 
-  it('a socket that fails or closes before it answers is a null, and the next request still goes out', async () => {
+  // A request ends one of two ways. The relay answered: a file, or null for "no file here" — a fact
+  // about the relay that stays true. Or it could not be asked, or did not say: a rejection with a
+  // sentence a person can read, which is about this moment and must never be taken for the first.
+  it('a socket that is refused or closes before it answers rejects, with why, and the next request still goes out', async () => {
     const { relay, sockets, up } = rig();
     up();
     const reqs = [1, 2, 3, 4].map((id) => relay.clip(id));
+    const settled = Promise.allSettled(reqs.slice(0, 2));
     sockets[1]!.onerror?.({});
     sockets[1]!.drop();
-    assert.equal(await reqs[0], null, 'refused');
     sockets[2]!.open();
     sockets[2]!.drop();
-    assert.equal(await reqs[1], null, 'dropped after it opened');
+    const [refused, dropped] = await settled;
+    assert.equal(refused?.status, 'rejected');
+    assert.equal((refused as PromiseRejectedResult).reason.message, 'Could not reach the relay.');
+    assert.ok((refused as PromiseRejectedResult).reason instanceof Error);
+    assert.equal(dropped?.status, 'rejected');
+    assert.equal((dropped as PromiseRejectedResult).reason.message, 'The connection to the relay was lost.');
     assert.equal(sockets.length, 1 + 4, 'both slots were given to the next two');
     assert.deepEqual(sockets[4]!.frames, []);
     sockets[3]!.open();
@@ -630,19 +644,69 @@ describe('RelayStore: clips and images', () => {
     assert.deepEqual(await bytes((await reqs[2])!), [3]);
   });
 
-  it('gives up after 10 s with null, closes the socket, and goes on to the next request', async () => {
+  it('a socket error is a failure on its own, without waiting for a close that may be a while coming', async () => {
+    const { relay, sockets, up } = rig();
+    up();
+    const clip = relay.clip(1);
+    sockets[1]!.open();
+    sockets[1]!.onerror?.({});
+    await assert.rejects(clip, { message: 'The connection to the relay was lost.' });
+    assert.equal(sockets[1]!.readyState, 3, 'and the socket is let go of');
+  });
+
+  it('an address the browser will not dial rejects too: the relay was not asked', async () => {
+    let throws = false;
+    const { relay, up } = rig({ dialThrows: () => throws });
+    up();
+    throws = true;
+    await assert.rejects(relay.image(1), { message: 'Could not reach the relay.' });
+  });
+
+  it('gives up after 10 s with a rejection, closes the socket, and goes on to the next request', async () => {
     const { relay, sockets, advance, up } = rig();
     up();
     const reqs = [1, 2, 3, 4].map((id) => relay.clip(id));
+    const settled = Promise.allSettled(reqs.slice(0, 3)); // the three that had a socket, all asked at the same moment
     sockets[1]!.open();
     advance(9_999);
     const stuck = watched(reqs[0]!);
     await tick();
     assert.equal(stuck.done, false);
     advance(1);
-    assert.equal(await reqs[0], null);
+    const [result] = await settled;
+    assert.equal(result?.status, 'rejected', 'a relay that says nothing has not said there is no file');
+    assert.equal((result as PromiseRejectedResult).reason.message, 'The relay did not answer in time.');
     assert.equal(sockets[1]!.readyState, 3, 'a late answer on it can never be taken for another');
     assert.equal(sockets.length, 1 + 4, 'the fourth request now has its socket');
+  });
+
+  it('a failure is not remembered: the same id asked for again is a new question, and may be answered', async () => {
+    const { relay, sockets, advance, up } = rig();
+    up();
+    const first = relay.clip(7);
+    sockets[1]!.open();
+    advance(10_000);
+    await assert.rejects(first, { message: 'The relay did not answer in time.' });
+
+    const again = relay.clip(7);
+    assert.equal(sockets.length, 1 + 2, 'a socket of its own, not the failed answer handed back');
+    sockets[2]!.open();
+    assert.deepEqual(sockets[2]!.frames, [{ type: 'clip_get', id: 7 }]);
+    sockets[2]!.receiveBinary([82, 73]);
+    assert.deepEqual(await bytes((await again)!), [82, 73]);
+  });
+
+  it('and a definite "no file" is not a failure: null, and asking again is answered the same way', async () => {
+    const { relay, sockets, up } = rig();
+    up();
+    const first = relay.image(9);
+    sockets[1]!.open();
+    sockets[1]!.burst();
+    assert.equal(await first, null);
+    const second = relay.image(9);
+    sockets[2]!.open();
+    sockets[2]!.burst();
+    assert.equal(await second, null);
   });
 
   it('does not time out a request that was answered, and does not let the data socket go', async () => {
@@ -673,23 +737,27 @@ describe('RelayStore: clips and images', () => {
     assert.deepEqual(await bytes((await second)!), [2]);
   });
 
-  it('disconnect resolves what is outstanding and what is queued with null, closes the sockets, and asks nothing more', async () => {
+  it('disconnect rejects what is outstanding and what is queued, closes the sockets, and asks nothing more', async () => {
     const { relay, sockets, up } = rig();
     up();
     const reqs = [1, 2, 3, 4].map((id) => relay.clip(id));
+    const settled = Promise.allSettled(reqs);
     sockets[1]!.open();
     relay.disconnect();
-    for (const r of reqs) assert.equal(await r, null);
+    for (const r of await settled) {
+      assert.equal(r.status, 'rejected');
+      assert.equal((r as PromiseRejectedResult).reason.message, 'The relay is not connected.');
+    }
     assert.ok(sockets.slice(1).every((s) => s.readyState === 3));
     assert.equal(sockets.length, 1 + 3, 'the queued request was never given a socket');
-    assert.equal(await relay.clip(5), null, 'and nothing is asked after');
+    await assert.rejects(relay.clip(5), { message: 'The relay is not connected.' }); // and nothing is asked after
     assert.equal(sockets.length, 1 + 3);
   });
 
-  it('is null at once, opening no socket, when nobody wants the relay', async () => {
+  it('rejects at once, opening no socket, when nobody wants the relay: it was not asked, so it did not say there is no file', async () => {
     const { relay, sockets } = rig();
-    assert.equal(await relay.clip(1), null);
-    assert.equal(await relay.image(1), null);
+    await assert.rejects(relay.clip(1), { message: 'The relay is not connected.' });
+    await assert.rejects(relay.image(1), { message: 'The relay is not connected.' });
     assert.equal(sockets.length, 0);
   });
 

@@ -136,12 +136,104 @@ describe('toJpegBase64: what it refuses before it decodes anything', () => {
   });
 
   it('asks the decoder to turn the picture upright, as its EXIF says', async () => {
-    let asked: unknown;
+    const asked: unknown[] = [];
     g['createImageBitmap'] = async (_blob: Blob, options: unknown) => {
-      asked = options;
+      asked.push(options);
       throw new Error('stop here');
     };
     await toJpegBase64(new Blob(['x'], { type: 'image/jpeg' })).catch(() => {});
-    assert.deepEqual(asked, { imageOrientation: 'from-image' });
+    assert.deepEqual(asked[0], { imageOrientation: 'from-image' }, 'the first ask');
+  });
+});
+
+// The part only a browser can do, played by hand: a decoder, a canvas and a bitmap that records
+// whether it was let go of. What a person must never see is the browser's own sentence.
+describe('toJpegBase64: decoding and drawing', () => {
+  const g = globalThis as Record<string, unknown>;
+  const had = { createImageBitmap: 'createImageBitmap' in g, document: 'document' in g };
+  const was = { createImageBitmap: g['createImageBitmap'], document: g['document'] };
+  afterEach(() => {
+    for (const key of ['createImageBitmap', 'document'] as const) {
+      if (had[key]) g[key] = was[key];
+      else delete g[key];
+    }
+  });
+
+  const UNREADABLE = "That file isn't a picture this browser can read. Try a JPEG or PNG.";
+  const picture = () => new Blob(['pixels'], { type: 'image/png' });
+
+  /** A bitmap that says whether it was closed, and a canvas whose steps a test can make fail. */
+  function browser({ draw, encode }: { draw?: () => void; encode?: 'throws' | 'null' } = {}) {
+    const bitmap = { width: 4032, height: 3024, closed: 0, close() { this.closed++; } };
+    const drawn: number[][] = [];
+    g['document'] = {
+      createElement: () => ({
+        width: 0,
+        height: 0,
+        getContext: () => ({
+          fillRect() {},
+          drawImage(_bitmap: unknown, ...rest: number[]) {
+            if (draw) draw();
+            drawn.push(rest);
+          },
+        }),
+        toBlob(done: (b: Blob | null) => void) {
+          if (encode === 'throws') throw new DOMException('Failed to execute toBlob on HTMLCanvasElement: Tainted canvases may not be exported.', 'SecurityError');
+          done(encode === 'null' ? null : new Blob([new Uint8Array([255, 216, 255])], { type: 'image/jpeg' }));
+        },
+      }),
+    };
+    return { bitmap, drawn };
+  }
+
+  it('a decoder that does not take the orientation option is asked again without it, once, and the picture still goes', async () => {
+    const { bitmap, drawn } = browser();
+    const asked: unknown[] = [];
+    g['createImageBitmap'] = async (_blob: Blob, ...options: unknown[]) => {
+      asked.push(options[0]);
+      if (options.length > 0) throw new TypeError("Failed to execute 'createImageBitmap': The provided value 'from-image' is not a valid enum value.");
+      return bitmap;
+    };
+    assert.equal(await toJpegBase64(picture()), '/9j/');
+    assert.deepEqual(asked, [{ imageOrientation: 'from-image' }, undefined], 'with the option, then plain');
+    assert.deepEqual(drawn, [[0, 0, 1568, 1176]]);
+    assert.equal(bitmap.closed, 1);
+  });
+
+  it('when the second try fails too the person is told in words, after exactly two tries', async () => {
+    browser();
+    let tries = 0;
+    g['createImageBitmap'] = async () => {
+      tries++;
+      throw new DOMException('The source image could not be decoded.', 'InvalidStateError');
+    };
+    await assert.rejects(toJpegBase64(picture()), { message: UNREADABLE });
+    assert.equal(tries, 2);
+  });
+
+  it('a decoder that is not there at all is the same words, not a ReferenceError', async () => {
+    browser();
+    delete g['createImageBitmap'];
+    await assert.rejects(toJpegBase64(picture()), { message: UNREADABLE });
+  });
+
+  it('a draw that throws is the same words, never the browser\'s, and the bitmap is still let go of', async () => {
+    const { bitmap } = browser({
+      draw() {
+        throw new DOMException("Failed to execute 'drawImage' on 'CanvasRenderingContext2D': The image source is detached.", 'InvalidStateError');
+      },
+    });
+    g['createImageBitmap'] = async () => bitmap;
+    await assert.rejects(toJpegBase64(picture()), { message: UNREADABLE });
+    assert.equal(bitmap.closed, 1);
+  });
+
+  it('an encode that throws is the same words, and so is one that gives nothing', async () => {
+    for (const encode of ['throws', 'null'] as const) {
+      const { bitmap } = browser({ encode });
+      g['createImageBitmap'] = async () => bitmap;
+      await assert.rejects(toJpegBase64(picture()), { message: UNREADABLE }, encode);
+      assert.equal(bitmap.closed, 1, encode);
+    }
   });
 });

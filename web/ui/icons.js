@@ -93,6 +93,10 @@ const SHAPES = {
     ['rect', { x: '6.5', y: '5', width: '3.8', height: '14', rx: '1', fill: 'currentColor', stroke: 'none' }],
     ['rect', { x: '13.7', y: '5', width: '3.8', height: '14', rx: '1', fill: 'currentColor', stroke: 'none' }],
   ],
+  // Ask again: an arrow running round to where it began.
+  retry: [
+    ['path', { d: 'M19.5 12a7.5 7.5 0 1 1-2.3-5.4M19.5 4.5v4.8h-4.8' }],
+  ],
   photo: [
     ['rect', { x: '3.5', y: '5', width: '17', height: '14', rx: '2.5' }],
     ['circle', { cx: '9', cy: '10', r: '1.5' }],

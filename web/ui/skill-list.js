@@ -37,7 +37,7 @@ export function skillList(input, store, pick) {
   let shown = [];
   /** @type {HTMLElement[]} */
   let options = [];
-  /** @type {string} what the options were built from */
+  /** @type {string} what the options were built from: every field a row shows, so a row never outlives what it says */
   let built = '';
   let active = 0;
   let focused = false;
@@ -57,20 +57,22 @@ export function skillList(input, store, pick) {
     );
     row.addEventListener('click', () => choose(skill));
     // Pointing at a row makes it the one Enter would take, so the highlight never says two things.
+    // It is already under the pointer, so nothing is scrolled to it: the list moving under a hand is
+    // the one thing a pointer must not do.
     row.addEventListener('pointermove', () => {
       if (active !== i) mark(i);
     });
     return row;
   }
 
-  /** @param {number} next */
-  function mark(next) {
+  /** @param {number} next @param {boolean} [scroll] only the keyboard moves the highlight to somewhere that may be out of sight */
+  function mark(next, scroll = false) {
     active = next;
     options.forEach((row, i) => row.setAttribute('aria-selected', String(i === active)));
     const row = options[active];
     if (row) {
       input.setAttribute('aria-activedescendant', row.id);
-      row.scrollIntoView({ block: 'nearest' });
+      if (scroll) row.scrollIntoView({ block: 'nearest' });
     }
   }
 
@@ -96,15 +98,19 @@ export function skillList(input, store, pick) {
       if (!el.hidden) close();
       return;
     }
-    const key = matches.map((s) => s.name).join('\n');
+    // Rebuilt when anything a row shows changed, not only the names: a row holds the skill it was
+    // built from, and a click on one whose hint or description has since changed would pick the old.
+    const key = JSON.stringify(matches.map((s) => [s.name, s.argumentHint, s.description]));
     shown = matches;
-    if (key !== built) {
+    const rebuilt = key !== built;
+    if (rebuilt) {
       built = key;
       options = matches.map(option);
       el.replaceChildren(...options);
       active = 0;
     }
     el.hidden = false;
+    if (rebuilt) el.scrollTop = 0; // the first row is the highlighted one: let it be seen (a hidden list has no position to set)
     input.setAttribute('aria-expanded', 'true');
     mark(Math.min(active, options.length - 1));
   }
@@ -116,10 +122,10 @@ export function skillList(input, store, pick) {
     const n = shown.length;
     switch (event.key) {
       case 'ArrowDown':
-        mark((active + 1) % n);
+        mark((active + 1) % n, true);
         break;
       case 'ArrowUp':
-        mark((active - 1 + n) % n);
+        mark((active - 1 + n) % n, true);
         break;
       case 'Enter':
       case 'Tab': {

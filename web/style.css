@@ -593,6 +593,27 @@ select {
   height: 22px;
 }
 
+/* The relay could not be asked for it: not "gone", so the square offers to ask again. */
+.thumb[data-state="failed"] {
+  color: var(--text-secondary);
+}
+
+.thumb[data-state="failed"] .thumb-mark {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+}
+
+.thumb[data-state="failed"] .thumb-mark .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.thumb-retry {
+  font-size: 11px;
+  line-height: 1;
+}
+
 .paste {
   display: flex;
   flex-direction: column;
@@ -737,7 +758,8 @@ select {
   color: var(--accent);
 }
 
-.clip-chip:disabled {
+.clip-chip:disabled,
+.clip-chip[data-state="loading"] {
   color: var(--text-tertiary);
   cursor: default;
 }
@@ -746,13 +768,23 @@ select {
   opacity: 0.8;
 }
 
+/* Could not be fetched, not gone: a chip that is plainly pressable, with the colour of one. */
+.clip-chip[data-state="failed"] {
+  color: var(--text);
+}
+
 @media (hover: hover) {
   .verb:hover,
-  .clip-chip:not(:disabled):hover {
+  .clip-chip:not(:disabled, [data-state="loading"]):hover {
     color: var(--text);
   }
 
-  .clip-chip:not(:disabled):hover {
+  .thumb[data-state="failed"]:hover {
+    color: var(--text);
+    border-color: var(--border);
+  }
+
+  .clip-chip:not(:disabled, [data-state="loading"]):hover {
     background: var(--border);
   }
 }

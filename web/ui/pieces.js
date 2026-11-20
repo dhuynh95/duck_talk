@@ -20,8 +20,9 @@ import { openSheet } from './sheet.js';
 /** @typedef {import('../transcript.js').Piece} Piece */
 /** @typedef {{ el: HTMLElement, update: (given: Piece[]) => void, destroy: () => void }} Pieces */
 /**
- * What drawing pieces needs from the page: how to get a stored picture, and when a square has come
- * into view (`watch` calls `fn` once, at that moment, and returns how to stop waiting).
+ * What drawing pieces needs from the page: how to get a stored picture (null: the relay has none;
+ * a rejection: it could not be asked, and may be again), and when a square has come into view
+ * (`watch` calls `fn` once, at that moment, and returns how to stop waiting).
  * @typedef {{
  *   image: (id: number) => Promise<Blob | null>,
  *   watch: (el: Element, fn: () => void) => () => void,
@@ -30,15 +31,25 @@ import { openSheet } from './sheet.js';
 
 /** How much of a paste the chip says. */
 const LABEL = 40;
+/** Enough of a text to know it is longer than a label, however its characters are counted: two code units each, and one over. */
+const ENOUGH = 2 * LABEL + 1;
+/** Said on hover when a failure came with nothing readable to say. */
+const COULD_NOT_LOAD = "The picture couldn't be loaded.";
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
 /**
  * The opening words of a pasted text, for its chip: lines run together, trimmed, and cut at 40
- * characters (never in the middle of one) with a "…" if it was cut.
+ * characters (never in the middle of one) with a "…" if it was cut. A paste can be megabytes, so
+ * only as many words as a label needs are ever taken out of it, and each is sliced before it is
+ * spread into characters.
  * @param {string} text
  */
 export function pasteLabel(text) {
-  const flat = text.replace(/\s+/g, ' ').trim();
+  let flat = '';
+  for (const [word] of text.matchAll(/\S+/g)) {
+    flat += `${flat ? ' ' : ''}${word.slice(0, ENOUGH)}`;
+    if (flat.length >= ENOUGH) break;
+  }
   if (!flat) return 'Pasted text';
   const chars = [...flat];
   return chars.length > LABEL ? `${chars.slice(0, LABEL).join('')}…` : flat;
@@ -66,6 +77,8 @@ function thumb(piece, source) {
   /** @type {string | null} what the square shows, once it shows one */
   let shown = null;
   let destroyed = false;
+  /** Whether a request is out: a press while it is must not send another. */
+  let asking = false;
   let stopWaiting = () => {};
 
   /** @param {string | null} url */
@@ -81,6 +94,46 @@ function thumb(piece, source) {
     mark.hidden = true;
     el.dataset['state'] = 'ready';
   };
+
+  /** The square is waiting on the relay: the picture mark, pulsing. */
+  const waiting = () => {
+    el.dataset['state'] = 'loading';
+    el.setAttribute('aria-label', 'View picture');
+    el.removeAttribute('title');
+    mark.replaceChildren(icon('photo'));
+  };
+
+  /** The relay could not be asked: say Retry, and why on hover, and keep nothing. @param {unknown} why */
+  const failed = (why) => {
+    el.dataset['state'] = 'failed';
+    el.setAttribute('aria-label', 'Retry loading picture');
+    el.setAttribute('title', why instanceof Error && why.message ? why.message : COULD_NOT_LOAD);
+    mark.replaceChildren(icon('retry'), h('span', { class: 'thumb-retry' }, 'Retry'));
+  };
+
+  const fetchPicture = async () => {
+    if (asking) return;
+    asking = true;
+    waiting();
+    /** @type {Blob | null} */
+    let blob;
+    try {
+      blob = await source.image(piece.id);
+    } catch (e) {
+      asking = false;
+      if (!destroyed) failed(e);
+      return;
+    }
+    asking = false;
+    if (destroyed) return; // the line went while the picture was on its way: nothing to make, nothing to leak
+    if (!blob) {
+      show(null);
+      return;
+    }
+    objectUrl = URL.createObjectURL(blob);
+    show(objectUrl);
+  };
+
   img.addEventListener('error', () => {
     img.hidden = true;
     mark.hidden = false;
@@ -89,22 +142,13 @@ function thumb(piece, source) {
   });
   el.addEventListener('click', () => {
     if (shown) preview(shown, el);
+    else if (el.dataset['state'] === 'failed') void fetchPicture();
   });
 
   if (piece.data !== undefined) {
     show(BASE64.test(piece.data) ? `data:image/jpeg;base64,${piece.data}` : null);
   } else {
-    stopWaiting = source.watch(el, () => {
-      void source.image(piece.id).then((blob) => {
-        if (destroyed) return; // the line went while the picture was on its way: nothing to make, nothing to leak
-        if (!blob) {
-          show(null);
-          return;
-        }
-        objectUrl = URL.createObjectURL(blob);
-        show(objectUrl);
-      });
-    });
+    stopWaiting = source.watch(el, () => void fetchPicture());
   }
 
   return {

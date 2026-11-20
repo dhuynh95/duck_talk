@@ -8,7 +8,7 @@
 // No page is touched here: `status` is how it speaks and `convert` how it converts, so a test can
 // play both.
 
-import { mintId, toJpegBase64 } from './attach.js';
+import { isLongPaste, mintId, toJpegBase64 } from './attach.js';
 
 /** The last id given, for the page's life: ids must not repeat, whoever asked. */
 let lastId = 0;
@@ -16,7 +16,28 @@ let lastId = 0;
 const FALLBACK = 'That picture could not be added.';
 
 /** @typedef {Pick<import('./session.js').VoiceSession, 'attach'>} Holder */
+/** The part of a `DataTransfer` a paste is read from. @typedef {{ items: Iterable<{ kind: string, type: string, getAsFile: () => File | null }>, types: Iterable<string>, getData: (type: string) => string }} Clipboard */
 /** What it says: `busy` is a line while it works (null when it stops), `error` is why something was not added. @typedef {{ busy: (text: string | null) => void, error: (text: string) => void }} Status */
+
+/**
+ * What a paste into the field is, when it is not just words for the field: pictures to attach, or a
+ * text too long to be a sentence to hold as a chip. Null means leave it to the field.
+ *
+ * A copy from a spreadsheet or a document puts its words, the same words as markup, and a picture of
+ * the selection on the clipboard all at once, and the words are what was meant: so a picture is taken
+ * only when there is no markup flavour with it (a screenshot, a file copied in a file manager) or
+ * when the words are empty ("Copy image" in a page carries markup that is only the image).
+ * @param {Clipboard} data
+ * @returns {{ files: Blob[] } | { text: string } | null}
+ */
+export function readPaste(data) {
+  const text = data.getData('text/plain');
+  if (![...data.types].includes('text/html') || text.trim() === '') {
+    const files = [...data.items].flatMap((item) => (item.kind === 'file' && item.type.startsWith('image/') ? (item.getAsFile() ?? []) : []));
+    if (files.length > 0) return { files };
+  }
+  return isLongPaste(text) ? { text } : null;
+}
 
 /**
  * @param {{

@@ -8,8 +8,10 @@
 // time: starting one stops whichever was playing. The audio comes down as a Blob, and an object
 // URL is made for it only while it is being listened to: it is let go of when the clip ends, when
 // another takes its place, and when the chip is removed, so a long session leaves none behind.
-// A clip the relay no longer has (it keeps them a week, unless a correction was taught from
-// one) is said once, quietly, and the chip goes inert.
+// A clip the relay says it no longer has (it keeps them a week, unless a correction was taught from
+// one) is said once, quietly, and the chip goes inert. A clip the relay could not be asked for — a
+// phone on a bad network, a relay that is asleep — is a different thing and is never kept as "gone":
+// the chip says Retry, and a press asks again.
 
 import { h } from '../dom.js';
 import { icon } from './icons.js';
@@ -18,6 +20,11 @@ import { icon } from './icons.js';
 
 /** What the chip is called, whether it is playing or not. */
 const PLAY = 'Play audio';
+/** Said on hover when the failure came with nothing readable to say. */
+const COULD_NOT_LOAD = "The audio couldn't be loaded.";
+
+/** The glyph each state wears, where it is not the play triangle. @type {Record<string, import('./icons.js').IconName>} */
+const GLYPH = { playing: 'pause', gone: 'waveform', failed: 'retry' };
 
 /** @type {{ stop: () => void } | null} whichever chip is playing or paused with audio in hand */
 let current = null;
@@ -33,7 +40,7 @@ export function clipTime(seconds) {
 }
 
 /**
- * @param {{ id: number, load: (id: number) => Promise<Blob | null> }} options `load` fetches the audio: null, a clip that is gone
+ * @param {{ id: number, load: (id: number) => Promise<Blob | null> }} options `load` fetches the audio: null is a clip the relay says is gone; a rejection (with a sentence to read) is a failure to ask, which is retried
  * @returns {ClipChip}
  */
 export function clipChip({ id, load }) {
@@ -42,8 +49,10 @@ export function clipChip({ id, load }) {
   // "Pause" would be read out as "Pause, pressed" while it plays — a pause that is already on.
   const el = h('button', { class: 'clip-chip', type: 'button', 'aria-pressed': 'false', 'aria-label': PLAY });
 
-  /** @type {'idle' | 'loading' | 'ready' | 'playing' | 'gone'} ready: the audio is in hand and not playing */
+  /** @type {'idle' | 'loading' | 'ready' | 'playing' | 'gone' | 'failed'} ready: the audio is in hand and not playing; failed: could not be fetched, and may be again */
   let state = 'idle';
+  /** Why the last fetch failed, said on hover while the chip says Retry. */
+  let failure = '';
   /** @type {Blob | null} */
   let blob = null;
   /** @type {HTMLAudioElement | null} */
@@ -54,10 +63,17 @@ export function clipChip({ id, load }) {
   let destroyed = false;
   let drawn = '';
 
+  /** What the chip says in the state it is in. @param {number} at */
+  const say = (at) => {
+    if (state === 'gone') return 'No audio';
+    if (state === 'failed') return 'Retry';
+    if (state === 'loading') return '…';
+    if (state === 'playing') return `${clipTime(at)} / ${clipTime(duration)}`;
+    return duration > 0 ? clipTime(duration) : 'Play';
+  };
+
   const draw = () => {
-    const at = state === 'playing' && audio ? audio.currentTime : 0;
-    const text =
-      state === 'gone' ? 'No audio' : state === 'loading' ? '…' : state === 'playing' ? `${clipTime(at)} / ${clipTime(duration)}` : duration > 0 ? clipTime(duration) : 'Play';
+    const text = say(state === 'playing' && audio ? audio.currentTime : 0);
     const key = `${state}|${text}`;
     if (key === drawn) return;
     const stateChanged = !drawn.startsWith(`${state}|`);
@@ -65,10 +81,18 @@ export function clipChip({ id, load }) {
     if (label.textContent !== text) label.textContent = text;
     if (!stateChanged) return;
     el.dataset['state'] = state;
-    el.disabled = state === 'loading' || state === 'gone';
-    el.setAttribute('aria-pressed', String(state === 'playing'));
-    el.setAttribute('aria-label', state === 'gone' ? 'No audio for this line' : PLAY);
-    el.replaceChildren(state === 'loading' ? h('span', { class: 'spinner small', 'aria-hidden': 'true' }) : icon(state === 'playing' ? 'pause' : state === 'gone' ? 'waveform' : 'play'), label);
+    // Not disabled while it asks: a button that becomes disabled loses the keyboard's focus, and a
+    // press on Retry must leave the person where they were. A press while it asks is ignored below.
+    el.disabled = state === 'gone';
+    if (state === 'loading') el.setAttribute('aria-busy', 'true');
+    else el.removeAttribute('aria-busy');
+    // Pressing it while it is failed is not a toggle: it is a plain button that asks again.
+    if (state === 'failed') el.removeAttribute('aria-pressed');
+    else el.setAttribute('aria-pressed', String(state === 'playing'));
+    el.setAttribute('aria-label', state === 'gone' ? 'No audio for this line' : state === 'failed' ? 'Retry loading audio' : PLAY);
+    if (state === 'failed') el.setAttribute('title', failure);
+    else el.removeAttribute('title');
+    el.replaceChildren(state === 'loading' ? h('span', { class: 'spinner small', 'aria-hidden': 'true' }) : icon(GLYPH[state] ?? 'play'), label);
   };
 
   /** Let go of the audio and its URL; the blob is kept, so playing again costs no fetch. */
@@ -140,7 +164,17 @@ export function clipChip({ id, load }) {
     }
     state = 'loading';
     draw();
-    const got = await load(id);
+    /** @type {Blob | null} */
+    let got;
+    try {
+      got = await load(id);
+    } catch (e) {
+      if (destroyed) return;
+      failure = e instanceof Error && e.message ? e.message : COULD_NOT_LOAD;
+      state = 'failed'; // not the relay's word that there is none: pressing again asks again
+      draw();
+      return;
+    }
     if (destroyed) return;
     if (!got) {
       state = 'gone';

@@ -25,6 +25,13 @@
 // each is given up on if the relay does not answer (MEDIA_TIMEOUT), and none of it touches
 // `connected` or the data socket's own state.
 //
+// An answer is one of two kinds, and they are kept apart because what the page does about them
+// differs. The relay SAID there is no file: `null`, a fact that stays true, drawn as "No audio". The
+// relay could not be asked, or did not say — a refused socket, one that dropped, a timeout, a page
+// that has let go of the relay: the promise REJECTS with an Error whose message is a sentence a
+// person can read, drawn as a failure with a Retry. A phone on a bad network must not leave a
+// permanent "No audio" behind, so nothing here remembers a failure: asking again is a new question.
+//
 // The socket, the timers and the store are handed in, so a test can play the relay by hand.
 
 /** @typedef {import('./session.js').SocketLike} SocketLike */
@@ -52,7 +59,7 @@
  * }} RelayDeps
  */
 
-/** @typedef {{ type: 'clip_get' | 'image_get', id: number, mime: string, resolve: (blob: Blob | null) => void }} MediaRequest */
+/** @typedef {{ type: 'clip_get' | 'image_get', id: number, mime: string, resolve: (blob: Blob | null) => void, reject: (why: Error) => void }} MediaRequest */
 
 const OPEN = 1; // WebSocket.OPEN, without reaching for the global
 const FIRST_BACKOFF = 250;
@@ -64,6 +71,11 @@ const MEDIA_TIMEOUT = 10_000;
 /** How many media sockets are open at once: a chat of twenty pictures is a queue, not twenty connections. */
 const CONCURRENT = 3;
 const DOWN = 'The relay is not answering.';
+// Why a media request failed, for whoever draws the Retry.
+const NOT_CONNECTED = 'The relay is not connected.';
+const UNREACHABLE = 'Could not reach the relay.';
+const LOST = 'The connection to the relay was lost.';
+const TOO_SLOW = 'The relay did not answer in time.';
 
 // MARK: rows
 
@@ -254,7 +266,9 @@ export class RelayStore {
   // MARK: clips and pictures
 
   /**
-   * The audio of an utterance, or null if the relay no longer has it (or does not answer).
+   * The audio of an utterance: a Blob, or null when the relay says it no longer has it. Rejects, with
+   * an Error to be read aloud, when the relay could not be asked or did not answer — and asking again
+   * is a new question.
    * @param {number} id
    * @returns {Promise<Blob | null>}
    */
@@ -263,7 +277,7 @@ export class RelayStore {
   }
 
   /**
-   * A picture that was attached, or null.
+   * A picture that was attached: a Blob, or null when the relay has none; rejects as `clip` does.
    * @param {number} id
    * @returns {Promise<Blob | null>}
    */
@@ -273,14 +287,15 @@ export class RelayStore {
 
   /** @param {'clip_get' | 'image_get'} type @param {number} id @param {string} mime @returns {Promise<Blob | null>} */
   #ask(type, id, mime) {
-    return new Promise((resolve) => {
-      // Nobody wants the relay (never connected, or let go of): there is nothing to ask. A relay
-      // that is merely between a drop and its redial is still worth asking.
+    return new Promise((resolve, reject) => {
+      // Nobody wants the relay (never connected, or let go of): there is nothing to ask, which is
+      // not the relay saying there is no file. A relay that is merely between a drop and its redial
+      // is still worth asking.
       if (!this.#wanted) {
-        resolve(null);
+        reject(new Error(NOT_CONNECTED));
         return;
       }
-      this.#queue.push({ type, id, mime, resolve });
+      this.#queue.push({ type, id, mime, resolve, reject });
       this.#pump();
     });
   }
@@ -305,14 +320,15 @@ export class RelayStore {
     try {
       socket = this.#makeSocket(this.#urlFor());
     } catch {
-      req.resolve(null); // an address the browser will not dial is an answer too
+      req.reject(new Error(UNREACHABLE)); // an address the browser will not dial: the relay was never asked
       return;
     }
     socket.binaryType = 'arraybuffer';
     let cancelTimer = () => {};
     let settled = false;
-    /** @param {Blob | null} blob */
-    const settle = (blob) => {
+    let opened = false;
+    /** @param {Blob | null | Error} outcome the relay's answer, or why there was none */
+    const settle = (outcome) => {
       if (settled) return;
       settled = true;
       cancelTimer();
@@ -324,13 +340,19 @@ export class RelayStore {
         // already gone
       }
       this.#pump(); // before the answer is told, so a caller that asks for more finds the slot free
-      req.resolve(blob);
+      if (outcome instanceof Error) req.reject(outcome);
+      else req.resolve(outcome);
     };
-    const abandon = () => settle(null);
+    /** The socket went before the relay said anything: refused if it never opened. */
+    const lost = () => settle(new Error(opened ? LOST : UNREACHABLE));
+    const abandon = () => settle(new Error(NOT_CONNECTED));
     this.#active.add(abandon);
-    cancelTimer = this.#setTimer(abandon, MEDIA_TIMEOUT);
+    cancelTimer = this.#setTimer(() => settle(new Error(TOO_SLOW)), MEDIA_TIMEOUT);
 
-    socket.onopen = () => socket.send(JSON.stringify({ type: req.type, id: req.id }));
+    socket.onopen = () => {
+      opened = true;
+      socket.send(JSON.stringify({ type: req.type, id: req.id }));
+    };
     socket.onmessage = (ev) => {
       if (typeof ev.data !== 'string') {
         settle(new Blob([/** @type {BlobPart} */ (ev.data)], { type: req.mime }));
@@ -347,16 +369,17 @@ export class RelayStore {
       }
       if (type === 'corrections') settle(null);
     };
-    socket.onerror = () => {}; // a failure is followed by a close, which is where it is answered
-    socket.onclose = () => settle(null);
+    // A failure is always followed by a close, but there is no reason to wait for it.
+    socket.onerror = lost;
+    socket.onclose = lost;
   }
 
-  /** Nobody is going to be answered: everything asked, with a socket or without, is null. */
+  /** Nobody is going to be answered: everything asked, with a socket or without, is a failure. */
   #failMedia() {
     const queued = this.#queue;
     this.#queue = [];
     for (const abandon of [...this.#active]) abandon();
-    for (const req of queued) req.resolve(null);
+    for (const req of queued) req.reject(new Error(NOT_CONNECTED));
   }
 
   // MARK: edits

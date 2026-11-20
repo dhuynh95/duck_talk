@@ -85,8 +85,9 @@ export function toBase64(bytes) {
  *
  * Rejects with an Error whose message is for the person to read — an empty file, a file that is
  * not a picture this browser can decode (a text file named .jpg, a HEIC the browser has no codec
- * for), one too large to be worth decoding. What can be known from the size and type is known
- * before anything is decoded.
+ * for), one too large to be worth decoding, one that decodes but cannot be drawn or encoded. What
+ * can be known from the size and type is known before anything is decoded. The browser's own
+ * sentence ("The source image could not be decoded.") is never what comes out.
  * @param {Blob} blob
  * @returns {Promise<string>}
  */
@@ -100,7 +101,14 @@ export async function toJpegBase64(blob) {
   try {
     bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' });
   } catch {
-    throw new Error(UNREADABLE);
+    // A browser that does not know the option rejects for it, which looks like a file that cannot
+    // be read. Asking once more without it tells them apart, and a picture that is a little
+    // sideways is better than none.
+    try {
+      bitmap = await createImageBitmap(blob);
+    } catch {
+      throw new Error(UNREADABLE);
+    }
   }
   try {
     const { width, height } = fitWithin(bitmap.width, bitmap.height);
@@ -116,6 +124,10 @@ export async function toJpegBase64(blob) {
     const jpeg = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', QUALITY));
     if (!(jpeg instanceof Blob)) throw new Error(UNREADABLE);
     return toBase64(new Uint8Array(await jpeg.arrayBuffer()));
+  } catch {
+    // Drawing and encoding fail with the browser's own wording (a detached image, a canvas over
+    // its size limit, a tainted canvas): nothing a person could act on.
+    throw new Error(UNREADABLE);
   } finally {
     bitmap.close();
   }

@@ -26,6 +26,7 @@ import { icon } from './icons.js';
  *   notify: (message: string) => void,
  *   clip: (id: number) => Promise<Blob | null>,
  * }} LineHandlers
+ * `clip` resolves null when the relay says it has no such clip, and rejects (with a sentence to read) when it could not be asked: the chip retries.
  */
 /** @typedef {{ el: HTMLElement, update: (line: Line, streaming: boolean) => void, destroy: () => void }} LineActions */
 

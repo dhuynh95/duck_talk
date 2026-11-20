@@ -20,9 +20,8 @@
 // One stop, because there is one question — "make it stop" — whatever is running: Claude, the
 // microphone, or both. Esc asks it too.
 
-import { isLongPaste } from '../attach.js';
 import { h } from '../dom.js';
-import { createIntake } from '../intake.js';
+import { createIntake, readPaste } from '../intake.js';
 import { attachChips } from './attach-chips.js';
 import { contextButton } from './context-sheet.js';
 import { autosize, autosizeOnResize, enterSends, finePointer } from './field.js';
@@ -192,19 +191,11 @@ export function composer(store, session, change) {
   // A picture on the clipboard, or a text too long to be a sentence, goes with the instruction
   // instead of into the field. Anything else pastes as it always did, and is left alone here.
   input.addEventListener('paste', (event) => {
-    const data = event.clipboardData;
-    if (!data) return;
-    const pictures = [...data.items].flatMap((item) => (item.kind === 'file' && item.type.startsWith('image/') ? (item.getAsFile() ?? []) : []));
-    if (pictures.length > 0) {
-      event.preventDefault();
-      void intake.addFiles(pictures);
-      return;
-    }
-    const text = data.getData('text/plain');
-    if (isLongPaste(text)) {
-      event.preventDefault();
-      intake.addPaste(text);
-    }
+    const taken = event.clipboardData ? readPaste(event.clipboardData) : null;
+    if (!taken) return;
+    event.preventDefault();
+    if ('files' in taken) void intake.addFiles(taken.files);
+    else intake.addPaste(taken.text);
   });
 
   // MARK: talking
