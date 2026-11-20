@@ -666,22 +666,125 @@ select {
   outline: none; /* the composer's edge says where the keyboard is */
 }
 
+/* Review: the relay is holding an instruction for you to look at. The same box with a
+   different question, and the accent on its label so it is not mistaken for the message field. */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.review-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 4px 0;
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.review-label::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.review-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.accept {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  flex: none;
+}
+
 .compose-bar {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   margin-top: 4px;
 }
 
+/* What Claude is: the model and what it may do, as words. They give way (ellipsis) before the
+   microphone moves: it stays in the middle of the box so it never shifts under a thumb. */
 .bar-start {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   min-height: 44px;
 }
 
 .bar-end {
   justify-self: end;
   display: flex;
+  align-items: center;
   gap: 6px;
+}
+
+/* A word you can press: 36 px to look at, 44 to touch (the padding of ::after). */
+.capsule {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--fill);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.capsule::after {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
+}
+
+.capsule-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.capsule:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The model list is still on its way: the word is a placeholder, and breathes. */
+.capsule.loading .capsule-text {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (hover: hover) {
+  .capsule:not(:disabled):hover {
+    background: var(--border);
+    color: var(--text);
+  }
 }
 
 /* The microphone: the one lit thing until you speak, and then your voice. */
@@ -784,6 +887,286 @@ select {
 
 .composer.muted .bar {
   background: var(--text-tertiary);
+}
+
+/* Sheets: a panel that rises from the bottom on a phone, a centred dialog on a wide screen,
+   over a dimmed page. Mounted on <body>, outside .app, so nothing in the app can clip it. */
+
+html.sheet-open,
+html.sheet-open body {
+  overflow: hidden;
+}
+
+.sheet-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 0.55);
+  animation: fade-in 0.2s ease-out;
+}
+
+.sheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: min(88dvh, 680px);
+  padding-bottom: env(safe-area-inset-bottom);
+  border: 1px solid rgb(75 85 99 / 0.55);
+  border-bottom: 0;
+  border-radius: 20px 20px 0 0;
+  background: var(--ground);
+  box-shadow: 0 -8px 30px rgb(0 0 0 / 0.5);
+  animation: sheet-up 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.sheet:focus {
+  outline: none;
+}
+
+.sheet-head {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 8px;
+}
+
+.sheet-title {
+  margin: 0;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.sheet-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 16px 20px;
+}
+
+.sheet-layer.leaving {
+  pointer-events: none;
+}
+
+.sheet-layer.leaving .sheet {
+  animation: sheet-down 0.2s ease-in forwards;
+}
+
+.sheet-layer.leaving .sheet-backdrop {
+  animation: fade-out 0.2s ease-in forwards;
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes sheet-down {
+  to {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+
+@keyframes dialog-out {
+  to {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@media (min-width: 700px) {
+  .sheet-layer {
+    align-items: center;
+    padding: 24px;
+  }
+
+  .sheet {
+    width: min(100%, 480px);
+    padding-bottom: 0;
+    border-bottom: 1px solid rgb(75 85 99 / 0.55);
+    border-radius: 20px;
+    box-shadow: 0 24px 64px rgb(0 0 0 / 0.6);
+    animation-name: dialog-in;
+    animation-duration: 0.2s;
+  }
+
+  .sheet-layer.leaving .sheet {
+    animation-name: dialog-out;
+    animation-duration: 0.15s;
+  }
+}
+
+/* The rows of a choice sheet: a card of what can be picked. The check is drawn on every row
+   and shown on one, so picking another never moves the words. */
+
+.choice-list {
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.choice {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 64px;
+  padding: 12px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.choice + .choice::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 16px;
+  height: 1px;
+  background: rgb(75 85 99 / 0.5);
+}
+
+.choice.has-icon + .choice::before {
+  left: 56px;
+}
+
+.choice:focus-visible,
+.choice-trailing:focus-visible {
+  outline-offset: -2px;
+}
+
+.choice-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  flex: none;
+  color: var(--accent);
+}
+
+.choice-icon .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.choice-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.choice-title {
+  font-size: 16px;
+}
+
+/* Wraps rather than trailing off: a description that explains the choice is worth the second
+   line, and one row cutting short while its neighbours do not reads as a glitch. */
+.choice-detail {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.choice-check {
+  flex: none;
+  color: var(--accent);
+  visibility: hidden;
+}
+
+.choice[aria-selected="true"] .choice-check {
+  visibility: visible;
+}
+
+.choice-trailing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 56px;
+  margin-top: 12px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.trailing-value {
+  margin-left: auto;
+  color: var(--text-secondary);
+}
+
+.choice-trailing .icon {
+  width: 16px;
+  height: 16px;
+  color: var(--text-tertiary);
+}
+
+@media (hover: hover) {
+  .choice:hover,
+  .choice-trailing:hover {
+    background: rgb(255 255 255 / 0.05);
+  }
+}
+
+.choice-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px 0;
+  color: var(--text-tertiary);
+}
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  border: 2.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 img {

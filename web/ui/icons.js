@@ -43,7 +43,39 @@ const SHAPES = {
   down: [
     ['path', { d: 'M12 5v14M6 13l6 6 6-6' }],
   ],
+  check: [
+    ['path', { d: 'M5 12.5l4.5 4.5L19 7.5' }],
+  ],
+  close: [
+    ['path', { d: 'M6 6l12 12M18 6L6 18' }],
+  ],
+  'chevron-right': [
+    ['path', { d: 'M9 5l7 7-7 7' }],
+  ],
+  // Permission: what Claude may do, from looking to doing anything.
+  eye: [
+    ['path', { d: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z' }],
+    ['circle', { cx: '12', cy: '12', r: '3' }],
+  ],
+  pencil: [
+    ['path', { d: 'M14 6l4 4M4 20l1-4L16.5 4.5a2.1 2.1 0 0 1 3 3L8 19z' }],
+  ],
+  bolt: [
+    ['path', { d: 'M13 3L5 13.5h6L10 21l8-10.5h-6z' }],
+  ],
+  // Mode: runs at once, or waits for you.
+  'bolt-circle': [
+    ['circle', { cx: '12', cy: '12', r: '9' }],
+    ['path', { d: 'M12.5 7L8.5 12.5h3l-.5 4.5 4-5.5h-3z' }],
+  ],
+  'check-circle': [
+    ['circle', { cx: '12', cy: '12', r: '9' }],
+    ['path', { d: 'M8 12.5l2.8 2.8L16 9.5' }],
+  ],
 };
+
+/** Every name `icon` draws, so a caller that names one from a table can be checked. */
+export const ICON_NAMES = Object.keys(SHAPES);
 
 /** @typedef {keyof typeof SHAPES} IconName */
 

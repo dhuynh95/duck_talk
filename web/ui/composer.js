@@ -1,8 +1,11 @@
 // @ts-check
-// The composer: the field and its send arrow, and under them the microphone, centred, with
-// what is running on its right — mute, the speaker, and the one stop. Glass, floating over
-// the end of the conversation, as on the phone. The left of that row is left empty for what
-// Claude is (mode, model, permission), which arrives with its own controls.
+// The composer: the field and its send arrow, and under them the microphone, centred. On its
+// left is what Claude is — the model and what it may do — and on its right what is running:
+// mute, the speaker, and the one stop, or, while nothing is, how what you say will run (the
+// mode). Glass, floating over the end of the conversation, as on the phone.
+//
+// While the relay holds an instruction back for review, the field gives way to the review card
+// (review-card.js): the same box, asking a different question.
 //
 // The microphone is one value drawn as seven bars: the level, 0…1, set as a custom property
 // on the button, and CSS shapes the bars from it. Nothing is rebuilt for a level; the store is
@@ -12,22 +15,24 @@
 // microphone, or both. Esc asks it too.
 
 import { h } from '../dom.js';
+import { autosize, enterSends } from './field.js';
 import { icon } from './icons.js';
+import { modeCapsule, modeLocked, modelCapsule, permissionButton } from './pickers.js';
+import { reviewCard } from './review-card.js';
 import { isWorking } from './transcript-view.js';
 
 /** @typedef {{ get: () => Record<string, any>, subscribe: (fn: (state: Record<string, any>) => void) => () => void }} Store */
-/** @typedef {Pick<import('../session.js').VoiceSession, 'send' | 'listen' | 'stopListening' | 'stopAll' | 'toggleMute' | 'output'>} SessionLike */
+/** @typedef {Pick<import('../session.js').VoiceSession, 'send' | 'approve' | 'listen' | 'stopListening' | 'stopAll' | 'toggleMute' | 'output'>} SessionLike */
 
-/** The field grows with what is typed up to this, then scrolls. */
-const MAX_FIELD = 168;
 const BARS = 7;
 
 /**
  * @param {Store} store
  * @param {SessionLike} session
+ * @param {import('./pickers.js').Change} change how a choice is made: the speaker's, and the pickers'
  * @returns {{ el: HTMLElement, stop: () => boolean }} `stop` stops whatever is running, and says whether anything was
  */
-export function composer(store, session) {
+export function composer(store, session, change) {
   const input = h('textarea', {
     class: 'compose-input',
     rows: 1,
@@ -47,26 +52,26 @@ export function composer(store, session) {
   const output = h('button', { class: 'round plain', type: 'button', 'aria-label': 'Speaker off', 'aria-pressed': 'false', hidden: true }, icon('speaker-off'));
   const stopButton = h('button', { class: 'round plain stop', type: 'button', 'aria-label': 'Stop listening', hidden: true }, icon('stop'));
 
+  const row = h('div', { class: 'compose-row' }, input, send);
+  const review = reviewCard(session);
+  const mode = modeCapsule(store, change);
+
   const el = h(
     'form',
     { class: 'composer floating', dataset: { status: 'idle' } },
-    h('div', { class: 'compose-row' }, input, send),
+    row,
+    review.el,
     h(
       'div',
       { class: 'compose-bar' },
-      h('div', { class: 'bar-start' }), // what Claude is: mode, model, permission
+      h('div', { class: 'bar-start' }, modelCapsule(store, change), permissionButton(store, change)), // what Claude is
       listen,
-      h('div', { class: 'bar-end' }, mute, output, stopButton),
+      h('div', { class: 'bar-end' }, mute, output, stopButton, mode), // what is running, or how it will run
     ),
   );
 
   // MARK: typing
 
-  const grow = () => {
-    input.style.height = 'auto';
-    input.style.height = `${Math.min(input.scrollHeight, MAX_FIELD)}px`;
-    input.classList.toggle('scrolls', input.scrollHeight > MAX_FIELD);
-  };
   const sync = () => {
     send.disabled = !input.value.trim();
   };
@@ -75,19 +80,16 @@ export function composer(store, session) {
     if (!text.trim()) return;
     session.send(text); // mid-turn too: the session makes that a barge-in
     input.value = '';
-    grow();
+    autosize(input);
     sync();
   };
 
   input.addEventListener('input', () => {
-    grow();
+    autosize(input);
     sync();
   });
-  // A keyboard with a fine pointer beside it sends on Enter, and Shift+Enter breaks the line.
-  // On a touch screen Enter is the only way to break one, so it does that and the arrow sends.
   input.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
-    if (typeof matchMedia !== 'function' || !matchMedia('(pointer: fine)').matches) return;
+    if (!enterSends(event)) return;
     event.preventDefault();
     submit();
   });
@@ -107,10 +109,8 @@ export function composer(store, session) {
     if ((state['status'] ?? 'idle') === 'idle') session.listen();
   });
   mute.addEventListener('click', () => session.toggleMute());
-  output.addEventListener('click', () => {
-    session.output = !session.output;
-    draw(store.get(), true);
-  });
+  // The speaker is a setting like the rest: kept, and applied to the session, by whoever owns them.
+  output.addEventListener('click', () => change({ output: !session.output }));
 
   const stop = () => {
     const live = (state['status'] ?? 'idle') !== 'idle';
@@ -129,6 +129,15 @@ export function composer(store, session) {
   /** @param {Record<string, any>} next @param {boolean} [force] */
   function draw(next, force = false) {
     state = next;
+    const held = typeof state['pending'] === 'string' ? state['pending'] : null;
+    if (held !== null || !review.el.hidden) {
+      const hadFocus = held === null && review.focused();
+      review.set(held);
+      row.hidden = held !== null;
+      // Accepted by keyboard: the keyboard goes back to the field. A touch screen is left alone,
+      // because focus there is what raises the on-screen keyboard.
+      if (hadFocus && typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches) input.focus();
+    }
     const lv = Number(state['level']) || 0;
     if (lv !== level) {
       level = lv;
@@ -153,6 +162,7 @@ export function composer(store, session) {
     output.classList.toggle('lit', !session.output);
     el.classList.toggle('muted', muted);
     stopButton.hidden = !(status !== 'idle' || busy);
+    mode.hidden = modeLocked(state);
     stopButton.setAttribute('aria-label', busy ? (status !== 'idle' ? 'Stop Claude and listening' : 'Stop Claude') : 'Stop listening');
   }
 
