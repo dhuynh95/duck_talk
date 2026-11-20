@@ -28,6 +28,9 @@
   "files": [
     "dist/",
     "web/",
+    "!web/tsconfig.json",
+    "!web/env.d.ts",
+    "!web/README.md",
     "README.md",
     "LICENSE"
   ],

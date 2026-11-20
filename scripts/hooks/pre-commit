@@ -2,11 +2,12 @@
 #
 # Before a commit that touches what ships, verify it the way the release does.
 #
-# CI and the Release button both run the same three commands — typecheck, build, then
-# pack, install elsewhere and start — but only after the push, so a commit that breaks
-# the package used to be found by a red run rather than by the person making it. This
-# runs the same three on the same evidence, at the moment there is still nothing to
-# undo. Nothing new is checked here: see README › Releasing.
+# CI and the Release button both typecheck, test, build, then pack, install elsewhere and
+# start — but only after the push, so a commit that breaks the package used to be found
+# by a red run rather than by the person making it. This runs the typecheck, the build
+# and the pack-install-start, at the moment there is still nothing to undo. The tests are
+# not part of it: `npm test` runs them, and CI does on every push. Nothing new is
+# checked here: see README › Releasing.
 #
 # Only when a staged file decides what ships. A Swift edit or a doc change costs no
 # tarball: the package is `server/`, the browser client in `web/`, its build config, and

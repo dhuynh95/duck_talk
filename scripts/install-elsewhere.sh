@@ -18,6 +18,24 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PORT="${PORT:-8790}"
+
+# Everything this makes is removed however the script ends — a failed check as much as a
+# pass — and the relay with it, if a check failed while it was up. One trap, set before the
+# first thing exists, over variables that stay empty until their thing does. A trap that
+# does not call `exit` leaves the script's own exit status alone, so a failure stays one.
+tarball_dir= work= nodebin= relay=
+cleanup() {
+  if [ -n "$relay" ]; then
+    kill "$relay" 2>/dev/null || true
+    wait "$relay" 2>/dev/null || true
+  fi
+  cd /
+  for dir in "$tarball_dir" "$work" "$nodebin"; do
+    [ -z "$dir" ] || rm -rf "$dir" || true
+  done
+}
+trap cleanup EXIT
+
 tarball_dir=$(mktemp -d)
 tarball="$tarball_dir/$(npm pack --silent --pack-destination "$tarball_dir")"
 
@@ -67,6 +85,7 @@ upgrade=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
   -H 'Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==' "localhost:$PORT/?data=1" || true)
 { kill "$relay" && wait "$relay"; } 2>/dev/null || true
+relay= # gone, and its number is not ours to signal again
 
 sed 's/^/  /' relay.log
 grep -qE "simulator +ws://localhost:$PORT" relay.log
@@ -74,7 +93,7 @@ grep -qE "simulator +ws://localhost:$PORT" relay.log
 # package, and the one thing a test run from inside the repo could never tell you.
 grep -qE "project +$work" relay.log
 echo "started from $work"
-grep -q '<title>' <<<"$page"
+grep -q '<title>' <<<"$page" || { echo "expected the page to contain <title>" >&2; exit 1; }
 echo "serves its page"
-[ "$upgrade" = 401 ]
+[ "$upgrade" = 401 ] || { echo "expected 401 for a keyless upgrade, got ${upgrade:-no answer}" >&2; exit 1; }
 echo "refuses a socket with no key"
