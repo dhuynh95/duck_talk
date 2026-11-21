@@ -119,8 +119,11 @@ That covers the chat history, the audio clips and the pictures too.
   the key nor the logs that hold it can be committed, even by a `git add -A` — there is
   nothing to add to the project's own `.gitignore`.
 - The `web` rows end in `?key=…`. Open one and the page moves the key into the browser's
-  localStorage and takes it out of the address bar, so it is not left in the history or on
-  a screen. A browser that has none is asked for it in one field: paste it from the relay's
+  localStorage and takes it out of the address bar, so it is not left on a screen or in a
+  screenshot. It may still be in the browser's history: the address is rewritten after the
+  browser has usually recorded the visit, and it can be suggested again as you type. On a
+  shared computer clear it from the browser history, or open the page without the key and
+  type it. A browser that has none is asked for it in one field: paste it from the relay's
   output or from `.duck-talk/key`. Gear ▸ Connection says whether it is saved and has a
   **Forget key** button.
 - **The key is per project folder**, and a browser keeps one per address: start a relay in
@@ -172,7 +175,7 @@ That covers the chat history, the audio clips and the pictures too.
 - **Safari and iOS have not been tried.** The iPhone has the app.
 - **A photo has to be one the browser can decode.** It is turned into a JPEG in the
   browser before it is sent, so a HEIC in a browser with no codec for it is refused, with a
-  message saying to try a JPEG or PNG. So is a file over 40 MB.
+  message saying to try a JPEG or PNG. A file over 40 MB is refused too.
 
 ### Try it on your phone
 
@@ -251,7 +254,7 @@ node server/probe.ts "what is the latest commit"
 
 It speaks the question with `say` on a Mac and with `espeak-ng` and `ffmpeg` anywhere else
 (for example `sudo apt install espeak-ng ffmpeg`); `--file turn.wav` sends a recording
-instead and needs only `ffmpeg`.
+instead, and off a Mac needs only `ffmpeg` (a Mac converts it with its own `afconvert`).
 
 ### From source
 
@@ -315,7 +318,7 @@ holds the sessions. Claude Code is the black box in the middle, and the relay is
 thing that knows about all three.
 
 ```
-phone (app/, web/)            relay (server/)                            Anthropic + Google
+browser/phone (web/, app/)    relay (server/)                            Anthropic + Google
 mic ─▶ AudioPipe ─▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts ─▶ ears ──▶ Gemini Live (transcribes)
 🔊 ◀─ AudioPipe ◀─ VoiceSession ◀─ws─  server.ts ◀─ session.ts ◀─ voice ◀── Gemini TTS  (reads aloud)
 ⌨️ ─────────────▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts ─┬── claude ◀▶ Claude Code (the agent)

@@ -24,7 +24,7 @@ node --test test/key.test.ts      # one file
 | `main.js` | boot: the key (or the form that asks for it), then the app, wired together |
 | `store.js` | one observable object: `get`, `set`, `subscribe` |
 | `key.js` | the access key in the URL, in localStorage and at `/access.json`; the socket address |
-| `settings.js` | what the pickers chose, kept in localStorage one field at a time |
+| `settings.js` | what the pickers chose, kept in localStorage as one JSON object under `duck-talk-settings`, checked field by field as it is read |
 | `dom.js` | `h()`, the only way an element is made, and its rules (below) |
 | `session.js` | the chat socket: typing, talking, watching; backoff, outbox, `resume=` |
 | `transcript.js` | the reducer over the relay's text frames: lines, tools, retract. No socket, no audio |
@@ -54,8 +54,10 @@ node --test test/key.test.ts      # one file
   or enumerated attribute where absence is not `false` (`aria-pressed`, `aria-expanded`,
   `aria-checked`, `aria-selected`, `aria-hidden`, `draggable`, `spellcheck`,
   `contenteditable`) gets the string `'false'`.
-- **Every module imports in Node.** No `window`, `document`, `localStorage` or
-  `AudioContext` at import time, only inside functions: the tests import these files. The
+- **Every module imports in Node**, except `mic-worklet.js`, which runs in the
+  AudioWorklet's own scope (`registerProcessor`, `AudioWorkletProcessor`) and is loaded by
+  `audio.js`, never imported. No `window`, `document`, `localStorage` or `AudioContext` at
+  import time, only inside functions: the tests import these files. The
   socket, the audio pipe, the timers and the clock are handed in, so a test can play them.
 - **Storage can be missing.** Every touch of localStorage is in a try/catch, and the page
   works without it.
