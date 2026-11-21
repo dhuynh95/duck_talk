@@ -19,11 +19,13 @@ import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 
 /**
  * The key this relay runs with: `DUCK_TALK_KEY` if set, else the one in `file`,
- * made on the first start. A file that is empty is as good as none — a start cut
- * short mid-write must not leave a relay whose key is the empty string.
+ * made on the first start. Both are trimmed — `DUCK_TALK_KEY=$(cat key)` and a pasted
+ * line bring a newline the browser never sends — and one that is empty after that is
+ * as good as none: a start cut short mid-write must not leave a relay whose key is the
+ * empty string.
  */
 export function loadKey(file: string, env: NodeJS.ProcessEnv = process.env): string {
-  const fromEnv = env['DUCK_TALK_KEY'];
+  const fromEnv = env['DUCK_TALK_KEY']?.trim();
   if (fromEnv) return fromEnv;
 
   let kept = '';

@@ -31,6 +31,19 @@ describe('loadKey', () => {
     assert.equal(readFileSync(file, 'utf8'), 'on-disk');
   });
 
+  it('trims DUCK_TALK_KEY as it trims the file: `$(cat key)` and a pasted newline are the same key', () => {
+    const file = join(dir, 'trimmed-env-key');
+    assert.equal(loadKey(file, { DUCK_TALK_KEY: '  from-the-environment\n' }), 'from-the-environment');
+    assert.equal(existsSync(file), false);
+  });
+
+  it('a DUCK_TALK_KEY of only whitespace is no key at all, so the file still decides', () => {
+    const file = join(dir, 'blank-env-key');
+    const key = loadKey(file, { DUCK_TALK_KEY: ' \n\t ' });
+    assert.match(key, /^[A-Za-z0-9_-]{22}$/);
+    assert.equal(readFileSync(file, 'utf8'), key);
+  });
+
   it('an empty DUCK_TALK_KEY is no key at all, so the file still decides', () => {
     const file = join(dir, 'empty-env-key');
     const key = loadKey(file, { DUCK_TALK_KEY: '' });
