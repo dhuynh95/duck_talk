@@ -107,6 +107,20 @@ describe('pasteLabel: the opening words of a pasted text, for its chip', () => {
     assert.equal(pasteLabel('🦆'.repeat(5_000_000)), `${'🦆'.repeat(40)}…`);
   });
 
+  it('is quick and small on a five-million-character paste: it never splits the whole text into characters', () => {
+    for (const paste of ['x'.repeat(5_000_000), 'ab '.repeat(1_700_000), '🦆'.repeat(2_500_000)]) {
+      pasteLabel(paste.slice(0, 1000)); // warm the function up, so the bound is on the work and not the compiler
+      const heap = process.memoryUsage().heapUsed;
+      const started = performance.now();
+      const label = pasteLabel(paste);
+      const took = performance.now() - started;
+      const grew = process.memoryUsage().heapUsed - heap;
+      assert.ok(label.endsWith('…'));
+      assert.ok(took < 100, `took ${took.toFixed(1)} ms`);
+      assert.ok(grew < 50 * 1024 * 1024, `the heap grew ${(grew / 1024 / 1024).toFixed(1)} MB`);
+    }
+  });
+
   it('does not say "…" for a text that ends in a great deal of blank, which is no more text', () => {
     assert.equal(pasteLabel(`done${' '.repeat(2_000_000)}`), 'done');
     assert.equal(pasteLabel(`done${' '.repeat(5000)}more`), 'done more');

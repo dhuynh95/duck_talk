@@ -352,6 +352,18 @@ describe('RelayStore: losing and finding the relay again', () => {
     assert.equal(sockets.length, 1);
   });
 
+  it('disconnect while a redial is waiting cancels it: nothing is dialled when its time comes', () => {
+    const { relay, sockets, last, advance } = rig();
+    relay.connect();
+    last().drop();
+    advance(250);
+    last().drop(); // a redial is now due in 500 ms
+    relay.disconnect();
+    advance(500);
+    advance(60_000);
+    assert.equal(sockets.length, 2);
+  });
+
   it('connect after disconnect dials again from the first backoff', () => {
     const { relay, sockets, last, advance } = rig();
     relay.connect();
@@ -363,6 +375,8 @@ describe('RelayStore: losing and finding the relay again', () => {
     assert.equal(sockets.length, 3);
     last().drop();
     advance(250);
+    assert.equal(sockets.length, 4);
+    advance(500); // past the redial the disconnect cancelled: it does not come back as an extra socket
     assert.equal(sockets.length, 4);
   });
 

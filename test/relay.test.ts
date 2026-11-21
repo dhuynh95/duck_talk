@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { createServer } from 'node:net';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,14 +35,21 @@ function startRelay(...args: string[]): Promise<Relay> {
   return startRelayWith({}, ...args);
 }
 
-/** The same, with something more in its environment. */
-async function startRelayWith(extra: Record<string, string>, ...args: string[]): Promise<Relay> {
+/** The same, with something more in its environment, and a key already on disk if `keyFile` says so. */
+async function startRelayWith({ env: extra = {}, keyFile }: { env?: Record<string, string>; keyFile?: string }, ...args: string[]): Promise<Relay> {
   const port = await freePort();
   const dir = mkdtempSync(join(tmpdir(), 'duck-talk-relay-'));
+  if (keyFile !== undefined) {
+    mkdirSync(join(dir, '.duck-talk'), { recursive: true });
+    writeFileSync(join(dir, '.duck-talk', 'key'), keyFile, { mode: 0o600 });
+  }
   // An empty PATH, and an absolute `node` to run it: a relay that finds `tailscale` on
   // the machine running the tests repoints that machine's own front door at this port.
   const empty = mkdtempSync(join(tmpdir(), 'duck-talk-path-'));
-  const env = { ...process.env, GEMINI_API_KEY: 'fake', PATH: empty };
+  // A HOME of its own, so what the relay reads from the home folder (billingMode's Claude
+  // Code sign-in) is the same on every machine that runs the tests.
+  const home = mkdtempSync(join(tmpdir(), 'duck-talk-home-'));
+  const env = { ...process.env, GEMINI_API_KEY: 'fake', PATH: empty, HOME: home };
   for (const name of ['ANTHROPIC_API_KEY', 'DUCK_TALK_KEY', 'DUCK_TALK_OPEN', 'DUCK_TALK_ORIGINS', 'PORT', 'PROJECT_CWD']) delete env[name];
   Object.assign(env, extra);
 
@@ -59,6 +66,7 @@ async function startRelayWith(extra: Record<string, string>, ...args: string[]):
     await exited;
     rmSync(dir, { recursive: true, force: true });
     rmSync(empty, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   };
 
   try {
@@ -104,6 +112,18 @@ function firstFrame(url: string, origin?: string): Promise<Record<string, unknow
     ws.on('close', () => (frame ? resolve(frame) : reject(new Error(`${url} closed without a frame`))));
     ws.on('unexpected-response', (_req, res) => { res.resume(); reject(new Error(`${url} was refused: ${res.statusCode}`)); });
     ws.on('error', reject);
+  });
+}
+
+/** What a raw HTTP request gets back: the status line's code, and whether the relay hung up after. */
+function raw(port: number, request: string): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1', () => socket.write(request));
+    let text = '';
+    socket.on('data', (chunk) => { text += chunk; });
+    socket.on('end', () => resolve({ status: Number(/^HTTP\/1\.1 (\d{3})/.exec(text)?.[1] ?? 0), text }));
+    socket.on('error', reject);
+    socket.setTimeout(5000, () => { socket.destroy(); reject(new Error(`no answer to ${JSON.stringify(request)}`)); });
   });
 }
 
@@ -249,11 +269,45 @@ describe('a relay with a key', () => {
   it('prints the key in its startup addresses and nowhere else', async () => {
     const before = opened();
     await firstFrame(at(`?data=1&key=${key}`));
+    // The `[n] open` line is printed as the socket opens, which may land a beat after its first frame.
+    for (let i = 0; i < 40 && opened() < before + 1; i++) await new Promise((done) => setTimeout(done, 50));
     assert.equal(opened(), before + 1);
     assert.ok(/\[\d+\] open \(/.test(relay.output()));
     const withKey = relay.output().split('\n').filter((line) => line.includes(key));
     assert.ok(withKey.some((line) => line.includes(`http://localhost:${relay.port}/?key=${key}`)));
     for (const line of withKey) assert.match(line, /^ {2}(web|localhost|web Wi-Fi) +http\S*\/\?key=/, 'the key is in a line that is not an address row');
+  });
+});
+
+describe('a relay with a key, asked in ways a browser would not', () => {
+  let relay: Relay;
+  before(async () => { relay = await startRelay(); });
+  after(() => relay.stop());
+
+  it('refuses a plain request that only carries the upgrade headers, with no key, with a 401', async () => {
+    const res = await raw(relay.port, 'GET /?data=1 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
+    assert.equal(res.status, 401);
+  });
+
+  it('refuses an upgrade whose request target cannot be read, with a 401, and stays up', async () => {
+    const res = await raw(relay.port, 'GET //[ HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n');
+    assert.equal(res.status, 401);
+    const page = await fetch(`http://127.0.0.1:${relay.port}/`);
+    assert.equal(page.status, 200, 'still serving');
+  });
+});
+
+describe('a relay given DUCK_TALK_KEY', () => {
+  it('takes the key from the environment over the one in .duck-talk/key', async () => {
+    const relay = await startRelayWith({ env: { DUCK_TALK_KEY: 'from-the-environment' }, keyFile: 'from-the-file' });
+    try {
+      const at = (key: string) => `ws://127.0.0.1:${relay.port}/?data=1&key=${key}`;
+      assert.equal((await firstFrame(at('from-the-environment'))).type, 'relay');
+      assert.equal((await refusal(at('from-the-file'))).status, 401);
+      assert.equal(readFileSync(join(relay.dir, '.duck-talk', 'key'), 'utf8'), 'from-the-file', 'the file is left alone');
+    } finally {
+      await relay.stop();
+    }
   });
 });
 
@@ -360,7 +414,7 @@ describe('a relay started with --open, asked from a web page', () => {
   });
 
   it('lets in a host DUCK_TALK_ORIGINS names', async () => {
-    const relay = await startRelayWith({ DUCK_TALK_ORIGINS: 'evil.example' }, '--open');
+    const relay = await startRelayWith({ env: { DUCK_TALK_ORIGINS: 'evil.example' } }, '--open');
     try {
       assert.equal((await firstFrame(`ws://127.0.0.1:${relay.port}/?data=1`, 'https://evil.example')).type, 'relay');
       assert.equal((await refusal(`ws://127.0.0.1:${relay.port}/?data=1`, 'https://other.example')).status, 403);
