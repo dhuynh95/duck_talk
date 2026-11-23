@@ -42,11 +42,15 @@ import { save as saveClip } from './clips.ts';
 import { correct, CORRECT_MODEL } from './correct.ts';
 import { add, load, type Correction } from './corrections.ts';
 import { openEars, keyword, type Ears, type Keyword } from './ears.ts';
-import { save as saveImage } from './images.ts';
+import { remove as removeImage, save as saveImage } from './images.ts';
 import { append, type Mode, type Turn } from './turns.ts';
-import { openVoice, type Voice } from './voice.ts';
+import { kokoroConfig, kokoroVoice, warm as warmKokoro, type KokoroConfig } from './kokoro.ts';
+import { geminiVoice, openVoice, VoiceError, type Voice, type VoiceEngine } from './voice.ts';
 
 export type { Mode, Turn };
+
+/** Who reads the reply aloud: Gemini's text-to-speech, or Kokoro-82M on this machine. */
+export type VoiceName = 'gemini' | 'kokoro';
 
 /** Where a message the turn just made sits in the store — what a fork cuts at. Rides
  *  on `turn_end` as `user` and `model`, so a line just said is forkable and editable
@@ -118,10 +122,10 @@ export class Session {
   private corrections: Correction[] = [];
 
   // What this turn was given — pictures and pasted texts — held from the moment they
-  // are picked until the turn they belong to is over. Not a field on the frame that
-  // starts the turn, because there is no such frame when you speak: the instruction is
-  // made here, from the ears, long after the picture was chosen. Held, all three ways of
-  // instructing are one path.
+  // are picked until the turn they belong to is over, or the phone takes one back with
+  // `drop`. Not a field on the frame that starts the turn, because there is no such frame
+  // when you speak: the instruction is made here, from the ears, long after the picture
+  // was chosen. Held, all three ways of instructing are one path.
   //
   // A picture's bytes arrive once and are used twice — sent to Claude from memory here,
   // written to disk by images.ts only so a chat reopened next week can still show it. A
@@ -137,7 +141,13 @@ export class Session {
   private readonly phone: Phone;
   private readonly ai: GoogleGenAI;
   private readonly sttModel: string;
-  private readonly voiceModel: string;
+  /** The ways of speaking, by the name the page uses for them. */
+  private readonly engines: Record<VoiceName, VoiceEngine>;
+  private readonly kokoro: KokoroConfig;
+  /** Which one is reading now. The page says so with a `voice` frame, and can change it at any time. */
+  private voiceName: VoiceName;
+  /** Whether the page has been told this engine cannot speak, so one failed turn is one notice and not one per sentence. */
+  private voiceNoted = false;
   private readonly mode: Mode;
   private readonly autocorrect: boolean;
   private readonly readback: boolean;
@@ -149,7 +159,7 @@ export class Session {
     phone: Phone,
     ai: GoogleGenAI,
     mode: Mode,
-    opts: { sttModel: string; voiceModel: string; autocorrect: boolean; readback: boolean; resume?: string },
+    opts: { sttModel: string; voiceModel: string; voice?: VoiceName; autocorrect: boolean; readback: boolean; resume?: string },
     log: (m: string) => void,
   ) {
     this.resume = opts.resume;
@@ -157,7 +167,9 @@ export class Session {
     this.ai = ai;
     this.mode = mode;
     this.sttModel = opts.sttModel;
-    this.voiceModel = opts.voiceModel;
+    this.kokoro = kokoroConfig();
+    this.engines = { gemini: geminiVoice(ai, opts.voiceModel), kokoro: kokoroVoice(this.kokoro, log) };
+    this.voiceName = opts.voice ?? 'gemini';
     this.autocorrect = opts.autocorrect;
     this.readback = opts.readback;
     this.log = log;
@@ -177,12 +189,14 @@ export class Session {
 
     // The voice needs no connection, so there is nothing to await and nothing that
     // can fail here.
-    this.voice = openVoice(this.ai, this.voiceModel, {
+    this.voice = openVoice(() => this.engines[this.voiceName], {
       log: this.log,
+      onFail: (engine, failure) => this.voiceFailed(engine, failure),
       onPcm: (pcm) => {
         // Only the reply counts as the first byte out; the review readback is read the
         // same way, and stamping it would time the turn from the wrong sound.
         if (this.state !== 'held') this.turn.voice_out_at ??= Date.now();
+        this.voiceNoted = false; // it speaks: the next failure is news again
         this.turn.voice_ms += pcm.length / 48;
         this.phone.pcm(pcm);
       },
@@ -193,6 +207,10 @@ export class Session {
       // not the turn ending, so only end when Claude's reply is what just played.
       onDone: () => { if (this.state === 'claude') this.endTurn(); },
     });
+
+    // The local engine takes a few seconds to load the first time, so it is started now, while
+    // nobody is waiting on it, rather than at the first sentence.
+    if (this.voiceName === 'kokoro') this.prepare();
 
     // Claude is a session too, warm for the whole connection — claimed rather than
     // opened, so resuming a chat whose session is still working reattaches to it and
@@ -407,7 +425,7 @@ export class Session {
    * it — say "no", or hang up — so the only refusal that needs a message is the
    * spoken one, and that arrives as a transcript like any other.
    */
-  frame(msg: { type?: string; name?: string; note?: string; at?: number; ms?: number; text?: string; data?: string; id?: number; model?: string; permission?: string; effort?: string }): void {
+  frame(msg: { type?: string; name?: string; note?: string; at?: number; ms?: number; text?: string; data?: string; id?: number; model?: string; permission?: string; effort?: string; engine?: string }): void {
     if (msg.type === 'mark' && msg.name === 'reply_in' && typeof msg.at === 'number') this.turn.reply_in_at = msg.at;
     // Only while a turn is in flight: the mark trails its final by a beat, so after a
     // final that itself ended things — a bare "no", a "stop" said to a quiet room —
@@ -448,12 +466,50 @@ export class Session {
     // A picture picked, or a text pasted. Says nothing about when the turn runs — see `attached`.
     else if (msg.type === 'attach' && typeof msg.id === 'number' && typeof msg.data === 'string') this.attach(msg.id, msg.data);
     else if (msg.type === 'attach' && typeof msg.id === 'number' && typeof msg.text === 'string') this.paste(msg.id, msg.text);
+    // The same pick taken back, before the instruction that would have carried it runs.
+    else if (msg.type === 'drop' && typeof msg.id === 'number') this.drop(msg.id);
     else if (msg.type === 'approve') this.decide(true, msg.text);
     // The stop button, as a frame. Stop means everything in this chat: the turn, and
     // the background tasks an interrupt deliberately spares. Hanging up is the
     // phone's separate act, so stopping the work and leaving stay decoupled.
-    else if (msg.type === 'stop') { this.cancel('stop frame'); this.claude.stopTasks(); }
+    else if (msg.type === 'stop') { this.stop(); this.claude.stopTasks(); }
     else if (msg.type === 'claude') this.be(msg.model, msg.permission, msg.effort);
+    else if (msg.type === 'voice') this.pick(msg.engine);
+  }
+
+  /**
+   * Who reads the reply aloud, from the next sentence. Sent when a socket opens and again
+   * whenever it is changed on the page — one path, like `be` — so switching engines never
+   * redials, and never has to wait for a turn to end. A name this does not know is ignored.
+   */
+  private pick(name: unknown): void {
+    if ((name !== 'gemini' && name !== 'kokoro') || name === this.voiceName) return;
+    this.voiceName = name;
+    this.voiceNoted = false;
+    this.log(`voice: ${this.engines[name].name}`);
+    if (name === 'kokoro') this.prepare();
+  }
+
+  /** Start the local engine now, and say so if it cannot be started. */
+  private prepare(): void {
+    void warmKokoro(this.kokoro, this.log).catch((e) => this.voiceFailed('Kokoro', e));
+  }
+
+  /**
+   * A sentence could not be read: tell the page once, in words, since a log line is where
+   * nobody looks and a reply that is silently not spoken reads as a broken app. Once per
+   * run of failures — the next time the voice speaks, a new failure is news again.
+   */
+  private voiceFailed(engine: string, failure: unknown): void {
+    if (this.voiceNoted || this.closed) return;
+    this.voiceNoted = true;
+    const detail = String(failure instanceof Error ? failure.message : failure).split('\n')[0]!.slice(0, 160);
+    const text = failure instanceof VoiceError
+      ? failure.message
+      : /429|RESOURCE_EXHAUSTED|quota/i.test(String(failure))
+        ? `${engine}'s voice limit is reached, so replies are text only for now. Turn on Local voice (Kokoro) in Settings, or try again later.`
+        : `${engine} voice failed, so part of the reply goes unread: ${detail}`;
+    this.phone.event({ type: 'error', text });
   }
 
   /**
@@ -553,6 +609,35 @@ export class Session {
     if (this.attached.some((a) => a.id === id)) return;
     this.attached.push({ id, text });
     this.log(`attached paste ${id} (${text.length} chars)`);
+  }
+
+  /**
+   * Take a pending picture or paste back, so the instruction that runs next is not given it
+   * and a picture that was never said is not left in the chat's history.
+   *
+   * Only what has not gone to Claude. A turn that has been sent (`ran_at`) already holds
+   * what it was given and its record names the pictures, so letting go of one then would
+   * leave a chat reopened later with a gap. The phone never asks — a piece given to a line
+   * is no longer pending there — so it is refused, and said. After a retract the turn is
+   * taken back and has not been sent, even while auto-correct holds the floor for the
+   * joined sentence, so a piece the phone was handed back can be dropped until `run`.
+   */
+  private drop(id: number): void {
+    const i = this.attached.findIndex((a) => a.id === id);
+    if (i < 0) return; // never held, or already taken back
+    if (this.turn.ran_at !== null && this.turn.images.includes(id)) {
+      this.log(`drop ignored: turn already sent with attachment ${id}`);
+      return;
+    }
+    const [taken] = this.attached.splice(i, 1);
+    this.log(`dropped attachment ${id}`);
+    if (taken && 'data' in taken) {
+      try {
+        removeImage(id);
+      } catch (e) {
+        this.log(`image removal failed: ${e}`);
+      }
+    }
   }
 
   /**
@@ -711,6 +796,7 @@ export class Session {
     t.claude_start_at = t.claude_opens = t.claude_first_at = null;
     t.tts_sent_at = t.voice_out_at = t.reply_in_at = null;
     t.voice_ms = 0;
+    t.images = []; // `run` names them again, from whatever is still held
     this.state = 'user';
   }
 
@@ -723,6 +809,18 @@ export class Session {
     this.voice.interrupt();
     this.phone.event({ type: 'interrupted' });
     return this.endTurn();
+  }
+
+  /**
+   * The stop button. A turn running here is cancelled as any other way. With none, the
+   * phone may still think one is — the relay it was watching restarted mid-turn, and this
+   * one never ran it — and only a `turn_end` settles that, so a bare one is the answer:
+   * the chat it is in and nothing else. Harmless to a phone that already knew.
+   */
+  private stop(): void {
+    if (this.state !== 'user') { void this.cancel('stop frame'); return; }
+    this.log('stop with nothing running');
+    this.phone.event({ type: 'turn_end', session: this.sessionId });
   }
 
   /** End the turn now; resolves once `turn_end` has gone to the phone, which is after

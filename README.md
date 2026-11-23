@@ -35,7 +35,7 @@ its files, its git history, and its Claude Code conversations, including the one
 started in a terminal. It is also where the relay keeps what it learns: a `.duck-talk/`
 directory holding the turn records, the corrections, any prompt you edited from the
 phone, and one log per run, kept for a week. Run it somewhere else tomorrow and it is about that instead. Then point a client
-at the address it prints.
+at the address it prints — [a browser](#web-client) on any device, or [the iPhone app](#your-iphone).
 
 You will need:
 
@@ -47,8 +47,208 @@ You will need:
 
 The command the package installs is `duck-talk`, and `duck-talk --help` has the rest:
 `--cwd` serves a folder you are not standing in, `--port` defaults to 8765, `--awake`
-(or `KEEP_AWAKE=1` in `.env`) keeps the Mac from idle sleep while it runs. Node 22 or
-newer.
+(or `KEEP_AWAKE=1` in `.env`) keeps the machine from idle sleep while it runs —
+`caffeinate` on a Mac, `systemd-inhibit` on Linux, and a closed lid still sleeps it —
+and `--open` turns the [access key](#the-access-key) off. Node 22 or newer.
+
+### Web client
+
+The relay also serves a page, from the port it listens on, and the page is a client: any
+device with a browser — a Linux laptop, an Android phone — can talk to Claude Code through
+it, with nothing to install on the device. The page and its WebSocket share one address, so
+there is nothing else to run.
+
+- **Talk or type**, in the same conversation: a transcript with the tools Claude used
+  between your lines, and the answer read aloud while the microphone is open.
+- **Direct or Review**, and which model answers, how hard it thinks, and what it may do —
+  Plan, Edit files, or Full access.
+- **Past chats** in a drawer — Claude Code's own sessions — with search, star, rename,
+  delete and resume. Fork a chat from one of Claude's lines, or edit what you said and run
+  it again from there.
+- **Photos and long pastes** go with the next instruction: from the camera, the library or
+  the clipboard, shrunk to a JPEG first. A paste over 800 characters becomes a chip instead
+  of filling the field.
+- **`/`** lists the project's skills.
+- **Keyboard** — each button wears its key, small on its corner (on a screen with a
+  keyboard; a phone has the buttons): **L** starts listening, and hangs up while a call is
+  up; **M** mutes the microphone; **Esc** stops whatever is running — Claude, the call, or
+  both. They are shortcuts only when nothing else could have meant the key: not while the
+  message box has the keyboard, not under a menu or sheet, and never with Ctrl, Alt or Meta.
+- **Push to talk** (gear menu) — the microphone stays off until you **hold Space**, or hold
+  the middle of the box with a finger or the pointer; a ring says it is open. It closes a
+  third of a second after you let go, so the end of a word is not cut, and when the window
+  loses focus, so a key-up that never arrives cannot leave it open. While it is on, Space
+  held is talk and Mute is not offered. Pressing Space with focus on a button holds to talk
+  instead of pressing it; Enter still presses it.
+- **Corrections** and the **prompts** the relay says to each model, edited from the gear
+  menu.
+
+Start the relay the way the Quick start does — `npm ci && npm start` in a checkout, or
+`cd ~/code/the-project && npx duck_talk` — and it prints where the page is, with the key
+that lets a browser in:
+
+```
+  web          https://your-machine.your-tailnet.ts.net/?key=…
+  localhost    http://localhost:8765/?key=…
+  web Wi-Fi    http://192.168.1.42:8765/?key=…  typing only — no microphone off localhost
+```
+
+**This machine.** `http://localhost:8765/`. Everything works, the microphone too: a
+browser counts `localhost` as a secure page.
+
+**Same Wi-Fi.** `http://<this machine's address>:8765/`, which the `web Wi-Fi` row spells
+out. Typing only: a browser gives the microphone to an HTTPS page or to `localhost` and
+to nothing else, so tapping the microphone here says so instead of failing quietly. It is
+plain `http://`, so the key crosses the network in the clear — fine at home, not in a café.
+
+**Anywhere** — another network, cellular — needs the same tunnel the iPhone does, for the
+same reasons (see [Your iPhone](#your-iphone)), and the same three steps:
+
+1. Install [Tailscale](https://tailscale.com) on the machine and on the phone, same account.
+2. In the admin console, turn on **MagicDNS** and **HTTPS Certificates**
+   (`login.tailscale.com/admin/dns`). Once per tailnet.
+3. On the machine, once: `tailscale serve --bg 8765`. It survives reboots. On Linux it may
+   refuse until you have run `sudo tailscale set --operator=$USER`, once.
+
+The relay prints its addresses when it starts, so start it after step 3, or restart it. The
+`web` row is then `https://<machine>.<tailnet>.ts.net/?key=…`: open it on the phone. HTTPS
+is what makes it a secure page, and so what gives the microphone to a phone. `tailscale
+serve` keeps the relay on your tailnet; it does not put it on the internet. Until it is
+set up, that row says so instead of giving an address.
+
+### The access key
+
+The relay can run commands in your project — under Full access, anything — and a tailnet
+is shared with whoever else is on it. So by default a connection has to bring a key. The
+page itself is served without one; the WebSocket it opens is not, and a socket that
+arrives without the key is refused on the upgrade with an HTTP 401, before anything runs.
+That covers the chat history, the audio clips and the pictures too.
+
+- The key is made on the first start — 16 random bytes — and kept in `.duck-talk/key`,
+  readable by you alone, so it survives a restart and a bookmark keeps working. The relay
+  git-ignores that folder for you: it writes a `.duck-talk/.gitignore` of `*`, so neither
+  the key nor the logs that hold it can be committed, even by a `git add -A` — there is
+  nothing to add to the project's own `.gitignore`.
+- The `web` rows end in `?key=…`. Open one and the page moves the key into the browser's
+  localStorage and takes it out of the address bar, so it is not left on a screen or in a
+  screenshot. It may still be in the browser's history: the address is rewritten after the
+  browser has usually recorded the visit, and it can be suggested again as you type. On a
+  shared computer clear it from the browser history, or open the page without the key and
+  type it. A browser that has none is asked for it in one field: paste it from the relay's
+  output or from `.duck-talk/key`. Gear ▸ Connection says whether it is saved and has a
+  **Forget key** button.
+- **The key is per project folder**, and a browser keeps one per address: start a relay in
+  another folder on the same port and the key this browser kept is refused. The page then
+  says **Key refused** — not Offline — and asks for the new one over the app, with a
+  **Forget key** button; a relay that was restarted with `--open` is noticed too, and the
+  page forgets the key and carries on without one.
+- `DUCK_TALK_KEY=…` sets the key instead, for a relay run from a service manager or a
+  container, where a file is the wrong place for it. No file is written then.
+- The key is in the startup rows, so each run's log in `.duck-talk/logs/` holds it too;
+  those files are readable by you alone.
+- **`--open`**, or `DUCK_TALK_OPEN=1`, turns the check off: no key is made, no address
+  carries one, and anyone who can reach the port can run Claude Code in your project. A
+  page with no key stored asks the relay whether it wants one — the public
+  `/access.json`, which says `{"required":false}` for an open relay and never says the
+  key — and skips the form.
+- **Web pages from elsewhere are refused**, key or `--open`. A browser lets any site open
+  a socket to any address and says where the page came from; a socket whose page is not
+  from this machine, the local network (`192.168.…`, `10.…`, `*.local`, a one-word name)
+  or a tailnet (`*.ts.net`) is refused with a 403 and one `refused origin <host>` line. So
+  `--open` is open to whoever can reach the port, not to every site in a tab. The app,
+  `curl` and other clients that are not browsers send no origin and are not affected.
+- **`DUCK_TALK_ORIGINS=duck.example.com,*.corp.example`** adds hosts to that list, exact
+  or `*.suffix`, comma-separated — for a page served through a reverse proxy or a domain
+  of your own.
+- **The iPhone app sends no key**, so a relay it talks to has to be started with `--open`.
+  The web client does not need that.
+
+### Local voice (Kokoro-82M)
+
+Gemini reads the replies aloud by default, and its free tier stops at ten sentences a day
+(the relay's log says `429 … generate_content_free_tier_requests` when it does, and the page
+says so too). **Kokoro-82M** is the other choice: a small open model that runs on this
+computer's CPU, faster than real time, with no key, no network and no limit.
+
+```bash
+bash dist/kokoro/install.sh          # from a checkout: bash server/kokoro/install.sh
+```
+
+Run it once. It makes a private folder, `~/.local/share/duck-talk/kokoro` (a Python
+environment and the model, about 450 MB, checked against pinned hashes), and touches nothing
+outside it; deleting the folder removes it. It needs `python3` 3.10 or newer with `venv`.
+
+Then turn on **Local voice (Kokoro)** in the page's gear menu. It takes effect from the next
+sentence, with no reconnect, and the page remembers it for that browser. The relay starts
+the engine the first time it is chosen (a few seconds), keeps it for as long as the relay
+runs, and stops it with the relay. The startup banner has a `local voice` row that says
+whether it is installed. If it is chosen and cannot speak, the page says why.
+
+It is only the speaker. The ears — turning what you say into text — are still Gemini's.
+
+| Variable | Default | |
+|---|---|---|
+| `DUCK_TALK_VOICE=kokoro` | `gemini` | who speaks until a page says otherwise |
+| `KOKORO_VOICE` | `af_heart` | one of its 54 voices: `am_adam`, `bf_emma`, `bm_george`, … |
+| `KOKORO_SPEED` | `1` | how fast it reads |
+| `KOKORO_HOME` | `~/.local/share/duck-talk/kokoro` | where the installer put it |
+| `KOKORO_URL` | `http://127.0.0.1:8880` | where the engine listens |
+
+The engine is a small server (`server/kokoro/server.py`) answering `POST /v1/audio/speech`
+with 24 kHz 16-bit PCM, on `127.0.0.1` only. A server elsewhere that answers the same request
+can be pointed at with `KOKORO_URL`; the relay only asks it, and starts nothing that is not
+local. The first sentence after a cold start takes about two seconds; after that it is the
+sentence's own length, about 0.6 s of work per second of speech on a laptop CPU. The page's
+voice style prompt (Prompts ▸ voice) is Gemini's and does not apply to Kokoro.
+
+### Known limits
+
+- **Voice stops when the screen locks or the tab goes to the background.** The iPhone app
+  keeps a call on the lock screen; a browser has nothing like it, and may suspend a hidden
+  page's microphone. While the microphone is open the page holds a screen wake lock so the
+  screen does not dim, and asks for it again — and wakes the audio — when you come back to
+  the page. Claude keeps working on the relay either way.
+- **You cannot interrupt a reply by voice while it plays.** A phone's speaker is next to
+  its microphone, and what leaks back is Claude's own voice, which the relay would hear as
+  you interrupting. So **Mute mic while Claude speaks** (gear menu, on by default) sends
+  silence instead of the room while a reply is playing and for 0.3 seconds after its last
+  buffer ends — a fixed hold, there is no setting for it. The silence is frames of zeros at
+  the usual rate, so the relay does not think you left. Typing and Stop still work. With
+  headphones there is no echo to keep out, so turn it off; with the speaker button off,
+  nothing plays and the gate never closes anyway.
+- **The keyboard.** The page asks for `interactive-widget=resizes-content`, which keeps the
+  composer above the on-screen keyboard in Chrome on Android 108 and newer. Other browsers
+  may leave the keyboard over it.
+- **The ring around the message field** is drawn with `:has()`. A browser without it shows
+  only the box's edge changing colour.
+- **Safari and iOS have not been tried.** The iPhone has the app.
+- **A photo has to be one the browser can decode.** It is turned into a JPEG in the
+  browser before it is sent, so a HEIC in a browser with no codec for it is refused, with a
+  message saying to try a JPEG or PNG. A file over 40 MB is refused too.
+
+### Try it on your phone
+
+1. On the laptop, in the project: `npx duck_talk` (`npm start` from a checkout). Wait for
+   the `web` rows.
+2. Once, if you have not: `tailscale serve --bg 8765`, then restart the relay so its `web`
+   row is the `https://` address.
+3. On the phone, with Tailscale on, open that address. The page loads, the key leaves the
+   address bar, and the header does not say Offline.
+4. Type a question and send it. The answer streams in as text.
+5. Tap the microphone, allow it, and ask something short out loud. The waveform moves,
+   your words appear, and the answer is spoken. Leave it listening past the screen timeout:
+   the screen should stay on.
+6. Tap **+ ▸ Camera**, take a picture, and ask what is in it. The picture goes with that
+   instruction.
+7. Change the mode — the capsule that says **Direct**, at the right of the bar, while the
+   microphone is off — to **Review**, and say something. Fix a word in the held
+   instruction and accept it. Then fork the chat from one of Claude's lines, with the
+   branch icon under it.
+8. The echo test. On the phone's speaker, ask for a long answer and stay quiet: it should
+   play to the end without cutting itself off. Talk over it: nothing happens, and Stop
+   stops it. Then plug in headphones, turn off **Mute mic while Claude speaks**, and talk
+   over it again: now it stops. If it ever cuts itself off with nobody speaking, put the
+   setting back on.
 
 ### Your iPhone
 
@@ -95,11 +295,15 @@ resolves and answers nothing.
 
 Without Tailscale, the *anywhere* line says so, and the other two still work.
 
-To check the Mac half with no phone at all:
+To check the relay's half with no client at all:
 
 ```bash
 node server/probe.ts "what is the latest commit"
 ```
+
+It speaks the question with `say` on a Mac and with `espeak-ng` and `ffmpeg` anywhere else
+(for example `sudo apt install espeak-ng ffmpeg`); `--file turn.wav` sends a recording
+instead, and off a Mac needs only `ffmpeg` (a Mac converts it with its own `afconvert`).
 
 ### From source
 
@@ -158,12 +362,12 @@ Nothing combines all of this:
 
 ## Architecture
 
-The phone is a microphone, a speaker and a keyboard; the Mac holds the sessions.
-Claude Code is the black box in the middle, and the relay is the only thing that knows
-about all three.
+The client is a microphone, a speaker and a keyboard; the machine running the relay
+holds the sessions. Claude Code is the black box in the middle, and the relay is the only
+thing that knows about all three.
 
 ```
-iPhone (app/)                 Mac (server/)                              Anthropic + Google
+browser/phone (web/, app/)    relay (server/)                            Anthropic + Google
 mic ─▶ AudioPipe ─▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts ─▶ ears ──▶ Gemini Live (transcribes)
 🔊 ◀─ AudioPipe ◀─ VoiceSession ◀─ws─  server.ts ◀─ session.ts ◀─ voice ◀── Gemini TTS  (reads aloud)
 ⌨️ ─────────────▶ VoiceSession ─ws─▶ server.ts ─▶ session.ts ─┬── claude ◀▶ Claude Code (the agent)
@@ -184,11 +388,14 @@ of which runs alone.
 
 ## Releasing
 
-`npm run check`, `npm run build`, and `./scripts/install-elsewhere.sh` — which packs
-the tarball, installs it into a folder that is not this repo, and starts it there.
-CI runs all three on every push, and so does the pre-commit hook `npm install` sets up
-(`scripts/hooks/pre-commit`), on any commit that touches `server/` or the package
-config — so a package that cannot be installed is caught before it is committed.
+`npm run check`, `npm test`, `npm run build`, and `./scripts/install-elsewhere.sh` — which
+packs the tarball, installs it into a folder that is not this repo, and starts it there,
+then asks it for its page and knocks on its socket with no key. CI runs all four on every
+push to `main` and every pull request, and so does the Release workflow before it
+publishes anything. The pre-commit hook `npm install` sets up (`scripts/hooks/pre-commit`)
+runs the first, third and fourth — not the tests — on any commit that touches `server/`,
+`web/`, `scripts/install-elsewhere.sh`, `package.json`, `package-lock.json` or
+`tsconfig.json`, so a package that cannot be installed is caught before it is committed.
 `git commit --no-verify` skips it once.
 
 Publishing is one button: **Actions ▸ Release ▸ Run workflow**, pick patch/minor/major.

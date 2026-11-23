@@ -49,6 +49,53 @@ const VOICE_NAME = 'Sulafat';
 const ATTEMPTS = 3;
 const RETRY_MS = 300;
 
+/**
+ * One way of turning a sentence into speech: 24 kHz 16-bit mono PCM, in chunks as they
+ * arrive. Everything else in this file — the queue, the order, the retries, the waiting
+ * out of the tail, cancelling — is the same whichever engine reads, which is why an
+ * engine is only this.
+ */
+export interface VoiceEngine {
+  /** What a person would call it, for the log and for what the page is told when it fails. */
+  readonly name: string;
+  /** The audio for one sentence. Rejects when it cannot be made; stops when `signal` aborts. */
+  speak(text: string, signal: AbortSignal): AsyncIterable<Buffer>;
+}
+
+/** A failure whose message is fit to show a person as it stands, with nothing to translate. */
+export class VoiceError extends Error {}
+
+/** Gemini's text-to-speech: one streamed request per sentence. */
+export function geminiVoice(ai: GoogleGenAI, model: string): VoiceEngine {
+  return {
+    name: 'Gemini',
+    async *speak(text, signal) {
+      // Read per sentence rather than cached, so editing it from the phone changes
+      // how the *next* sentence sounds, mid-conversation, with nothing to invalidate.
+      const style = read('voice');
+      // The style is an instruction and the sentence is not, so the sentence says so.
+      // Without the marker a short one is heard as a reply to the instruction and
+      // comes back silent: measured, "Ready." after the style returns no audio at
+      // all, while "Ready." alone returns 1.2s. It costs nothing — the same long
+      // sentence reads in 4.76s with the marker against 4.64s without.
+      const contents = style ? `${style}\n\n[READ]: ${text}` : text;
+      const stream = await ai.models.generateContentStream({
+        model,
+        contents,
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: VOICE_NAME } } },
+          abortSignal: signal,
+        },
+      });
+      for await (const chunk of stream) {
+        const pcm = audio(chunk);
+        if (pcm) yield pcm;
+      }
+    },
+  };
+}
+
 export interface Voice {
   say(text: string): void;
   /** No more text is coming for this turn; `onDone` fires once the audio has all been sent. */
@@ -70,10 +117,16 @@ export interface VoiceCallbacks {
    *  what separates waiting for text from waiting for audio. */
   onSay?(text: string): void;
   onDone?(): void;
+  /** A sentence could not be read, after every attempt: which engine, and why. */
+  onFail?(engine: string, failure: unknown): void;
   log?(m: string): void;
 }
 
-export function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbacks): Voice {
+/**
+ * `engine` is asked for once per sentence, so changing which engine reads takes effect
+ * from the next sentence, in the middle of a reply if need be.
+ */
+export function openVoice(engine: () => VoiceEngine, cb: VoiceCallbacks): Voice {
   const log = cb.log ?? (() => {});
   const queue: string[] = [];
   // One controller is the whole cancellation story: it aborts the request in
@@ -106,42 +159,22 @@ export function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbacks): V
     while (queue.length && !closed) {
       const { signal } = aborter; // captured with the sentence, so a later interrupt aborts this one
       const text = queue.shift()!;
-      // Read per sentence rather than cached, so editing it from the phone changes
-      // how the *next* sentence sounds, mid-conversation, with nothing to invalidate.
-      const style = read('voice');
-      // The style is an instruction and the sentence is not, so the sentence says so.
-      // Without the marker a short one is heard as a reply to the instruction and
-      // comes back silent: measured, "Ready." after the style returns no audio at
-      // all, while "Ready." alone returns 1.2s. It costs nothing — the same long
-      // sentence reads in 4.76s with the marker against 4.64s without.
-      const contents = style ? `${style}\n\n[READ]: ${text}` : text;
+      const reader = engine(); // fixed for this sentence, so a switch lands on the next one
       let spoke = false; // audio for this sentence has reached the phone
       let failure: unknown = null;
       cb.onSay?.(text);
       const askedAt = Date.now();
       for (let attempt = 1; attempt <= ATTEMPTS && !signal.aborted && !closed; attempt++) {
         try {
-          const stream = await ai.models.generateContentStream({
-            model,
-            contents,
-            config: {
-              responseModalities: ['AUDIO'],
-              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: VOICE_NAME } } },
-              abortSignal: signal,
-            },
-          });
-          for await (const chunk of stream) {
+          for await (const pcm of reader.speak(text, signal)) {
             if (signal.aborted || closed) break;
-            const pcm = audio(chunk);
-            if (pcm) {
-              // Per sentence, so a cold first request and a warm later one are
-              // separate numbers rather than one average.
-              if (!spoke && process.env['DEBUG']) log(`sentence audio in ${Date.now() - askedAt}ms: ${text.slice(0, 40)}`);
-              spoke = true;
-              firstAt ||= Date.now();
-              sentMs += pcm.length / 48;
-              cb.onPcm(pcm);
-            }
+            // Per sentence, so a cold first request and a warm later one are
+            // separate numbers rather than one average.
+            if (!spoke && process.env['DEBUG']) log(`sentence audio in ${Date.now() - askedAt}ms: ${text.slice(0, 40)}`);
+            spoke = true;
+            firstAt ||= Date.now();
+            sentMs += pcm.length / 48;
+            cb.onPcm(pcm);
           }
           // A response that carried no audio is a failure too, and a silent one.
           failure = spoke ? null : new Error('response carried no audio');
@@ -157,8 +190,9 @@ export function openVoice(ai: GoogleGenAI, model: string, cb: VoiceCallbacks): V
       // Silence nobody logged is how the old session failure hid.
       if (failure && !signal.aborted && !closed) {
         log(spoke
-          ? `voice failed part-way through a sentence, the rest goes unread: ${failure}`
-          : `voice failed ${ATTEMPTS} times, this sentence goes unread: ${failure}`);
+          ? `${reader.name} voice failed part-way through a sentence, the rest goes unread: ${failure}`
+          : `${reader.name} voice failed ${ATTEMPTS} times, this sentence goes unread: ${failure}`);
+        cb.onFail?.(reader.name, failure);
       }
     }
     // A dry queue means the audio is all *sent*; the phone is still playing it, and
@@ -366,7 +400,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const chunks: Buffer[] = [];
   let first = 0;
   const t0 = performance.now();
-  const voice = openVoice(ai, model, {
+  const voice = openVoice(() => geminiVoice(ai, model), {
     log: console.log,
     onPcm: (pcm) => { if (!first) first = Math.round(performance.now() - t0); chunks.push(pcm); },
     onDone: () => {

@@ -29,5 +29,5 @@
     "verbatimModuleSyntax": true
   },
   "include": ["server/**/*.ts"],
-  "exclude": ["server/lab.ts", "server/probe.ts", "server/import.ts", "server/fixtures/**"]
+  "exclude": ["server/lab.ts", "server/probe.ts", "server/import.ts", "server/local-audio.ts", "server/fixtures/**"]
 }

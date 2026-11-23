@@ -21,8 +21,8 @@
  * to the first.
  */
 
-import { mkdirSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** The folder Claude works in: where you started the relay, unless told otherwise. */
@@ -38,9 +38,27 @@ const STATE = resolve(PROJECT, '.duck-talk');
  * that file, with the reason, instead of on the relay starting.
  */
 export function state(...parts: string[]): string {
+  if (!kept) keepOutOfGit();
   const path = resolve(STATE, ...parts);
   try { mkdirSync(dirname(path), { recursive: true }); } catch { /* the read or write below reports it */ }
   return path;
+}
+
+let kept = false;
+
+/**
+ * Once a process: the state directory holds the access key, and the logs hold it too,
+ * so it must never be committed — and Claude Code, working in this very folder, may
+ * well `git add -A`. A `.gitignore` of `*` inside it keeps the whole folder out of any
+ * repo it sits in, with nothing to add to the project's own. Made closed to other users
+ * when this is what makes it; one that was there keeps its mode, and its `.gitignore`
+ * if it has one. Best-effort: a folder that cannot be written fails on the file that
+ * was asked for, with the reason, not here.
+ */
+function keepOutOfGit(): void {
+  kept = true;
+  try { mkdirSync(STATE, { recursive: true, mode: 0o700 }); } catch { /* reported by the file asked for */ }
+  try { writeFileSync(join(STATE, '.gitignore'), '*\n', { flag: 'wx' }); } catch { /* there already, or unwritable */ }
 }
 
 /** A file that ships with the relay — a default prompt. Read-only, and always there. */

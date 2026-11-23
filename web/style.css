@@ -1,0 +1,2600 @@
+/*
+ * The iPhone app's look (Brand.swift), in custom properties. Dark only: the page says so
+ * with color-scheme, and every colour below comes from the palette.
+ *
+ * The one layout rule carried over: what is the conversation is flat and runs edge to
+ * edge; what floats over it (the header, the composer) is glass with a shadow. The
+ * transcript therefore scrolls underneath both, and pads itself clear of them.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --ground: #111827;
+  --surface: #1F2937;
+  --fill: #2C3644;
+  --border: #4B5563;
+  --accent: #FB923C;
+  --text: #F3F4F6;
+  --text-secondary: #D1D5DB;
+  --text-tertiary: #9CA3AF;
+  /* Not the iPhone's palette, which has no red of its own: the system red there, this here. */
+  --danger: #F87171;
+  /* Likewise: the system green the iPhone shows for "Reachable". */
+  --ok: #4ADE80;
+  --accent-hover: #FDBA74;
+
+  /* --surface at 72%, written out so a browser without color-mix still draws glass. */
+  --glass: rgb(31 41 55 / 0.72);
+  --shadow: 0 3px 10px rgb(0 0 0 / 0.5);
+
+  --gutter: 16px;
+  --column: 760px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding:
+    env(safe-area-inset-top)
+    env(safe-area-inset-right)
+    env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+  background: var(--ground);
+  color: var(--text);
+  font: 16px/1.45 var(--font);
+  overflow-wrap: anywhere;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  min-height: 44px;
+  touch-action: manipulation;
+}
+
+/* Glass: the treatment for anything that floats over the conversation. The shadow is
+   not decoration: a sentence scrolls right behind these, and blur alone leaves a glyph
+   and the text under it in the same grey. */
+.floating {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: var(--shadow);
+}
+
+/* A hairline, so glass over the dark ground still has an edge. */
+.round.floating,
+.title.floating,
+.jump.floating {
+  border: 1px solid rgb(75 85 99 / 0.45);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .floating {
+    background: var(--surface);
+  }
+}
+
+/* Controls */
+
+.field {
+  width: 100%;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--fill);
+}
+
+.field::placeholder {
+  color: var(--text-tertiary);
+}
+
+.field:disabled {
+  opacity: 0.6;
+}
+
+.button {
+  min-width: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--fill);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.button.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--ground);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (hover: hover) {
+  .button:not(:disabled):hover {
+    background: var(--border);
+  }
+
+  .button.primary:not(:disabled):hover {
+    background: var(--accent-hover);
+  }
+}
+
+/* The key form: all there is until the page has a key. */
+
+.gate {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 24px var(--gutter);
+}
+
+.gate-card {
+  width: min(100%, 420px);
+  display: grid;
+  gap: 12px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.gate-card .logo {
+  justify-self: center;
+  width: auto;
+  height: 48px;
+}
+
+.gate-card h1 {
+  margin: 0;
+  text-align: center;
+  font-size: 22px;
+}
+
+.gate-card label {
+  font-weight: 600;
+}
+
+.gate-help,
+.gate-note {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-tertiary);
+}
+
+.gate-note {
+  color: var(--accent);
+}
+
+.gate-note:empty {
+  display: none;
+}
+
+.gate-explain {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.gate-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* The same form over the app, when the relay will not take this browser's key. Not dismissable:
+   nothing behind it works until there is a key the relay takes. */
+
+.key-dialog {
+  width: min(calc(100% - 2 * var(--gutter)), 420px);
+  max-width: none;
+  max-height: calc(100% - 32px);
+  padding: 0;
+  overflow: auto;
+  border: none;
+  background: transparent;
+  color: var(--text);
+}
+
+.key-dialog .gate-card {
+  width: 100%;
+  box-shadow: var(--shadow);
+}
+
+.key-dialog::backdrop {
+  background: rgb(0 0 0 / 0.6);
+}
+
+/* The app: the conversation, and what floats over it. */
+
+[hidden] {
+  display: none !important;
+}
+
+.app {
+  position: fixed;
+  inset: 0;
+  --composer-h: 118px;
+}
+
+/* The conversation and what floats over it. On a wide screen the chats are a sidebar and this is
+   what is left beside it; on a phone it is the whole screen, and the drawer comes over it. */
+.stage {
+  position: absolute;
+  inset: 0;
+}
+
+.icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+
+/* A round control: 44 px, the size of a thumb, wherever it is. */
+.round {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s, transform 0.1s;
+}
+
+.round:not(:disabled):active {
+  transform: scale(0.94);
+}
+
+.round.plain {
+  background: var(--fill);
+  color: var(--text-secondary);
+}
+
+.round.accent,
+.round.lit {
+  background: var(--accent);
+  color: var(--ground);
+}
+
+.round:disabled {
+  background: var(--fill);
+  color: var(--text-tertiary);
+  opacity: 0.55;
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .round.floating:hover,
+  .round.plain:not(.lit):hover {
+    background: var(--border);
+    color: var(--text);
+  }
+
+  .round.accent:not(:disabled):hover,
+  .round.lit:hover {
+    background: var(--accent-hover);
+  }
+}
+
+/* The header: three pieces of glass, not a bar. A fade behind them keeps the words that
+   scroll under from fighting the title. */
+
+.top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding:
+    calc(8px + env(safe-area-inset-top))
+    calc(12px + env(safe-area-inset-right))
+    0
+    calc(12px + env(safe-area-inset-left));
+  pointer-events: none;
+}
+
+.top::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 -28px;
+  z-index: -1;
+  background: linear-gradient(rgb(17 24 39 / 0.94) 55%, rgb(17 24 39 / 0));
+}
+
+.top > * {
+  pointer-events: auto;
+}
+
+.top-end {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.title {
+  justify-self: center;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 16px 0 12px;
+  border-radius: 22px;
+  min-width: 0;
+}
+
+.title .logo {
+  width: auto;
+  height: 22px;
+}
+
+.title h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgb(248 113 113 / 0.45);
+  border-radius: 16px;
+  background: rgb(127 29 29 / 0.35);
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* The conversation: flat, edge to edge, padded clear of the glass over it. */
+
+.conversation {
+  position: absolute;
+  inset: 0;
+}
+
+.transcript {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding:
+    calc(72px + env(safe-area-inset-top))
+    calc(var(--gutter) + env(safe-area-inset-right))
+    calc(var(--composer-h) + 28px + env(safe-area-inset-bottom))
+    calc(var(--gutter) + env(safe-area-inset-left));
+}
+
+.column {
+  max-width: var(--column);
+  min-height: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lines {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lines:empty {
+  display: none;
+}
+
+.row {
+  margin: 0;
+  animation: arrive 0.18s ease-out;
+}
+
+@keyframes arrive {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Yours wears a bubble; Claude's does not. A turn starts with a little more air above it. */
+.row.user {
+  display: flex;
+  justify-content: flex-end;
+  padding-left: 12%;
+}
+
+.lines > .row.user:not(:first-child),
+.row.user.said {
+  margin-top: 8px;
+}
+
+.bubble {
+  max-width: 100%;
+  padding: 10px 15px;
+  border-radius: 20px 20px 6px 20px;
+  background: var(--fill);
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.row.said .bubble {
+  opacity: 0.55;
+}
+
+.model-text {
+  max-width: 68ch;
+  color: var(--text);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.row.tools {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text-tertiary);
+  font: 12.5px/1.4 ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, monospace;
+}
+
+.tools-mark {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+
+.row.tools.running .tools-mark {
+  border-color: var(--accent);
+  background: var(--accent);
+  animation: breathe 1.2s ease-in-out infinite;
+}
+
+.working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent);
+  font-size: 15px;
+}
+
+.working-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: breathe 1.2s ease-in-out infinite;
+}
+
+.working-dots {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: -4px;
+  align-self: flex-end;
+  padding-bottom: 7px;
+}
+
+.working-dots span {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+.working-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.working-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes breathe {
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+.notice {
+  color: var(--text-tertiary);
+  font-size: 14px;
+}
+
+.error {
+  align-self: flex-start;
+  padding: 10px 14px;
+  border: 1px solid rgb(248 113 113 / 0.35);
+  border-radius: 14px;
+  background: rgb(127 29 29 / 0.25);
+  color: var(--danger);
+  font-size: 14px;
+  white-space: pre-wrap;
+}
+
+/* What a line was given with, above the words: pictures as squares, pastes as chips. */
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.given {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.thumb {
+  display: grid;
+  place-items: center;
+  width: 62px;
+  height: 62px;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgb(75 85 99 / 0.6);
+  border-radius: 12px;
+  background: var(--fill);
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.thumb:disabled {
+  cursor: default;
+}
+
+.thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.thumb[data-state="loading"] .thumb-mark {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.thumb-mark .icon {
+  width: 22px;
+  height: 22px;
+}
+
+/* The relay could not be asked for it: not "gone", so the square offers to ask again. */
+.thumb[data-state="failed"] {
+  color: var(--text-secondary);
+}
+
+.thumb[data-state="failed"] .thumb-mark {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+}
+
+.thumb[data-state="failed"] .thumb-mark .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.thumb-retry {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.paste {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.paste.open {
+  flex-basis: 100%;
+}
+
+.paste-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 34px;
+  padding: 0 12px 0 8px;
+  border: 1px solid rgb(75 85 99 / 0.6);
+  border-radius: 17px;
+  background: var(--fill);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.paste-tag {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.paste-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paste-full {
+  align-self: stretch;
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  max-height: 40dvh;
+  overflow: auto;
+  border: 1px solid rgb(75 85 99 / 0.5);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: 13px/1.45 ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, monospace;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.preview {
+  display: grid;
+  place-items: center;
+}
+
+.preview-img {
+  max-width: 100%;
+  max-height: 70dvh;
+  border-radius: 12px;
+}
+
+/* The verbs under a line: small and tertiary, because they are always there and must never
+   compete with the words. Each is 32 px to look at and about 44 to touch (the ::after). */
+
+.verbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  min-height: 32px;
+  color: var(--text-tertiary);
+}
+
+.row.model > .verbs {
+  margin-top: 2px;
+}
+
+.verb {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  min-width: 40px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.verb::after,
+.clip-chip::after,
+.paste-chip::after {
+  content: "";
+  position: absolute;
+  inset: -6px -2px;
+}
+
+.verb .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.clip-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  margin-right: 4px;
+  padding: 0 11px 0 9px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--fill);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.clip-chip .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.clip-chip[data-state="playing"] {
+  color: var(--accent);
+}
+
+.clip-chip:disabled,
+.clip-chip[data-state="loading"] {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+.clip-chip[data-state="gone"] {
+  opacity: 0.8;
+}
+
+/* Could not be fetched, not gone: a chip that is plainly pressable, with the colour of one. */
+.clip-chip[data-state="failed"] {
+  color: var(--text);
+}
+
+@media (hover: hover) {
+  .verb:hover,
+  .clip-chip:not(:disabled, [data-state="loading"]):hover {
+    color: var(--text);
+  }
+
+  .thumb[data-state="failed"]:hover {
+    color: var(--text);
+    border-color: var(--border);
+  }
+
+  .clip-chip:not(:disabled, [data-state="loading"]):hover {
+    background: var(--border);
+  }
+}
+
+/* Nothing said yet: the mark and the name, in the middle of the room. */
+
+.blank {
+  margin: auto;
+  padding: 24px 8px;
+  display: grid;
+  justify-items: center;
+  text-align: center;
+}
+
+.blank p {
+  margin: 0;
+}
+
+.blank-logo {
+  width: 76px;
+  height: auto;
+  margin-bottom: 14px;
+}
+
+.blank-name {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.blank-by {
+  font-size: 14px;
+  color: var(--text-tertiary);
+}
+
+.blank-by a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.blank-by a:hover {
+  text-decoration: underline;
+}
+
+.blank-hint {
+  max-width: 30ch;
+  margin-top: 22px !important;
+  color: var(--text-tertiary);
+  font-size: 14px;
+}
+
+/* Centred by its margins, not by a transform: `arrive` moves it with a transform of its own, and
+   under a `translateX(-50%)` it would slide in from 22 px to one side every time it showed. */
+.jump {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--composer-h) + 22px + env(safe-area-inset-bottom));
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin: 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text);
+  cursor: pointer;
+  animation: arrive 0.18s ease-out;
+}
+
+/* The composer: glass over the end of the conversation, with a fade under it so the words
+   that scroll beneath end softly rather than at the glass's edge. */
+
+.stage::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  height: calc(var(--composer-h) * 0.6 + 10px + env(safe-area-inset-bottom));
+  background: linear-gradient(rgb(17 24 39 / 0), rgb(17 24 39 / 0.85) 60%);
+  pointer-events: none;
+}
+
+.composer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  z-index: 2;
+  width: min(var(--column), calc(100% - 20px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+  margin: 0 auto;
+  padding: 8px 8px 8px 10px;
+  border: 1px solid rgb(75 85 99 / 0.55);
+  border-radius: 24px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.composer:focus-within {
+  border-color: var(--border);
+}
+
+/* The keyboard is in a field: a ring of its own, set off from the box by a gap. The field has no
+   outline, and the edge going from 55 % to full grey is too weak a cue on its own. Listening, the
+   box's own edge is already the accent, so the gap is what tells typing from listening; and only
+   a field brings the ring, because every button in the box has one of its own. */
+.composer:has(.compose-input:focus) {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* Listening, the edge is the accent: the box is the live thing on the screen. */
+.composer[data-status="live"] {
+  border-color: var(--accent);
+  box-shadow: var(--shadow), 0 0 0 1px var(--accent);
+}
+
+.compose-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.compose-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  max-height: 168px;
+  padding: 11px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  line-height: 22px;
+  resize: none;
+  overflow-y: hidden;
+}
+
+.compose-input.scrolls {
+  overflow-y: auto;
+}
+
+/* The field and, behind it, the hint a chosen skill gives for what it takes: a copy of the typed
+   "/name " that cannot be seen, with the hint written after it in muted type. It must set its
+   text exactly as the field does, so the two share their metrics. */
+.compose-field {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+}
+
+.compose-ghost {
+  position: absolute;
+  inset: 0;
+  padding: 11px 4px;
+  overflow: hidden;
+  font: inherit;
+  line-height: 22px;
+  white-space: pre;
+  pointer-events: none;
+}
+
+.ghost-text {
+  visibility: hidden;
+}
+
+.ghost-hint {
+  color: var(--text-tertiary);
+}
+
+/* How adding a picture is going, or why it did not: a line above the field that takes no room
+   while it has nothing to say. */
+.compose-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 2px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.compose-note[data-kind=""] {
+  height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.compose-note[data-kind="error"] {
+  color: var(--danger);
+}
+
+.compose-note:not([data-kind="busy"]) .spinner {
+  display: none;
+}
+
+/* What the next instruction will carry: pictures as squares and texts as chips, in a row that
+   scrolls sideways, with room above and to the right for the badge that overhangs each. */
+.attach-row {
+  display: flex;
+  gap: 12px;
+  margin: 0;
+  padding: 8px 8px 4px 2px;
+  overflow-x: auto;
+  list-style: none;
+  scrollbar-width: none;
+}
+
+.attach-row::-webkit-scrollbar {
+  display: none;
+}
+
+.attach-item {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  max-width: min(280px, 78vw);
+}
+
+.attach-img {
+  display: block;
+  width: 56px;
+  height: 56px;
+  border: 1px solid rgb(75 85 99 / 0.6);
+  border-radius: 12px;
+  background: var(--fill);
+  object-fit: cover;
+}
+
+.attach-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 40px;
+  padding: 0 14px 0 8px;
+  border: 1px solid rgb(75 85 99 / 0.6);
+  border-radius: 20px;
+  background: var(--fill);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* 22 px to look at, 44 to touch (the ::after). */
+.attach-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  color: var(--ground);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.5);
+  cursor: pointer;
+}
+
+.attach-remove::after {
+  content: "";
+  position: absolute;
+  inset: -11px;
+}
+
+.attach-remove .icon {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.6;
+}
+
+@media (hover: hover) {
+  .attach-remove:hover {
+    background: var(--text);
+  }
+}
+
+/* "/" reaches for a skill: a list above the composer, opaque (the composer is glass, and a glass
+   child of glass has nothing behind it to blur). Each skill is its name and, muted beside it,
+   what it takes; under them, what it does, on one line. */
+.skill-list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  max-height: min(264px, 38dvh);
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid rgb(75 85 99 / 0.55);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.skill-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 8px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.skill-option[aria-selected="true"] {
+  background: var(--fill);
+}
+
+.skill-name {
+  color: var(--text);
+  font: 15px/1.4 ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, monospace;
+}
+
+.skill-hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-desc {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compose-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.compose-input:focus-visible {
+  outline: none; /* the composer's ring says where the keyboard is */
+}
+
+/* Review: the relay is holding an instruction for you to look at. The same box with a
+   different question, and the accent on its label so it is not mistaken for the message field. */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.review-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 4px 0;
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.review-label::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.review-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.accept {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  flex: none;
+}
+
+/* Three columns, the microphone in the middle of the box so it never shifts under a thumb. The
+   left one gives way first (the model's name cuts short); the right one is never narrower than
+   what is in it, because its buttons are as wide as a thumb — mute, speaker and stop, live, are
+   more than a third of 360 px — and when there is not room for both the microphone moves aside
+   by the difference, rather than the buttons going under it. */
+.compose-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(min-content, 1fr);
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+/* What Claude is: the model and what it may do, as words. They give way (ellipsis) before the
+   microphone moves. */
+.bar-start {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 44px;
+}
+
+/* The round buttons keep their circle; it is the capsule beside them that gives way. A flex item
+   shrinks by default, and the plus was squeezed to a sliver by a long model name. */
+.bar-start .round {
+  flex: none;
+}
+
+.bar-end {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* A thumb's width, whatever is beside them: a flex item may shrink below its width, which is how
+   a circle becomes an oval. */
+.bar-end .round {
+  flex: none;
+}
+
+/* A word you can press: 36 px to look at, 44 to touch (the padding of ::after). */
+.capsule {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--fill);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.capsule::after {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
+}
+
+.capsule-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.capsule:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The model list is still on its way: the word is a placeholder, and breathes. */
+.capsule.loading .capsule-text {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (hover: hover) {
+  .capsule:not(:disabled):hover {
+    background: var(--border);
+    color: var(--text);
+  }
+}
+
+/* The microphone: the one lit thing until you speak, and then your voice. */
+
+.listen {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--ground);
+  cursor: pointer;
+  transition: background-color 0.15s, transform 0.1s;
+}
+
+.listen .icon {
+  width: 22px;
+  height: 22px;
+}
+
+@media (hover: hover) {
+  .composer[data-status="idle"] .listen:hover {
+    background: var(--accent-hover);
+  }
+}
+
+.composer[data-status="idle"] .listen:active {
+  transform: scale(0.94);
+}
+
+.composer[data-status="connecting"] .listen::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  animation: ring 1.1s ease-out infinite;
+}
+
+@keyframes ring {
+  from {
+    opacity: 0.9;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.25);
+  }
+}
+
+.composer[data-status="live"] .listen {
+  background: transparent;
+  cursor: default;
+}
+
+.wave {
+  display: none;
+  align-items: center;
+  gap: 3px;
+  height: 26px;
+}
+
+.composer[data-status="live"] .listen-face {
+  display: none;
+}
+
+.composer[data-status="live"] .wave {
+  display: flex;
+}
+
+/* Every bar is the one level, shaped by how far it sits from the middle: 3 px at rest,
+   26 px for the middle bar at full voice, never below a floor that keeps it a waveform. */
+.bar {
+  width: 3px;
+  height: 26px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: scaleY(calc((3 + 23 * max(var(--level, 0), 0.22) * var(--taper, 1)) / 26));
+  transition: transform 0.1s ease-out, background-color 0.2s;
+}
+
+.bar:nth-child(1),
+.bar:nth-child(7) {
+  --taper: 0.38;
+}
+
+.bar:nth-child(2),
+.bar:nth-child(6) {
+  --taper: 0.587;
+}
+
+.bar:nth-child(3),
+.bar:nth-child(5) {
+  --taper: 0.793;
+}
+
+.composer.muted .bar {
+  background: var(--text-tertiary);
+}
+
+/* Push to talk: with the call up, the middle of the box is the thing to hold. It is a button again
+   (a plain disc, the bars grey as they are when muted), and while it is down the microphone is
+   open: the bars turn to the accent and a ring says so. `touch-action: none` and the rest keep a
+   finger held on it from scrolling the page, selecting text or opening the browser's menu. */
+.composer.ptt .listen {
+  background: var(--fill);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  transition: background-color 0.15s, box-shadow 0.15s;
+}
+
+.composer.ptt.talking .listen {
+  background: rgb(251 146 60 / 0.2);
+  box-shadow: 0 0 0 3px var(--accent);
+}
+
+@media (hover: hover) {
+  .composer.ptt:not(.talking) .listen:hover {
+    background: var(--border);
+  }
+}
+
+/* The key a control answers to, small on its corner: L, M, Esc, and Space on the thing to hold.
+   Only where there is a keyboard to press it on — a phone has the buttons — and never in the
+   way: it takes no clicks, and sits half outside the button it belongs to. */
+.has-key {
+  position: relative;
+}
+
+.keycap {
+  display: none;
+  position: absolute;
+  right: -3px;
+  bottom: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: 600 10px/14px var(--font);
+  letter-spacing: 0.02em;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 1px 0 rgb(0 0 0 / 0.45);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .keycap:not([hidden]) {
+    display: block;
+  }
+}
+
+/* Under the microphone rather than at its corner: it is the biggest thing in the box, and the
+   key beside it is the one to learn first. */
+.listen .keycap {
+  right: auto;
+  left: 50%;
+  bottom: -6px;
+  transform: translateX(-50%);
+}
+
+/* Sheets: a panel that rises from the bottom on a phone, a centred dialog on a wide screen,
+   over a dimmed page. Mounted on <body>, outside .app, so nothing in the app can clip it. */
+
+html.sheet-open,
+html.sheet-open body {
+  overflow: hidden;
+}
+
+.sheet-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 0.55);
+  animation: fade-in 0.2s ease-out;
+}
+
+.sheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: min(88dvh, 680px);
+  padding-bottom: env(safe-area-inset-bottom);
+  border: 1px solid rgb(75 85 99 / 0.55);
+  border-bottom: 0;
+  border-radius: 20px 20px 0 0;
+  background: var(--ground);
+  box-shadow: 0 -8px 30px rgb(0 0 0 / 0.5);
+  animation: sheet-up 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.sheet:focus {
+  outline: none;
+}
+
+.sheet-head {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 8px;
+}
+
+.sheet-title {
+  margin: 0;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.sheet-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 16px 20px;
+}
+
+.sheet-layer.leaving {
+  pointer-events: none;
+}
+
+.sheet-layer.leaving .sheet {
+  animation: sheet-down 0.2s ease-in forwards;
+}
+
+.sheet-layer.leaving .sheet-backdrop {
+  animation: fade-out 0.2s ease-in forwards;
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes sheet-down {
+  to {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+
+@keyframes dialog-out {
+  to {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@media (min-width: 700px) {
+  .sheet-layer {
+    align-items: center;
+    padding: 24px;
+  }
+
+  .sheet {
+    width: min(100%, 480px);
+    padding-bottom: 0;
+    border-bottom: 1px solid rgb(75 85 99 / 0.55);
+    border-radius: 20px;
+    box-shadow: 0 24px 64px rgb(0 0 0 / 0.6);
+    animation-name: dialog-in;
+    animation-duration: 0.2s;
+  }
+
+  .sheet-layer.leaving .sheet {
+    animation-name: dialog-out;
+    animation-duration: 0.15s;
+  }
+}
+
+/* The rows of a choice sheet: a card of what can be picked. The check is drawn on every row
+   and shown on one, so picking another never moves the words. */
+
+.choice-list {
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.choice {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 64px;
+  padding: 12px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.choice + .choice::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 16px;
+  height: 1px;
+  background: rgb(75 85 99 / 0.5);
+}
+
+.choice.has-icon + .choice::before {
+  left: 56px;
+}
+
+.choice:focus-visible,
+.choice-trailing:focus-visible {
+  outline-offset: -2px;
+}
+
+.choice-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  flex: none;
+  color: var(--accent);
+}
+
+.choice-icon .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.choice-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.choice-title {
+  font-size: 16px;
+}
+
+/* Wraps rather than trailing off: a description that explains the choice is worth the second
+   line, and one row cutting short while its neighbours do not reads as a glitch. */
+.choice-detail {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.choice-check {
+  flex: none;
+  color: var(--accent);
+  visibility: hidden;
+}
+
+.choice[aria-selected="true"] .choice-check {
+  visibility: visible;
+}
+
+.choice-trailing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 56px;
+  margin-top: 12px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.trailing-value {
+  margin-left: auto;
+  color: var(--text-secondary);
+}
+
+.choice-trailing .icon {
+  width: 16px;
+  height: 16px;
+  color: var(--text-tertiary);
+}
+
+/* The Permission row wears the icon of the rung you are on, as the choice rows do. */
+.choice-trailing .choice-icon {
+  margin-right: -2px;
+}
+
+.choice-trailing .choice-icon .icon {
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+}
+
+@media (hover: hover) {
+  .choice:hover,
+  .choice-trailing:hover {
+    background: rgb(255 255 255 / 0.05);
+  }
+}
+
+.choice-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px 0;
+  color: var(--text-tertiary);
+}
+
+/* Said where the rows would be, for a list that is empty and not coming: the reason, centred, quiet. */
+.choice-empty {
+  margin: 0;
+  padding: 36px 16px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  text-align: center;
+}
+
+.choice-empty:focus {
+  outline: none;
+}
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  border: 2.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.spinner.small {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Small dialogs inside a sheet: rename, and the confirmation that deleting asks for. */
+
+.dialog {
+  display: grid;
+  gap: 14px;
+}
+
+.dialog-label {
+  font-weight: 600;
+}
+
+.dialog-subject {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dialog-text {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.button.danger {
+  border-color: transparent;
+  background: var(--danger);
+  color: var(--ground);
+}
+
+@media (hover: hover) {
+  .button.danger:not(:disabled):hover {
+    background: #FCA5A5;
+  }
+}
+
+.choice.danger .choice-icon,
+.choice.danger .choice-title {
+  color: var(--danger);
+}
+
+/* The chats. A phone gets a drawer that slides in from the left over a dimmed page; from 900 px
+   wide it is a sidebar that is always there, and the conversation takes what is left. */
+
+.drawer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  visibility: hidden;
+  pointer-events: none;
+  transition: visibility 0s linear 0.24s;
+}
+
+.drawer.open {
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+.drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 0.55);
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+}
+
+.drawer.open .drawer-backdrop {
+  opacity: 1;
+}
+
+.drawer-panel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(320px, 86vw);
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  border-right: 1px solid rgb(75 85 99 / 0.45);
+  background: var(--ground);
+  box-shadow: 8px 0 30px rgb(0 0 0 / 0.5);
+  transform: translateX(-100%);
+  transition: transform 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.drawer.open .drawer-panel {
+  transform: none;
+}
+
+.drawer-panel:focus {
+  outline: none;
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 6px 20px;
+}
+
+.drawer-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.drawer-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 16px 8px;
+  padding: 0 4px 0 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text-tertiary);
+}
+
+.drawer-search .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.drawer-search:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.drawer-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 16px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.drawer-search-input:focus-visible {
+  outline: none; /* the box around it says where the keyboard is */
+}
+
+.drawer-search-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.drawer-search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.drawer-search-clear {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  min-height: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.drawer-search-clear .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.drawer-note {
+  margin: 0 16px 8px;
+  padding: 8px 12px;
+  border: 1px solid rgb(248 113 113 / 0.35);
+  border-radius: 12px;
+  background: rgb(127 29 29 / 0.25);
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.chat-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Clear of New chat, which floats over the end of the list. */
+  padding-bottom: calc(76px + env(safe-area-inset-bottom));
+}
+
+.chat-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-row {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid rgb(44 54 68 / 0.9);
+}
+
+.chat-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 6px 4px 6px 20px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-row.active {
+  background: rgb(255 255 255 / 0.06);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.chat-open[aria-current="true"] {
+  color: var(--text);
+}
+
+.chat-open:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.chat-open:focus-visible,
+.chat-menu:focus-visible {
+  outline-offset: -2px;
+}
+
+.chat-star {
+  display: inline-flex;
+  flex: none;
+  color: var(--accent);
+}
+
+.chat-star .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.chat-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-meta {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.chat-time {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Working replaces the age: it is being written to right now. */
+.pill {
+  padding: 2px 8px;
+  border: 1px solid rgb(251 146 60 / 0.5);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chat-menu {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 52px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.chat-menu:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+@media (hover: hover) {
+  .chat-open:not(:disabled):hover,
+  .chat-menu:not(:disabled):hover {
+    background: rgb(255 255 255 / 0.05);
+    color: var(--text);
+  }
+}
+
+.drawer-empty {
+  display: grid;
+  gap: 8px;
+  padding: 36px 24px;
+  text-align: center;
+}
+
+.empty-title,
+.empty-detail {
+  margin: 0;
+}
+
+.empty-title {
+  font-weight: 600;
+}
+
+.empty-detail {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+/* The one thing in the drawer that is not a chat, so the one thing floating over them: on ground of
+   its own, faded in from above, so the rows dim as they reach it instead of being cut off. */
+.drawer-foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 28px 16px calc(14px + env(safe-area-inset-bottom));
+  background: linear-gradient(rgb(17 24 39 / 0), var(--ground) 45%);
+  pointer-events: none;
+}
+
+.new-chat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid rgb(75 85 99 / 0.45);
+  border-radius: 24px;
+  color: var(--text);
+  font-weight: 500;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 0.15s;
+}
+
+.new-chat .icon {
+  width: 18px;
+  height: 18px;
+}
+
+@media (hover: hover) {
+  .new-chat:hover {
+    background: var(--border);
+  }
+}
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (min-width: 900px) {
+  .app {
+    --sidebar-w: 300px;
+  }
+
+  .stage {
+    left: var(--sidebar-w);
+  }
+
+  .drawer {
+    inset: 0 auto 0 0;
+    width: var(--sidebar-w);
+    visibility: visible;
+    pointer-events: auto;
+    transition: none;
+  }
+
+  .drawer-backdrop,
+  .drawer-close {
+    display: none;
+  }
+
+  .drawer-panel {
+    width: 100%;
+    background: var(--ground);
+    box-shadow: none;
+    transform: none;
+    transition: none;
+  }
+
+  .drawer-head {
+    padding-right: 20px;
+  }
+
+  /* Nothing to open: the button keeps its room, so the name stays where it is. */
+  .chats-button {
+    visibility: hidden;
+  }
+}
+
+/* The gear's menu: a popover hung under the button, over a transparent layer that takes the tap
+   that puts it away, so that tap is not also a press on whatever is under it. */
+
+.menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+}
+
+.menu {
+  position: fixed;
+  z-index: 9;
+  width: min(330px, calc(100vw - 16px));
+  max-height: calc(100dvh - 80px);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid rgb(75 85 99 / 0.55);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.6);
+  transform-origin: top right;
+  animation: menu-in 0.14s ease-out;
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item:focus-visible {
+  outline-offset: -2px;
+  background: rgb(255 255 255 / 0.06);
+}
+
+.menu-item[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.menu-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  flex: none;
+  color: var(--accent);
+}
+
+.menu-icon .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.menu-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.menu-detail {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 6px 10px;
+  background: rgb(75 85 99 / 0.5);
+}
+
+/* The track and the thumb of a switch; the row around it carries the role and the state. */
+.switch {
+  position: relative;
+  flex: none;
+  width: 42px;
+  height: 26px;
+  border-radius: 13px;
+  background: var(--border);
+  transition: background-color 0.15s;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform 0.15s;
+}
+
+[aria-checked="true"] > .switch {
+  background: var(--accent);
+}
+
+[aria-checked="true"] > .switch::after {
+  transform: translateX(16px);
+  background: var(--ground);
+}
+
+@media (hover: hover) {
+  .menu-item:not([aria-disabled="true"]):hover {
+    background: rgb(255 255 255 / 0.06);
+  }
+}
+
+/* Inside the settings sheets (corrections, prompts, connection): one pane at a time, a bar across the
+   top with Back and what the pane does, then what it holds. */
+
+.pane,
+.pane-body {
+  display: grid;
+  gap: 14px;
+}
+
+.pane-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+}
+
+.pane-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: -6px;
+  padding: 0 12px 0 4px;
+  border: 0;
+  border-radius: 22px;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.pane-back .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.pane-label {
+  margin-bottom: -6px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* A field that holds sentences: the pill of `.field` is for one line. */
+.field.area {
+  display: block;
+  min-height: 72px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+.field.area:focus-visible {
+  outline-offset: 0;
+}
+
+/* A prompt is a page of prose or a sentence, written to a model: a face for writing instructions in. */
+.prompt-text {
+  min-height: 260px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
+}
+
+.pane-note {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.pane-note.warn {
+  color: var(--danger);
+}
+
+.pane-empty {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 28px 8px;
+  text-align: center;
+}
+
+.pane-clip {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+}
+
+.button.danger-quiet {
+  border-color: rgb(248 113 113 / 0.45);
+  background: transparent;
+  color: var(--danger);
+}
+
+@media (hover: hover) {
+  .button.danger-quiet:not(:disabled):hover {
+    background: rgb(127 29 29 / 0.3);
+  }
+}
+
+.correction-row > .icon,
+.prompt-row > .icon {
+  width: 16px;
+  height: 16px;
+  color: var(--text-tertiary);
+}
+
+.choice:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* What it heard, quieter, and under it what was meant. */
+.correction-heard,
+.correction-meant {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.correction-heard {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.correction-heard .icon,
+.correction-meant .icon {
+  align-self: center;
+  width: 13px;
+  height: 13px;
+  color: var(--text-tertiary);
+}
+
+.correction-heard > span:last-child,
+.correction-meant > span:last-child {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.prompt-note {
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+/* Connection: a card of facts, and the one thing that can be done about them. */
+
+.kv-card {
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.kv-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 10px 16px;
+}
+
+.kv-row + .kv-row,
+.kv-action {
+  border-top: 1px solid rgb(75 85 99 / 0.5);
+}
+
+.kv-label {
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.kv-value {
+  min-width: 0;
+  margin-left: auto;
+  text-align: right;
+}
+
+.kv-glyph {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  flex: none;
+}
+
+.kv-glyph .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.kv-glyph.reachable {
+  color: var(--ok);
+}
+
+.kv-glyph.offline {
+  color: var(--danger);
+}
+
+.kv-glyph.checking {
+  color: var(--text-tertiary);
+}
+
+.kv-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.kv-title {
+  font-weight: 600;
+}
+
+.kv-detail {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.kv-action {
+  display: block;
+  width: 100%;
+  min-height: 52px;
+  padding: 0 16px;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  background: transparent;
+  color: var(--danger);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.kv-action:focus-visible {
+  outline-offset: -2px;
+}
+
+@media (hover: hover) {
+  .kv-action:hover {
+    background: rgb(255 255 255 / 0.05);
+  }
+}
+
+img {
+  max-width: 100%;
+}
+
+.noscript {
+  margin: 24px var(--gutter);
+  color: var(--text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

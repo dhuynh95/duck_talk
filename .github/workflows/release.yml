@@ -41,6 +41,7 @@ jobs:
 
       - run: npm ci
       - run: npm run check
+      - run: npm test
       - run: npm run build
       # Installed elsewhere and started there, before the version exists — a release
       # that cannot be installed should never get a number.

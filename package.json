@@ -27,6 +27,10 @@
   },
   "files": [
     "dist/",
+    "web/",
+    "!web/tsconfig.json",
+    "!web/env.d.ts",
+    "!web/README.md",
     "README.md",
     "LICENSE"
   ],
@@ -38,8 +42,9 @@
   },
   "scripts": {
     "start": "node --watch server/cli.ts",
-    "check": "tsc --noEmit",
-    "build": "tsc && node -e \"require('fs').cpSync('server/prompts','dist/prompts',{recursive:true})\"",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "check": "tsc --noEmit && tsc -p web --noEmit",
+    "build": "tsc && node -e \"const fs=require('fs');for(const d of ['prompts','kokoro'])fs.cpSync('server/'+d,'dist/'+d,{recursive:true})\"",
     "prepare": "git config core.hooksPath scripts/hooks 2>/dev/null || true",
     "prepublishOnly": "npm run build"
   },

@@ -2,19 +2,19 @@
  * Every address a phone can reach this relay at, said by the one process that knows.
  *
  * Three rows, for the three places a phone can be. The relay bound the socket, so it
- * knows the port; the Mac's own interfaces say what the LAN calls it; and Tailscale,
+ * knows the port; this machine's own interfaces say what the LAN calls it; and Tailscale,
  * when it is set up, keeps a record of the front door it holds open — read here, and
  * repointed only when it leads nowhere. Nothing else has to guess an address, which is
  * what let `dt` and the app each carry one and disagree.
  *
- *   simulator    the app running on this Mac
+ *   simulator    the app running on this machine
  *   same Wi-Fi   a phone on the same network, plain ws:// to a private address
  *   anywhere     a phone on cellular, which needs a tunnel — and needs wss://, because
  *                iOS refuses cleartext to anything that is not a private address
  *
  * The third row is Tailscale because it is the one tunnel that needs no third party
  * and hands out a real certificate: `tailscale serve --bg 8765`, once, and the phone
- * dials `wss://<mac>.<tailnet>.ts.net` — with no port in it, because the front door is
+ * dials `wss://<machine>.<tailnet>.ts.net` — with no port in it, because the front door is
  * 443 and forwards to 8765 on its own. That last fact is why the port is fixed: a
  * relay that stepped to 8766 would still be behind a door that opens onto 8765.
  *
@@ -25,6 +25,10 @@
  * repoints it at the running relay and says so. Without that, a `wss://` address
  * resolves, presents a valid certificate, and answers nothing, which is the one
  * failure a phone on cellular cannot tell apart from a bad Wi-Fi day.
+ *
+ * The browser client is the same three places over http(s) on the same port, and the
+ * relay serves it there — `webLines` says those addresses, key included, because the
+ * key is what turns a printed address into one that opens.
  */
 
 import { execFile } from 'node:child_process';
@@ -36,21 +40,47 @@ const run = promisify(execFile);
 
 export interface Reach {
   simulator: string;
-  /** Null when the Mac has no private IPv4 address — offline, or a VM with none. */
+  /** Null when this machine has no private IPv4 address — offline, or a VM with none. */
   wifi: string | null;
   /** The address, or one line saying what is missing for there to be one. */
   anywhere: string;
+  /** The Tailscale host whose front door opens onto this port, or null when none does. */
+  anywhereHost: string | null;
 }
 
 export async function reach(port: number): Promise<Reach> {
+  const { line, host } = await tailnet(port);
   return {
     simulator: `ws://localhost:${port}`,
     wifi: lan().map((ip) => `ws://${ip}:${port}`)[0] ?? null,
-    anywhere: await tailnet(port),
+    anywhere: line,
+    anywhereHost: host,
   };
 }
 
-/** The Mac's private IPv4 addresses, the ones a phone on the same Wi-Fi can dial. */
+/**
+ * Where the browser client is, as startup rows laid out like the ones `reach` feeds —
+ * from the same `Reach`, so the two sets of addresses cannot disagree.
+ *
+ * The microphone is the reason for three rows and not one: a browser only hands out the
+ * mic to a secure context, and `localhost` and the tailnet's `https://` are secure while
+ * a plain `http://` LAN address is not, so that row is typing only. A tailnet with no
+ * door onto this port has no URL to give, so the row says what `anywhere` says.
+ *
+ * `key` is null for a relay started `--open`, and then no address carries one.
+ */
+export function webLines(r: { port: number; wifi: string | null; anywhereHost: string | null; anywhere: string }, key: string | null): string[] {
+  const q = key === null ? '' : `?key=${encodeURIComponent(key)}`;
+  const row = (label: string, value: string) => `  ${label.padEnd(13)}${value}`;
+  const lines = [
+    row('web', r.anywhereHost ? `https://${r.anywhereHost}/${q}` : r.anywhere),
+    row('localhost', `http://localhost:${r.port}/${q}`),
+  ];
+  if (r.wifi) lines.push(row('web Wi-Fi', `http://${new URL(r.wifi).hostname}:${r.port}/${q}  typing only — no microphone off localhost`));
+  return lines;
+}
+
+/** This machine's private IPv4 addresses, the ones a phone on the same Wi-Fi can dial. */
 function lan(): string[] {
   const out: string[] = [];
   for (const addrs of Object.values(networkInterfaces())) {
@@ -61,7 +91,7 @@ function lan(): string[] {
   return out;
 }
 
-/** Whether anything holds `port` on this Mac right now — one TCP connection, asked of
+/** Whether anything holds `port` on this machine right now — one TCP connection, asked of
  *  the port itself rather than inferred from a process list. */
 function listening(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -84,13 +114,17 @@ function listening(port: number): Promise<boolean> {
  * case that matters: told "stop that one", there was no "that one" to stop. So the
  * port behind the door is asked whether anyone is home, and the answer splits the
  * two states that were one — someone else's door, reported; nobody's door, taken.
+ *
+ * `host` is the door's name when it now opens onto this port — as found, or as just
+ * repointed — and null in every case where it does not, which is when the browser
+ * client has no `https://` address to be given.
  */
-async function tailnet(port: number): Promise<string> {
+async function tailnet(port: number): Promise<{ line: string; host: string | null }> {
   let json: string;
   try {
     ({ stdout: json } = await run('tailscale', ['serve', 'status', '--json'], { timeout: 3_000 }));
   } catch {
-    return 'not reachable off Wi-Fi — a tunnel is needed, see README › Anywhere';
+    return { line: 'not reachable off Wi-Fi — a tunnel is needed, see README › Anywhere', host: null };
   }
   const doors = (JSON.parse(json) as { Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }> }).Web ?? {};
   for (const [hostPort, door] of Object.entries(doors)) {
@@ -98,16 +132,16 @@ async function tailnet(port: number): Promise<string> {
     if (!proxy) continue;
     const host = hostPort.replace(/:443$/, '');
     const behind = Number(new URL(proxy).port);
-    if (behind === port) return `wss://${host}`;
+    if (behind === port) return { line: `wss://${host}`, host };
     if (await listening(behind)) {
-      return `wss://${host} opens onto :${behind}, where another relay is running — stop it, or serve this port`;
+      return { line: `wss://${host} opens onto :${behind}, where another relay is running — stop it, or serve this port`, host: null };
     }
     try {
       await run('tailscale', ['serve', '--bg', String(port)], { timeout: 5_000 });
-      return `wss://${host}  (repointed from :${behind}, where nothing was listening)`;
+      return { line: `wss://${host}  (repointed from :${behind}, where nothing was listening)`, host };
     } catch {
-      return `wss://${host} opens onto :${behind}, where nothing is listening — run:  tailscale serve --bg ${port}`;
+      return { line: `wss://${host} opens onto :${behind}, where nothing is listening — run:  tailscale serve --bg ${port}`, host: null };
     }
   }
-  return `run once on this Mac:  tailscale serve --bg ${port}`;
+  return { line: `run once on this ${process.platform === 'darwin' ? 'Mac' : 'machine'}:  tailscale serve --bg ${port}`, host: null };
 }

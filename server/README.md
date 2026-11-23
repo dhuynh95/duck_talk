@@ -12,7 +12,10 @@ duck_talk` runs. Each primitive runs alone:
 - `chats.ts`  — the conversations Claude Code has in this project: list, read, fork, star, rename, delete. All of it the SDK's own session store, which is what `?resume=` replays.
 - `cli.ts`    — the entry point: the flags, the `.env`, and which folder to serve.
 - `paths.ts`  — where that folder puts everything, now that it is a choice.
-- `reach.ts`  — every address a phone can reach the relay at, printed at startup: simulator, same Wi-Fi, and Tailscale's `wss://` when it is set up.
+- `reach.ts`  — every address a phone can reach the relay at, printed at startup: simulator, same Wi-Fi, and Tailscale's `wss://` when it is set up — and the same three for the browser client, as `http(s)://` rows that carry the key.
+- `web.ts`    — the browser client's files, served from `web/` on the relay's own port, and `GET /access.json`.
+- `access.ts` — the access key: made once, kept in `.duck-talk/key`, checked on every WebSocket upgrade.
+- `origin.ts` — which web pages may open a socket: checked on every upgrade, before the key.
 
 ```bash
 npm install
@@ -23,7 +26,9 @@ node server/cli.ts --help     # or once installed: duck-talk --help
 Everything is decided by the folder you start it in. That folder is what Claude works
 in, so it is which chats the drawer lists and what `?resume=` can carry on, and it is
 where the relay keeps what it learns — `<folder>/.duck-talk/`, holding `turns.jsonl`,
-`corrections.jsonl` and any prompt you edited from the phone. Nothing is written beside
+`corrections.jsonl` and any prompt you edited from the phone — and a `.gitignore` of `*`,
+written once if absent, so the key and the logs never reach the project's repo; made by
+the relay, the folder is closed to other users (0700). Nothing is written beside
 the code, because installed by `npx` the code lives in a cache that gets wiped.
 
 Needs `GEMINI_API_KEY` in that folder's `.env` or in the shell, and Claude Code signed
@@ -43,6 +48,46 @@ nothing from the moment it starts to the moment it finishes.
 No build step in the repo: Node ≥ 22.6 runs the `.ts`. `npm run build` exists for the
 published package, which cannot assume that of a stranger's Node.
 
+## One port: the page and the sockets
+
+The relay is one HTTP server. A request is answered from `web/` — `GET /` is the browser
+client's `index.html`, `GET` and `HEAD` only, and a path that resolves outside `web/` is a
+404 (`web.ts`) — and a WebSocket upgrade on the same port is a connection, so a page and
+its relay share an origin and there is nothing for a browser to cross.
+
+The gate is a key (`access.ts`). The first start makes 16 random bytes, base64url, and
+keeps them in `.duck-talk/key`; `DUCK_TALK_KEY` overrides it, and then no file is written.
+Every upgrade must carry `?key=<key>` — a `?data=1` socket and a chat's alike — and
+one that does not gets `HTTP/1.1 401 Unauthorized` on the upgrade itself, before a
+connection exists: a refused caller is never a session, a data connection or a log line.
+`--open`, or `DUCK_TALK_OPEN=1`, turns the check off, and no key is made. The iPhone app
+sends none, so it needs a relay started that way.
+
+Before the key, and in both modes, an upgrade's `Origin` is checked (`origin.ts`), because
+a browser lets any page it has loaded open a socket here. No `Origin` — the app, `ws`,
+curl, the probe — goes on to the key. One that is present must be an http(s) URL whose
+hostname is this machine (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`), the local
+network (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`, IPv6 ULA and link-local,
+`*.local`, a one-label name), a tailnet (`*.ts.net`), or in `DUCK_TALK_ORIGINS` —
+comma-separated exact hostnames or `*.suffix`, for a reverse proxy or a custom domain,
+read once at start. Anything else, `null` included, gets `HTTP/1.1 403 Forbidden` and one
+line, `refused origin <hostname>`. It is the hostname that is checked, not that it equals
+`Host`: a rebound DNS name makes those two agree.
+
+The files are served without a key, and so is one more address: `GET /access.json` answers
+`{"required":true}` or `{"required":false}`, which is what a page with no key stored asks
+before it decides whether to show a form. It says whether a key is wanted and never what it
+is, and it is never cached, because a relay restarted with or without `--open` on the same
+port has to be believed the next time it is asked.
+
+The startup rows say where a phone can reach it: `simulator`, `same Wi-Fi` and `anywhere`
+for sockets, and for the page `web` (Tailscale's `https://`, or the one line saying what
+is missing), `localhost`, and `web Wi-Fi`, marked *typing only* because a browser gives the
+microphone to an HTTPS page or to `localhost` and to nothing else. Each carries `?key=`
+unless the relay is open. Those rows are the only place the key is printed, which makes
+each run's log in `.duck-talk/logs/` — a copy of the terminal — a place it is kept: that
+file is made readable by its owner alone.
+
 ## Protocol
 
 | Direction | Frame | Meaning |
@@ -54,6 +99,7 @@ published package, which cannot assume that of a stranger's Node.
 | phone → server | text | `{"type":"approve","text"?}` — run a held instruction, as edited |
 | phone → server | text | `{"type":"stop"}` — stop everything in this chat: the turn and its background tasks |
 | phone → server | text | `{"type":"attach","id","data"\|"text"}` — a picture (base64 JPEG) or a pasted text, for the next instruction |
+| phone → server | text | `{"type":"drop","id"}` — take back a pending attachment before the instruction runs |
 | phone → server | text | `{"type":"claude","model"?,"permission"?,"effort"?}` — which model answers, what it may do, how hard it thinks |
 | server → phone | binary | raw PCM Int16 LE, 24 kHz, mono (Claude's voice) |
 | server → phone | text | `{"type":"user"\|"model"\|"tool"\|"approval"\|"turn_start"\|"interrupted"\|"turn_end"\|"error","text"?}` |
@@ -87,7 +133,7 @@ say which kind of connection it is. Ears that open mid-turn are read the latest 
 first, so the listener lands where Claude is. A typed instruction is never corrected
 and never held: it cannot have been misheard.
 
-Connect to `ws://<mac>:8765`. One `?mode=`: `direct` (default) runs each instruction
+Connect to `ws://<host>:8765/?key=<key>` (no `key` to a relay started `--open`). One `?mode=`: `direct` (default) runs each instruction
 at once, `review` holds it until it is approved — by an `approve` frame, or by saying
 "yes". Refusing one is not doing anything with it, so the only way to refuse is to say
 "no" or to hang up.
@@ -117,6 +163,14 @@ attached and gives it to whichever instruction runs next, typed, spoken or appro
 because it has to exist before a socket does. A picture is filed under it and the turn
 record names it, which is how a chat reopened next week still shows it; a paste is filed
 nowhere, because the transcript keeps the block and `chat` reads it back from there.
+
+`drop` takes one back: the piece with that id is forgotten, and a picture that was filed is
+unfiled, so the next instruction is not given it and a chat reopened later does not show
+something that was never said. It applies to what is still pending — a turn that is already
+running holds what it was given, and a `drop` naming one of its pictures is ignored — and an
+id the relay does not hold is ignored too, so sending it twice is harmless. A client that
+never sends it, and a relay that never reads it, still work with each other: the attachment
+is then simply given to the next instruction, as before.
 
 `?data=1` opens a connection that edits what the relay owns and nothing else — no
 voice session, no Gemini, no Claude. It opens with `{"type":"relay","version":"…"}`
@@ -179,6 +233,11 @@ Claude, not Gemini). `claude_first_at - heard_at` is Claude's own time — cold 
 turn one, then resumed and fast. `voice_out_at → reply_in_at` is the cost of the hop.
 `voice_ms` is exact: 24 kHz Int16 is 48 bytes per millisecond.
 
+A browser sends no `reply_in` or `speech_end` marks — its clock is not the relay's, so a
+subtraction against it would be a guess — and a turn from the web client has
+`reply_in_at` and `speech_end_at` null. It does send `played` and the note-only marks
+(mute and unmute, what the audio system reported), which carry no timing.
+
 `app/sim.py`'s `play_audio` reads the last line of this file rather than listening to
 the reply, which is why measuring a turn needs no working output device — and why it
 looks for it in the repo root, where the relay serving this repo puts it.
@@ -198,6 +257,12 @@ node server/import.ts ~/Downloads/conversation.json  # a conversation from elsew
 node server/lab.ts                                   # hold a Live session open and read its raw messages
 ```
 
-`probe.ts` is the Mac half end to end: it connects like a phone, speaks, and prints
+`probe.ts` is the relay half end to end: it connects like a phone, speaks, and prints
 what Gemini heard and Claude said. The relay log proves the model strings and setup:
 a wrong one dies in Node, never in Swift.
+
+`probe.ts` and `lab.ts` speak with `say` and convert with `afconvert` on macOS, and with
+`espeak-ng` and `ffmpeg` everywhere else (`local-audio.ts`; a missing one is an error that
+says what to install, for example `sudo apt install espeak-ng ffmpeg`). `probe.ts --file`
+sends a recording instead of speaking one, and off a Mac it needs only `ffmpeg`. Neither is
+in the package.

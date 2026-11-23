@@ -1,0 +1,11 @@
+{
+  "name": "Duck Talk",
+  "short_name": "Duck Talk",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#111827",
+  "icons": [
+    { "src": "/logo.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

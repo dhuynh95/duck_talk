@@ -12,6 +12,7 @@
  *             {"type":"approve","text"?}              run a held instruction, as edited
  *             {"type":"stop"}                         stop everything in this chat: the turn and its background tasks
  *             {"type":"attach","id","data"|"text"}     a picture (base64 JPEG) or a pasted text, for the next instruction
+ *             {"type":"drop","id"}                    take a pending attachment back, before the instruction that would carry it runs
  *             {"type":"claude","model"?,"permission"?,"effort"?} which model answers, what it may do, how hard it thinks
  *   ↓ binary  raw PCM Int16 LE, 24 kHz, mono          (Claude's voice)
  *   ↓ text    {"type":"user"|"model"|"tool"|"approval"|"turn_start"|"interrupted"|"turn_end"|"error","text"?}
@@ -23,6 +24,12 @@
  *             a finished `user` carries `clip`: that utterance's audio, by id
  *             a `tool` carries `parent`: the Agent call it ran inside, null for Claude's own
  *             an `interrupted` may carry `retract`: the turn was taken back, un-show it
+ *
+ * One port serves both the browser client's files (web/, see web.ts) and the sockets, so
+ * a page and its relay share an origin. A socket brings `?key=`, the key the relay keeps
+ * in `.duck-talk/key` (access.ts), and one without it is refused with a 401 on the
+ * upgrade, before anything below runs — `--open` turns the check off, and `GET /access.json`
+ * says which it is (`{"required":true|false}`, never the key) so a page knows whether to ask.
  *
  * Audio is what buys audio: the ears open on the first microphone buffer and the voice
  * speaks only where there are ears, so a connection that is only typed to reaches
@@ -68,18 +75,24 @@
  * latency is a subtraction, never a measurement.
  */
 
+import { createServer } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { WebSocketServer } from 'ws';
 import { GoogleGenAI } from '@google/genai';
-import { Session, type Mode, type Phone } from './session.ts';
+import { isOpen, keyMatches, loadKey } from './access.ts';
+import { extraOrigins, originAllowed, originHost } from './origin.ts';
+import { Session, type Mode, type Phone, type VoiceName } from './session.ts';
 import { billingMode, capabilities } from './claude.ts';
 import { chat, chats, fork, remove as removeChat, rename, star } from './chats.ts';
 import { read as readClip } from './clips.ts';
 import { read as readImage } from './images.ts';
 import { load, remove, save } from './corrections.ts';
 import { watch, working } from './live.ts';
-import { VERSION } from './paths.ts';
+import { packaged, state, VERSION } from './paths.ts';
 import { all as prompts, isName, write as writePrompt } from './prompts.ts';
-import { reach } from './reach.ts';
+import { INSTALLER, kokoroConfig, kokoroStatus } from './kokoro.ts';
+import { reach, webLines } from './reach.ts';
+import { accessNotice, webHandler } from './web.ts';
 
 const PORT = Number(process.env['PORT'] ?? 8765);
 // Two jobs, two models: one Live session transcribes what you say, and a
@@ -87,6 +100,8 @@ const PORT = Number(process.env['PORT'] ?? 8765);
 // first is a session — see voice.ts for why the reader is better off without one.
 const STT_MODEL = process.env['STT_MODEL'] ?? 'gemini-3.5-transcribe-live';
 const VOICE_MODEL = process.env['VOICE_MODEL'] ?? 'gemini-3.1-flash-tts-preview';
+/** Who speaks until a page says otherwise; the page's Settings choice arrives as a `voice` frame. */
+const VOICE: VoiceName = process.env['DUCK_TALK_VOICE'] === 'kokoro' ? 'kokoro' : 'gemini';
 const API_KEY = process.env['GEMINI_API_KEY'];
 if (!API_KEY) {
   console.error('GEMINI_API_KEY missing (set it in ../.env)');
@@ -94,7 +109,44 @@ if (!API_KEY) {
 }
 
 const ai = new GoogleGenAI({ apiKey: API_KEY });
-const wss = new WebSocketServer({ port: PORT });
+
+// The relay is reachable by more than the phone in your hand, so a socket has to bring
+// the key — see access.ts. Null when `--open` says not to ask, and then no key is made
+// or kept: a relay that is open has nothing to guard.
+const key: string | null = isOpen(process.argv.slice(2), process.env) ? null : loadKey(state('key'));
+
+// One port, two kinds of caller. A request is the browser client's files; an upgrade is
+// a socket, and it is let in or refused here, before a `connection` exists — so a
+// refused caller is never a session, a data connection or a log line, whatever it asked
+// for in the query (`?data=1` is the chat history, the clips and the pictures). The one
+// thing a request may learn without the key is whether there is one: a page that has none
+// stored asks before it shows a form.
+const server = createServer(accessNotice(key !== null, webHandler(packaged('../web/'))));
+const wss = new WebSocketServer({ noServer: true });
+// A page from anywhere else is refused first, open or not: `--open` is for whoever can
+// reach the port, not for every site in a browser that can. See origin.ts.
+const origins = extraOrigins(process.env['DUCK_TALK_ORIGINS']);
+server.on('upgrade', (req, socket, head) => {
+  const origin = req.headers.origin;
+  if (!originAllowed(origin, origins)) {
+    console.log(`refused origin ${originHost(origin ?? '')}`);
+    refuse(socket, '403 Forbidden');
+    return;
+  }
+  if (key !== null && !keyMatches(suppliedKey(req.url), key)) {
+    refuse(socket, '401 Unauthorized');
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+});
+
+/** Answer an upgrade with a bare status and hang up. */
+function refuse(socket: Duplex, status: string): void {
+  // A stranger who hangs up on being refused is not an error worth a line.
+  socket.on('error', () => {});
+  socket.once('finish', () => socket.destroy());
+  socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+}
 let nextId = 1;
 
 // The chat list with the one fact only this process knows on it: which chats Claude
@@ -229,7 +281,7 @@ wss.on('connection', (ws, req) => {
     pcm: (buf) => { if (ws.readyState === ws.OPEN) ws.send(buf); },
     event: (msg) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); },
   };
-  const session = new Session(phone, ai, mode, { sttModel: STT_MODEL, voiceModel: VOICE_MODEL, autocorrect, readback, resume }, log);
+  const session = new Session(phone, ai, mode, { sttModel: STT_MODEL, voiceModel: VOICE_MODEL, voice: VOICE, autocorrect, readback, resume }, log);
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) session.send(data as Buffer);
@@ -257,20 +309,28 @@ process.on('unhandledRejection', (e) => console.error('unhandled rejection:', e)
 // what a forgotten relay from this morning looks like — arrives after this line would
 // otherwise have promised a server. The uncaught handler above would then swallow it
 // and leave a process that answers nothing.
-wss.on('listening', () => {
+server.on('listening', () => {
   // Where a phone can find this — every row the one process that knows can say, so
   // nobody copies an address out of System Settings or remembers a ts.net name.
   void reach(PORT).then((r) => {
     console.log(`  simulator    ${r.simulator}`);
     if (r.wifi) console.log(`  same Wi-Fi   ${r.wifi}`);
     console.log(`  anywhere     ${r.anywhere}`);
+    // The browser client's addresses carry the key, because that is what makes a printed
+    // address one that opens. These rows are the only place it is printed: a
+    // connection's `[id]` line says its mode and options, never its query string.
+    for (const line of webLines({ port: PORT, ...r }, key)) console.log(line);
     console.log(`  stt ${STT_MODEL}  ·  voice ${VOICE_MODEL}`);
+    // The other voice: free, on this machine, and chosen in the page's Settings.
+    void kokoroStatus(kokoroConfig()).then((status) => console.log(
+      `  local voice  Kokoro-82M, ${status === 'missing' ? `not installed — to use it, run once:  bash ${INSTALLER}` : status === 'running' ? 'running' : 'installed, started when chosen'}${VOICE === 'kokoro' ? '  (the default: DUCK_TALK_VOICE=kokoro)' : ''}`,
+    ));
   });
   // Asking the CLI who it is takes a subprocess and about 700ms, so it is printed
   // when it comes back rather than kept in front of the address someone is waiting for.
   void billingMode().then((mode) => console.log(`  claude       ${mode}`));
 });
-wss.on('error', (e: NodeJS.ErrnoException) => {
+server.on('error', (e: NodeJS.ErrnoException) => {
   // Almost always a relay from earlier today, still up. Not stepped around: the phone
   // is pointed at this port — directly, or through a Tailscale door that opens onto
   // it — so a relay on another port is one the phone cannot reach.
@@ -279,6 +339,16 @@ wss.on('error', (e: NodeJS.ErrnoException) => {
     : `could not listen on ${PORT}: ${e.message}`);
   process.exit(1);
 });
+server.listen(PORT);
+
+/** The `?key=` on a request, or null — which includes a request line that is not a URL at all. */
+function suppliedKey(target: string | undefined): string | null {
+  try {
+    return new URL(target ?? '/', 'ws://x').searchParams.get('key');
+  } catch {
+    return null;
+  }
+}
 
 function parse(text: string): Record<string, unknown> | null {
   try { return JSON.parse(text) as Record<string, unknown>; } catch { return null; }

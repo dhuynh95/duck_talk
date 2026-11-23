@@ -5,6 +5,12 @@ session against the relay in `../server`, mic to the Mac and Claude's answer rea
 back — with past chats behind the drawer, a call on the lock screen while it runs, and the
 tooling to build, run and drive it from the command line.
 
+The relay asks every WebSocket for an access key by default, and the app sends none. So
+start the relay with `--open` (`npm start -- --open` in a checkout, or `duck-talk --open`),
+or set `DUCK_TALK_OPEN=1`, when you use the app — anyone who can reach the port can then
+run Claude Code in the project. The web client does not need that; it brings the key the
+relay prints. See [`../README.md`](../README.md#the-access-key).
+
 ## Requirements
 
 - Xcode 16+ from the App Store, then `sudo xcode-select -s /Applications/Xcode.app` —
