@@ -69,6 +69,17 @@ there is nothing else to run.
   the clipboard, shrunk to a JPEG first. A paste over 800 characters becomes a chip instead
   of filling the field.
 - **`/`** lists the project's skills.
+- **Keyboard** — each button wears its key, small on its corner (on a screen with a
+  keyboard; a phone has the buttons): **L** starts listening, and hangs up while a call is
+  up; **M** mutes the microphone; **Esc** stops whatever is running — Claude, the call, or
+  both. They are shortcuts only when nothing else could have meant the key: not while the
+  message box has the keyboard, not under a menu or sheet, and never with Ctrl, Alt or Meta.
+- **Push to talk** (gear menu) — the microphone stays off until you **hold Space**, or hold
+  the middle of the box with a finger or the pointer; a ring says it is open. It closes a
+  third of a second after you let go, so the end of a word is not cut, and when the window
+  loses focus, so a key-up that never arrives cannot leave it open. While it is on, Space
+  held is talk and Mute is not offered. Pressing Space with focus on a button holds to talk
+  instead of pressing it; Enter still presses it.
 - **Corrections** and the **prompts** the relay says to each model, edited from the gear
   menu.
 
@@ -151,6 +162,44 @@ That covers the chat history, the audio clips and the pictures too.
   of your own.
 - **The iPhone app sends no key**, so a relay it talks to has to be started with `--open`.
   The web client does not need that.
+
+### Local voice (Kokoro-82M)
+
+Gemini reads the replies aloud by default, and its free tier stops at ten sentences a day
+(the relay's log says `429 … generate_content_free_tier_requests` when it does, and the page
+says so too). **Kokoro-82M** is the other choice: a small open model that runs on this
+computer's CPU, faster than real time, with no key, no network and no limit.
+
+```bash
+bash dist/kokoro/install.sh          # from a checkout: bash server/kokoro/install.sh
+```
+
+Run it once. It makes a private folder, `~/.local/share/duck-talk/kokoro` (a Python
+environment and the model, about 450 MB, checked against pinned hashes), and touches nothing
+outside it; deleting the folder removes it. It needs `python3` 3.10 or newer with `venv`.
+
+Then turn on **Local voice (Kokoro)** in the page's gear menu. It takes effect from the next
+sentence, with no reconnect, and the page remembers it for that browser. The relay starts
+the engine the first time it is chosen (a few seconds), keeps it for as long as the relay
+runs, and stops it with the relay. The startup banner has a `local voice` row that says
+whether it is installed. If it is chosen and cannot speak, the page says why.
+
+It is only the speaker. The ears — turning what you say into text — are still Gemini's.
+
+| Variable | Default | |
+|---|---|---|
+| `DUCK_TALK_VOICE=kokoro` | `gemini` | who speaks until a page says otherwise |
+| `KOKORO_VOICE` | `af_heart` | one of its 54 voices: `am_adam`, `bf_emma`, `bm_george`, … |
+| `KOKORO_SPEED` | `1` | how fast it reads |
+| `KOKORO_HOME` | `~/.local/share/duck-talk/kokoro` | where the installer put it |
+| `KOKORO_URL` | `http://127.0.0.1:8880` | where the engine listens |
+
+The engine is a small server (`server/kokoro/server.py`) answering `POST /v1/audio/speech`
+with 24 kHz 16-bit PCM, on `127.0.0.1` only. A server elsewhere that answers the same request
+can be pointed at with `KOKORO_URL`; the relay only asks it, and starts nothing that is not
+local. The first sentence after a cold start takes about two seconds; after that it is the
+sentence's own length, about 0.6 s of work per second of speech on a laptop CPU. The page's
+voice style prompt (Prompts ▸ voice) is Gemini's and does not apply to Kokoro.
 
 ### Known limits
 

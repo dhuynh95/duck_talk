@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { loadSettings, normalizeSettings, saveSettings } from '../web/settings.js';
 
-const DEFAULTS = { mode: 'direct', model: 'default', effort: 'default', permission: 'plan', autocorrect: false, output: true, gate: true, chimes: false, lastChat: null };
+const DEFAULTS = { mode: 'direct', model: 'default', effort: 'default', permission: 'plan', autocorrect: false, output: true, gate: true, pushToTalk: false, voice: 'gemini', chimes: false, lastChat: null };
 
 /** A storage that holds what it is given, in memory. */
 function memory(initial: Record<string, string> = {}) {
@@ -42,7 +42,7 @@ describe('loadSettings', () => {
 
   it('reads back what was saved', () => {
     const storage = memory();
-    const chosen = { mode: 'review', model: 'claude-sonnet-5', effort: 'xhigh', permission: 'bypassPermissions', autocorrect: true, output: false, gate: false, chimes: true, lastChat: 'c0ffee-1' };
+    const chosen = { mode: 'review', model: 'claude-sonnet-5', effort: 'xhigh', permission: 'bypassPermissions', autocorrect: true, output: false, gate: false, pushToTalk: true, voice: 'kokoro', chimes: true, lastChat: 'c0ffee-1' };
     assert.equal(saveSettings(storage, chosen as any), true);
     assert.deepEqual(loadSettings(storage), chosen);
   });
@@ -54,12 +54,12 @@ describe('loadSettings', () => {
   });
 
   it('falls back field by field: a field of the wrong type does not cost the others', () => {
-    const stored = JSON.stringify({ mode: 'review', model: 7, effort: 'high', permission: ['plan'], autocorrect: 'yes', output: 0, gate: null, chimes: 'loud' });
+    const stored = JSON.stringify({ mode: 'review', model: 7, effort: 'high', permission: ['plan'], autocorrect: 'yes', output: 0, gate: null, chimes: 'loud', voice: true, pushToTalk: 'hold' });
     assert.deepEqual(loadSettings(memory({ [KEY]: stored })), { ...DEFAULTS, mode: 'review', effort: 'high' });
   });
 
   it('falls back for a value outside what a field allows', () => {
-    const stored = JSON.stringify({ mode: 'sideways', permission: 'default', model: '', effort: '', autocorrect: true });
+    const stored = JSON.stringify({ mode: 'sideways', permission: 'default', model: '', effort: '', autocorrect: true, voice: 'espeak' });
     assert.deepEqual(loadSettings(memory({ [KEY]: stored })), { ...DEFAULTS, autocorrect: true });
   });
 

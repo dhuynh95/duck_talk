@@ -81,7 +81,7 @@ import { WebSocketServer } from 'ws';
 import { GoogleGenAI } from '@google/genai';
 import { isOpen, keyMatches, loadKey } from './access.ts';
 import { extraOrigins, originAllowed, originHost } from './origin.ts';
-import { Session, type Mode, type Phone } from './session.ts';
+import { Session, type Mode, type Phone, type VoiceName } from './session.ts';
 import { billingMode, capabilities } from './claude.ts';
 import { chat, chats, fork, remove as removeChat, rename, star } from './chats.ts';
 import { read as readClip } from './clips.ts';
@@ -90,6 +90,7 @@ import { load, remove, save } from './corrections.ts';
 import { watch, working } from './live.ts';
 import { packaged, state, VERSION } from './paths.ts';
 import { all as prompts, isName, write as writePrompt } from './prompts.ts';
+import { INSTALLER, kokoroConfig, kokoroStatus } from './kokoro.ts';
 import { reach, webLines } from './reach.ts';
 import { accessNotice, webHandler } from './web.ts';
 
@@ -99,6 +100,8 @@ const PORT = Number(process.env['PORT'] ?? 8765);
 // first is a session — see voice.ts for why the reader is better off without one.
 const STT_MODEL = process.env['STT_MODEL'] ?? 'gemini-3.5-transcribe-live';
 const VOICE_MODEL = process.env['VOICE_MODEL'] ?? 'gemini-3.1-flash-tts-preview';
+/** Who speaks until a page says otherwise; the page's Settings choice arrives as a `voice` frame. */
+const VOICE: VoiceName = process.env['DUCK_TALK_VOICE'] === 'kokoro' ? 'kokoro' : 'gemini';
 const API_KEY = process.env['GEMINI_API_KEY'];
 if (!API_KEY) {
   console.error('GEMINI_API_KEY missing (set it in ../.env)');
@@ -278,7 +281,7 @@ wss.on('connection', (ws, req) => {
     pcm: (buf) => { if (ws.readyState === ws.OPEN) ws.send(buf); },
     event: (msg) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); },
   };
-  const session = new Session(phone, ai, mode, { sttModel: STT_MODEL, voiceModel: VOICE_MODEL, autocorrect, readback, resume }, log);
+  const session = new Session(phone, ai, mode, { sttModel: STT_MODEL, voiceModel: VOICE_MODEL, voice: VOICE, autocorrect, readback, resume }, log);
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) session.send(data as Buffer);
@@ -318,6 +321,10 @@ server.on('listening', () => {
     // connection's `[id]` line says its mode and options, never its query string.
     for (const line of webLines({ port: PORT, ...r }, key)) console.log(line);
     console.log(`  stt ${STT_MODEL}  ·  voice ${VOICE_MODEL}`);
+    // The other voice: free, on this machine, and chosen in the page's Settings.
+    void kokoroStatus(kokoroConfig()).then((status) => console.log(
+      `  local voice  Kokoro-82M, ${status === 'missing' ? `not installed — to use it, run once:  bash ${INSTALLER}` : status === 'running' ? 'running' : 'installed, started when chosen'}${VOICE === 'kokoro' ? '  (the default: DUCK_TALK_VOICE=kokoro)' : ''}`,
+    ));
   });
   // Asking the CLI who it is takes a subprocess and about 700ms, so it is printed
   // when it comes back rather than kept in front of the address someone is waiting for.

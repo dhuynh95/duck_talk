@@ -21,6 +21,7 @@ import { accessState, forgetKey, needsKey, socketUrl, takeKey } from './key.js';
 import { RelayStore } from './relay.js';
 import { VoiceSession } from './session.js';
 import { loadSettings, normalizeSettings, saveSettings } from './settings.js';
+import { installShortcuts } from './shortcuts.js';
 import { createStore } from './store.js';
 import { composer } from './ui/composer.js';
 import { openConnection } from './ui/connection.js';
@@ -95,6 +96,8 @@ function app(key, storage, keyRequired) {
     session.output = settings.output;
     session.gate = settings.gate;
     session.chimes = settings.chimes;
+    session.voiceEngine = settings.voice;
+    session.pushToTalk = settings.pushToTalk;
     if (was && (was.mode !== settings.mode || was.autocorrect !== settings.autocorrect)) session.reconnect();
   };
   apply(null);
@@ -236,6 +239,8 @@ function app(key, storage, keyRequired) {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !event.defaultPrevented && bottom.stop()) event.preventDefault();
   });
+  // The rest of the keys: L to listen or hang up, M to mute, and Space held to talk (shortcuts.js).
+  installShortcuts({ doc: document, win: window, store, session });
 
   return root;
 }

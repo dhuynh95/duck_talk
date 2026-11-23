@@ -44,7 +44,7 @@
     "start": "node --watch server/cli.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "check": "tsc --noEmit && tsc -p web --noEmit",
-    "build": "tsc && node -e \"require('fs').cpSync('server/prompts','dist/prompts',{recursive:true})\"",
+    "build": "tsc && node -e \"const fs=require('fs');for(const d of ['prompts','kokoro'])fs.cpSync('server/'+d,'dist/'+d,{recursive:true})\"",
     "prepare": "git config core.hooksPath scripts/hooks 2>/dev/null || true",
     "prepublishOnly": "npm run build"
   },

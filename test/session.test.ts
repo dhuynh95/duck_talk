@@ -44,9 +44,13 @@ class FakeSocket {
     this.readyState = 3;
     this.onclose?.({});
   }
-  /** The JSON frames sent, parsed. */
-  get frames() {
+  /** Every JSON frame sent, parsed. */
+  get all() {
     return this.sent.filter((d): d is string => typeof d === 'string').map((d) => JSON.parse(d));
+  }
+  /** The JSON frames sent, parsed — without the `voice` frame every socket opens with, which has its own tests below. */
+  get frames() {
+    return this.all.filter((f) => f.type !== 'voice');
   }
 }
 
@@ -655,6 +659,175 @@ describe('VoiceSession: output and gate, held for the pipe', () => {
     session.gate = false;
     session.chimes = true;
     assert.equal(pipes.length, 0);
+  });
+});
+
+describe('VoiceSession: push to talk', () => {
+  /** The mark frames about the microphone, as the relay would log them. */
+  const marks = (socket: { all: any[] }) => socket.all.filter((f) => f.type === 'mark').map((f) => `${f.name}: ${f.note}`);
+
+  it('is off until asked for, and then a call starts with the microphone closed', async () => {
+    const { session, pipes, state } = rig();
+    assert.equal(session.pushToTalk, false);
+    session.pushToTalk = true;
+    session.listen();
+    assert.equal(pipes[0]!.muted, true, 'closed from the first frame');
+    assert.equal(state().muted, true);
+  });
+
+  it('closes a live microphone when it is turned on, and opens it again when it is turned off', async () => {
+    const { session, pipe, state } = await live();
+    assert.equal(pipe.muted, false);
+    session.pushToTalk = true;
+    assert.equal(pipe.muted, true);
+    assert.equal(state().muted, true);
+    session.pushToTalk = false;
+    assert.equal(pipe.muted, false);
+    assert.equal(state().muted, false);
+  });
+
+  it('opens the microphone while it is held, and closes it a moment after it is let go', async () => {
+    const { session, pipe, advance, state } = await live();
+    session.pushToTalk = true;
+    session.talkDown('key');
+    assert.equal(pipe.muted, false);
+    assert.equal(state().muted, false);
+    session.talkUp('key');
+    assert.equal(pipe.muted, false, 'the tail of the last word is not cut');
+    advance(300);
+    assert.equal(pipe.muted, false);
+    advance(100);
+    assert.equal(pipe.muted, true);
+    assert.equal(state().muted, true);
+  });
+
+  it('keeps it open when the press comes again inside the tail', async () => {
+    const { session, pipe, advance } = await live();
+    session.pushToTalk = true;
+    session.talkDown('key');
+    session.talkUp('key');
+    advance(200);
+    session.talkDown('key');
+    advance(1000);
+    assert.equal(pipe.muted, false, 'still held');
+    session.talkUp('key');
+    advance(400);
+    assert.equal(pipe.muted, true);
+  });
+
+  it('closes only when every source has let go: the key and a finger together', async () => {
+    const { session, pipe, advance } = await live();
+    session.pushToTalk = true;
+    session.talkDown('key');
+    session.talkDown('pointer');
+    session.talkUp('key');
+    advance(1000);
+    assert.equal(pipe.muted, false, 'the finger is still down');
+    session.talkUp('pointer');
+    advance(400);
+    assert.equal(pipe.muted, true);
+  });
+
+  it('ignores a release it has no press for, and a press when push to talk is off or there is no call', async () => {
+    const { session, pipe, advance } = await live();
+    session.talkDown('key'); // off: Space is the page's
+    session.talkUp('key');
+    advance(1000);
+    assert.equal(pipe.muted, false, 'the microphone was never touched');
+    session.pushToTalk = true;
+    session.talkUp('pointer'); // never went down
+    advance(1000);
+    assert.equal(pipe.muted, true, 'closed by turning it on, and left so');
+    const idle = rig();
+    idle.session.pushToTalk = true;
+    idle.session.talkDown('key');
+    assert.equal(idle.pipes.length, 0);
+  });
+
+  it('lets go of everything held when the window is lost', async () => {
+    const { session, pipe, advance } = await live();
+    session.pushToTalk = true;
+    session.talkDown('key');
+    session.talkDown('pointer');
+    session.releaseTalk();
+    advance(400);
+    assert.equal(pipe.muted, true);
+  });
+
+  it('hangs up cleanly while held: nothing left pending to close a microphone that is gone', async () => {
+    const { session, pipe, advance, state } = await live();
+    session.pushToTalk = true;
+    session.talkDown('key');
+    session.stopListening();
+    advance(1000);
+    assert.equal(state().status, 'idle');
+    assert.equal(state().muted, false, 'the next call decides for itself');
+    assert.equal(pipe.muted, false, 'and what was held is not closed after the fact');
+  });
+
+  it('leaves the mute button alone: the microphone is closed by default and held open, so a toggle would defeat it', async () => {
+    const { session, pipe } = await live();
+    session.pushToTalk = true;
+    session.toggleMute();
+    assert.equal(pipe.muted, true);
+    session.pushToTalk = false;
+    session.toggleMute();
+    assert.equal(pipe.muted, true, 'and works again when push to talk is off');
+  });
+
+  it('tells the relay each time the microphone opens and closes, and who asked', async () => {
+    const { session, last, advance } = await live();
+    session.pushToTalk = true;
+    session.talkDown('key');
+    session.talkUp('key');
+    advance(400);
+    assert.deepEqual(marks(last()), ['mute: push to talk', 'unmute: push to talk', 'mute: push to talk']);
+  });
+});
+
+describe('VoiceSession: who reads the reply aloud', () => {
+  it('tells every socket that opens, right after the claude frame, even when it is the default', async () => {
+    const { session, sockets } = rig();
+    session.use({ model: 'opus', permission: 'plan', effort: '' });
+    session.send('hi');
+    sockets[0]!.open();
+    assert.deepEqual(sockets[0]!.all.slice(0, 3), [
+      { type: 'claude', model: 'opus', permission: 'plan' },
+      { type: 'voice', engine: 'gemini' },
+      { type: 'text', text: 'hi' },
+    ]);
+  });
+
+  it('says the choice made before the socket opened, and the same on the socket after it', async () => {
+    const { session, sockets, last } = rig();
+    session.voiceEngine = 'kokoro';
+    session.send('hi');
+    sockets[0]!.open();
+    assert.deepEqual(last().all.filter((f) => f.type === 'voice'), [{ type: 'voice', engine: 'kokoro' }]);
+    sockets[0]!.drop();
+    await tick();
+  });
+
+  it('applies a change on the open socket at once, without redialling, and says nothing for a repeat', async () => {
+    const { session, sockets, last } = await live();
+    const dialled = sockets.length;
+    const before = last().all.filter((f) => f.type === 'voice').length;
+    session.voiceEngine = 'gemini'; // already so
+    assert.equal(last().all.filter((f) => f.type === 'voice').length, before);
+    session.voiceEngine = 'kokoro';
+    assert.deepEqual(last().all.at(-1), { type: 'voice', engine: 'kokoro' });
+    session.voiceEngine = 'gemini';
+    assert.deepEqual(last().all.at(-1), { type: 'voice', engine: 'gemini' });
+    assert.equal(sockets.length, dialled, 'the socket is the same one');
+  });
+
+  it('says nothing when there is no socket, and the next one is told the latest choice', async () => {
+    const { session, sockets } = rig();
+    session.voiceEngine = 'kokoro';
+    session.voiceEngine = 'gemini';
+    session.voiceEngine = 'kokoro';
+    assert.equal(sockets.length, 0);
+    assert.equal(session.voiceEngine, 'kokoro');
   });
 });
 

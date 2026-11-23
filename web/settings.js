@@ -11,12 +11,16 @@ const STORAGE_NAME = 'duck-talk-settings';
 
 /** What happens to what you say; bound when a chat's socket opens, so changing it reconnects. */
 export const MODE_IDS = /** @type {const} */ (['direct', 'review']);
+/** Who reads the reply aloud: Gemini's text-to-speech, or Kokoro-82M running on the relay's machine. */
+export const VOICE_IDS = /** @type {const} */ (['gemini', 'kokoro']);
 /** What Claude may do: the SDK's own names, so nothing between the picker and the relay translates. */
 export const PERMISSION_IDS = /** @type {const} */ (['plan', 'acceptEdits', 'bypassPermissions']);
 
 /**
  * `model` and `effort` are whatever the relay's list offers (`default` means the CLI's own choice);
  * `output` is the speaker; `gate` keeps the microphone quiet while the reply is in the room;
+ * `pushToTalk` keeps the microphone off until the talk key or button is held, like a walkie-talkie;
+ * `voice` is who reads the reply aloud — told to the relay with a frame, so changing it never redials;
  * `chimes` is the soft loop that fills a wait while Claude works — off unless asked for, because
  * a loop under a long tool run is exactly what people find grating;
  * `lastChat` is the chat that was on screen, reopened when the page is (null: a new chat).
@@ -28,6 +32,8 @@ export const PERMISSION_IDS = /** @type {const} */ (['plan', 'acceptEdits', 'byp
  *   autocorrect: boolean,
  *   output: boolean,
  *   gate: boolean,
+ *   pushToTalk: boolean,
+ *   voice: typeof VOICE_IDS[number],
  *   chimes: boolean,
  *   lastChat: string | null,
  * }} Settings
@@ -37,7 +43,7 @@ export const PERMISSION_IDS = /** @type {const} */ (['plan', 'acceptEdits', 'byp
 
 /** @returns {Settings} */
 function defaults() {
-  return { mode: 'direct', model: 'default', effort: 'default', permission: 'plan', autocorrect: false, output: true, gate: true, chimes: false, lastChat: null };
+  return { mode: 'direct', model: 'default', effort: 'default', permission: 'plan', autocorrect: false, output: true, gate: true, pushToTalk: false, voice: 'gemini', chimes: false, lastChat: null };
 }
 
 /**
@@ -55,11 +61,13 @@ export function normalizeSettings(raw) {
   if (MODE_IDS.some((id) => id === mode)) out.mode = /** @type {Settings['mode']} */ (mode);
   const permission = get('permission');
   if (PERMISSION_IDS.some((id) => id === permission)) out.permission = /** @type {Settings['permission']} */ (permission);
+  const voice = get('voice');
+  if (VOICE_IDS.some((id) => id === voice)) out.voice = /** @type {Settings['voice']} */ (voice);
   const model = get('model');
   if (typeof model === 'string' && model) out.model = model;
   const effort = get('effort');
   if (typeof effort === 'string' && effort) out.effort = effort;
-  for (const key of /** @type {const} */ (['autocorrect', 'output', 'gate', 'chimes'])) {
+  for (const key of /** @type {const} */ (['autocorrect', 'output', 'gate', 'pushToTalk', 'chimes'])) {
     const value = get(key);
     if (typeof value === 'boolean') out[key] = value;
   }

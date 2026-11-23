@@ -35,8 +35,9 @@ node --test test/key.test.ts      # one file
 | `pcm.js`, `playback.js` | the audio path's arithmetic as plain functions: resampler, meter; what was heard, when to chime |
 | `attach.js`, `intake.js` | picture to JPEG (long edge 1568 px, quality 0.8), the 800-character paste rule, and the queue that adds them |
 | `skills.js`, `prompts.js`, `corrections.js` | the `/` filter, and the rules the two editors go by |
+| `shortcuts.js` | the keys (L, M, Space held for push to talk) and the one rule for when a key is a shortcut and when it is typing; Esc is `main.js`'s |
 | `actions.js` | how one screen asks for another (a line's "Fix what was heard" opens the editor) |
-| `ui/` | the screens and parts: header, transcript-view, composer (with attach-chips, skill-list, review-card, field), drawer, sheet, settings-menu, pickers, context-sheet, connection, key-form (the key form, on a first visit and as the "Key refused" dialog), prompts, corrections, line-actions, pieces, clip-chip, panes, icons |
+| `ui/` | the screens and parts: header, transcript-view, composer (with attach-chips, skill-list, review-card, field, keycap and shortcut-hints, which say each button's key), drawer, sheet, settings-menu, pickers, context-sheet, connection, key-form (the key form, on a first visit and as the "Key refused" dialog), prompts, corrections, line-actions, pieces, clip-chip, panes, icons |
 | `index.html`, `style.css`, `manifest.webmanifest`, `logo.svg`, `chimes.wav` | what is served as it is |
 
 ## Rules to keep

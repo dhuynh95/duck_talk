@@ -46,6 +46,8 @@ import { Transcript } from './transcript.js';
  */
 
 const OPEN = 1; // WebSocket.OPEN, without reaching for the global
+/** How long the microphone stays open after the talk key or button is let go, so the end of the last word is not cut. */
+const TALK_TAIL_MS = 350;
 const FIRST_BACKOFF = 250;
 const MAX_BACKOFF = 5000;
 /** A connection that lasted longer than this was not a failing one. */
@@ -98,6 +100,14 @@ export class VoiceSession {
   #output = true;
   #gate = true;
   #chimes = false;
+  /** Who reads the reply aloud; the relay is told on every socket that opens and whenever it changes. */
+  #voiceEngine = 'gemini';
+  /** Push to talk: the microphone is muted unless something is holding the talk key or button. */
+  #pushToTalk = false;
+  /** What is holding it, by name, so the key and a finger together let go only when both have. @type {Set<string>} */
+  #talking = new Set();
+  /** @type {(() => void) | null} stops the pending close of the microphone after the last release */
+  #cancelTail = null;
 
   /** @param {SessionDeps} deps */
   constructor({ store, urlFor, makeSocket, makePipe, setTimer, now }) {
@@ -168,6 +178,7 @@ export class VoiceSession {
       if (this.#socket !== socket) return;
       this.#openedAt = this.#now();
       this.#sendClaude(); // what Claude should be, before anything is said on it
+      this.#sendVoice(); // and who should speak the answer
       for (const a of this.#t.state.attached) this.#sendAttachment(a); // and what is attached
       const queued = this.#outbox; // then what was said while there was no socket
       this.#outbox = [];
@@ -254,6 +265,10 @@ export class VoiceSession {
     const msg = { type: 'claude', model: this.#model, permission: this.#permission };
     if (this.#effort) msg['effort'] = this.#effort;
     this.#send(msg);
+  }
+
+  #sendVoice() {
+    this.#send({ type: 'voice', engine: this.#voiceEngine });
   }
 
   /** @param {Attachment} a */
@@ -397,6 +412,19 @@ export class VoiceSession {
     if (this.#pipe) this.#pipe.gate = on;
   }
 
+  /**
+   * Who reads the reply aloud: `gemini` or `kokoro`. Told to the open socket at once and to every
+   * one that opens after, so it changes in the middle of a conversation without a redial.
+   */
+  get voiceEngine() {
+    return this.#voiceEngine;
+  }
+  set voiceEngine(name) {
+    if (name === this.#voiceEngine) return;
+    this.#voiceEngine = name;
+    if (this.#open) this.#sendVoice();
+  }
+
   /** Fill a wait with the chime loop (see AudioPipe `chimes`). Held and told like `output`. */
   get chimes() {
     return this.#chimes;
@@ -424,6 +452,10 @@ export class VoiceSession {
     if (pipe.output !== this.#output) pipe.output = this.#output;
     if (pipe.gate !== this.#gate) pipe.gate = this.#gate;
     if (pipe.chimes !== this.#chimes) pipe.chimes = this.#chimes;
+    if (this.#pushToTalk) {
+      pipe.muted = true; // closed until the talk key is held
+      this.#store.set({ muted: true });
+    }
     pipe.onLevel = (level) => this.#store.set({ level });
     // What the speaker really played: the relay's only way to tell a reply heard from one cut off.
     pipe.onDrained = (ms) => this.#send({ type: 'played', ms: Math.round(ms) });
@@ -469,6 +501,7 @@ export class VoiceSession {
     if (this.#status === 'idle') return;
     this.#pipe?.stop();
     this.#pipe = null;
+    this.#endTalk();
     this.#status = 'idle';
     this.#store.set({ level: 0, muted: false, notice: null }); // the next session starts hearing
     this.#sync();
@@ -480,11 +513,73 @@ export class VoiceSession {
    * the relay reads a gap as the client going away.
    */
   toggleMute() {
+    if (this.#pushToTalk) return; // push to talk owns the microphone's state: it is closed unless held
     const pipe = this.#pipe;
     if (!pipe || this.#status !== 'live') return;
-    const on = !pipe.muted;
+    this.#setMuted(!pipe.muted, 'you');
+  }
+
+  /** @param {boolean} on @param {string} note who asked, for the relay's log */
+  #setMuted(on, note) {
+    const pipe = this.#pipe;
+    if (!pipe || this.#status !== 'live' || pipe.muted === on) return;
     pipe.muted = on;
-    this.#mark(on ? 'mute' : 'unmute', 'you');
+    this.#mark(on ? 'mute' : 'unmute', note);
     this.#store.set({ muted: on, notice: null }); // a mute asked for here makes any notice untrue
+  }
+
+  // MARK: push to talk
+
+  /**
+   * The microphone is closed unless the talk key or button is held. Turning it on while live
+   * closes it at once; turning it off opens it again, as it was before.
+   */
+  get pushToTalk() {
+    return this.#pushToTalk;
+  }
+  set pushToTalk(on) {
+    if (on === this.#pushToTalk) return;
+    this.#pushToTalk = on;
+    this.#endTalk();
+    this.#setMuted(on, on ? 'push to talk' : 'push to talk off');
+  }
+
+  /**
+   * Something is holding the talk key or button: open the microphone. `source` names what, so a
+   * key and a finger held together close it only when both are let go. Ignored unless push to
+   * talk is on and the call is live — a Space pressed any other time is the page's own.
+   * @param {string} source
+   */
+  talkDown(source) {
+    if (!this.#pushToTalk || this.#status !== 'live') return;
+    this.#talking.add(source);
+    this.#cancelTail?.();
+    this.#cancelTail = null;
+    this.#setMuted(false, 'push to talk');
+  }
+
+  /**
+   * That source let go. When none is left the microphone closes after a short tail, which a new
+   * press cancels — releasing and pressing again between two words does not cut the sentence.
+   * @param {string} source
+   */
+  talkUp(source) {
+    if (!this.#talking.delete(source) || this.#talking.size > 0) return;
+    this.#cancelTail?.();
+    this.#cancelTail = this.#setTimer(() => {
+      this.#cancelTail = null;
+      if (this.#talking.size === 0 && this.#pushToTalk) this.#setMuted(true, 'push to talk');
+    }, TALK_TAIL_MS);
+  }
+
+  /** Let go of everything held: the window lost focus, so a key-up may never come. */
+  releaseTalk() {
+    for (const source of [...this.#talking]) this.talkUp(source);
+  }
+
+  #endTalk() {
+    this.#talking.clear();
+    this.#cancelTail?.();
+    this.#cancelTail = null;
   }
 }

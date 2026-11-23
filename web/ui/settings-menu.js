@@ -24,7 +24,7 @@ import { icon } from './icons.js';
 import { modeLocked } from './pickers.js';
 
 /** @typedef {{ get: () => Record<string, any>, subscribe: (fn: (state: Record<string, any>) => void) => () => void }} Store */
-/** @typedef {'prompts' | 'corrections' | 'autocorrect' | 'gate' | 'chimes' | 'connection'} RowId */
+/** @typedef {'prompts' | 'corrections' | 'autocorrect' | 'gate' | 'pushToTalk' | 'voice' | 'chimes' | 'connection'} RowId */
 /**
  * One row: something that opens a screen (`item`), or a switch (`toggle`), which is checked or not
  * and may be disabled with a reason in `detail`.
@@ -41,6 +41,8 @@ import { modeLocked } from './pickers.js';
 /** @typedef {Row | { id: 'divider', kind: 'divider', title: string }} MenuItem */
 
 const GATE_DETAIL = 'Stops the microphone hearing the reply (echo). Turn off with headphones to interrupt by voice.';
+const PUSH_DETAIL = 'The microphone stays off until you hold Space, or hold the microphone button.';
+const VOICE_DETAIL = 'Reads replies with Kokoro-82M on the computer running the relay instead of Gemini: free, offline, no daily limit. Install it once, see the README.';
 const CHIMES_DETAIL = 'A soft loop that plays while Claude is working and nothing is being said.';
 
 /**
@@ -75,6 +77,8 @@ export function menuItems(state) {
       disabled: locked,
     },
     { id: 'gate', kind: 'toggle', title: 'Mute mic while Claude speaks', detail: GATE_DETAIL, icon: 'mic-off', checked: settings.gate !== false, disabled: false },
+    { id: 'pushToTalk', kind: 'toggle', title: 'Push to talk', detail: PUSH_DETAIL, icon: 'mic', checked: settings.pushToTalk === true, disabled: false },
+    { id: 'voice', kind: 'toggle', title: 'Local voice (Kokoro)', detail: VOICE_DETAIL, icon: 'waveform', checked: settings.voice === 'kokoro', disabled: false },
     { id: 'chimes', kind: 'toggle', title: 'Wait chimes', detail: CHIMES_DETAIL, icon: 'speaker', checked: settings.chimes === true, disabled: false },
     { id: 'divider', kind: 'divider', title: '' },
     { id: 'connection', kind: 'item', title: 'Connection', icon: 'network' },
@@ -190,6 +194,12 @@ export function settingsMenu(store, actions) {
           return;
         case 'gate':
           actions.change({ gate: state['settings']?.gate === false });
+          return;
+        case 'pushToTalk':
+          actions.change({ pushToTalk: state['settings']?.pushToTalk !== true });
+          return;
+        case 'voice':
+          actions.change({ voice: state['settings']?.voice === 'kokoro' ? 'gemini' : 'kokoro' });
           return;
         case 'chimes':
           actions.change({ chimes: state['settings']?.chimes !== true });

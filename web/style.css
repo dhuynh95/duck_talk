@@ -1410,6 +1410,73 @@ select {
   background: var(--text-tertiary);
 }
 
+/* Push to talk: with the call up, the middle of the box is the thing to hold. It is a button again
+   (a plain disc, the bars grey as they are when muted), and while it is down the microphone is
+   open: the bars turn to the accent and a ring says so. `touch-action: none` and the rest keep a
+   finger held on it from scrolling the page, selecting text or opening the browser's menu. */
+.composer.ptt .listen {
+  background: var(--fill);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  transition: background-color 0.15s, box-shadow 0.15s;
+}
+
+.composer.ptt.talking .listen {
+  background: rgb(251 146 60 / 0.2);
+  box-shadow: 0 0 0 3px var(--accent);
+}
+
+@media (hover: hover) {
+  .composer.ptt:not(.talking) .listen:hover {
+    background: var(--border);
+  }
+}
+
+/* The key a control answers to, small on its corner: L, M, Esc, and Space on the thing to hold.
+   Only where there is a keyboard to press it on — a phone has the buttons — and never in the
+   way: it takes no clicks, and sits half outside the button it belongs to. */
+.has-key {
+  position: relative;
+}
+
+.keycap {
+  display: none;
+  position: absolute;
+  right: -3px;
+  bottom: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: 600 10px/14px var(--font);
+  letter-spacing: 0.02em;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 1px 0 rgb(0 0 0 / 0.45);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .keycap:not([hidden]) {
+    display: block;
+  }
+}
+
+/* Under the microphone rather than at its corner: it is the biggest thing in the box, and the
+   key beside it is the one to learn first. */
+.listen .keycap {
+  right: auto;
+  left: 50%;
+  bottom: -6px;
+  transform: translateX(-50%);
+}
+
 /* Sheets: a panel that rises from the bottom on a phone, a centred dialog on a wide screen,
    over a dimmed page. Mounted on <body>, outside .app, so nothing in the app can clip it. */
 

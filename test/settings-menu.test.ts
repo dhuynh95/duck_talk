@@ -7,16 +7,16 @@ import { autocorrectLocked, menuItems } from '../web/ui/settings-menu.js';
 
 const state = (status: string, settings: Record<string, unknown> = {}) => ({
   status,
-  settings: { autocorrect: false, gate: true, chimes: false, ...settings },
+  settings: { autocorrect: false, gate: true, pushToTalk: false, voice: 'gemini', chimes: false, ...settings },
 });
 
 describe('menuItems', () => {
-  it('are Prompts, Corrections, Auto-correct, Mute mic, Wait chimes, a divider, then Connection', () => {
+  it('are Prompts, Corrections, Auto-correct, Mute mic, Push to talk, Local voice, Wait chimes, a divider, then Connection', () => {
     const items = menuItems(state('idle'));
-    assert.deepEqual(items.map((i) => i.id), ['prompts', 'corrections', 'autocorrect', 'gate', 'chimes', 'divider', 'connection']);
+    assert.deepEqual(items.map((i) => i.id), ['prompts', 'corrections', 'autocorrect', 'gate', 'pushToTalk', 'voice', 'chimes', 'divider', 'connection']);
     assert.deepEqual(
       items.filter((i) => i.kind !== 'divider').map((i) => i.title),
-      ['Prompts', 'Corrections', 'Auto-correct', 'Mute mic while Claude speaks', 'Wait chimes', 'Connection'],
+      ['Prompts', 'Corrections', 'Auto-correct', 'Mute mic while Claude speaks', 'Push to talk', 'Local voice (Kokoro)', 'Wait chimes', 'Connection'],
     );
   });
 
@@ -29,6 +29,12 @@ describe('menuItems', () => {
     assert.equal(by(on, 'gate')?.checked, true);
     assert.equal(by(off, 'autocorrect')?.checked, false);
     assert.equal(by(off, 'gate')?.checked, false);
+    assert.equal(by(on, 'pushToTalk')?.kind, 'toggle');
+    assert.equal(by(on, 'pushToTalk')?.checked, false, 'the microphone is open until push to talk is asked for');
+    assert.equal(by(menuItems(state('idle', { pushToTalk: true })), 'pushToTalk')?.checked, true);
+    assert.equal(by(on, 'voice')?.kind, 'toggle');
+    assert.equal(by(on, 'voice')?.checked, false, 'Gemini speaks until the local voice is chosen');
+    assert.equal(by(menuItems(state('idle', { voice: 'kokoro' })), 'voice')?.checked, true);
     assert.equal(by(on, 'chimes')?.kind, 'toggle');
     assert.equal(by(on, 'chimes')?.checked, false, 'the wait loop is off until asked for');
     assert.equal(by(menuItems(state('idle', { chimes: true })), 'chimes')?.checked, true);
@@ -74,6 +80,8 @@ describe('menuItems', () => {
     assert.equal(items.find((i) => i.id === 'autocorrect')?.checked, false);
     assert.equal(items.find((i) => i.id === 'gate')?.checked, true);
     assert.equal(items.find((i) => i.id === 'chimes')?.checked, false);
+    assert.equal(items.find((i) => i.id === 'voice')?.checked, false);
+    assert.equal(items.find((i) => i.id === 'pushToTalk')?.checked, false);
   });
 });
 

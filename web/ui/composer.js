@@ -17,6 +17,10 @@
 // on the button, and CSS shapes the bars from it. Nothing is rebuilt for a level; the store is
 // written with one 25 times a second.
 //
+// Each control wears the key it answers to, small on its corner, and says it in its tooltip and
+// to a screen reader (shortcut-hints.js); the keys themselves are shortcuts.js. With Push to talk
+// on, the middle of the box is the thing to hold, and the mute button gives way to it.
+//
 // One stop, because there is one question — "make it stop" — whatever is running: Claude, the
 // microphone, or both. Esc asks it too.
 
@@ -24,15 +28,17 @@ import { h } from '../dom.js';
 import { createIntake, readPaste } from '../intake.js';
 import { attachChips } from './attach-chips.js';
 import { contextButton } from './context-sheet.js';
+import { keycap } from './keycap.js';
 import { autosize, autosizeOnResize, enterSends, finePointer } from './field.js';
 import { icon } from './icons.js';
 import { modeCapsule, modeLocked, modelCapsule } from './pickers.js';
+import { controlHints } from './shortcut-hints.js';
 import { reviewCard } from './review-card.js';
 import { skillList } from './skill-list.js';
 import { isWorking } from './transcript-view.js';
 
 /** @typedef {{ get: () => Record<string, any>, subscribe: (fn: (state: Record<string, any>) => void) => () => void }} Store */
-/** @typedef {Pick<import('../session.js').VoiceSession, 'send' | 'approve' | 'attach' | 'drop' | 'listen' | 'stopListening' | 'stopAll' | 'toggleMute' | 'output'>} SessionLike */
+/** @typedef {Pick<import('../session.js').VoiceSession, 'send' | 'approve' | 'attach' | 'drop' | 'listen' | 'stopListening' | 'stopAll' | 'toggleMute' | 'talkDown' | 'talkUp' | 'output'>} SessionLike */
 
 const BARS = 7;
 /** How long a reason something was not added stays up, in ms. */
@@ -54,15 +60,19 @@ export function composer(store, session, change) {
   const send = h('button', { class: 'round accent send', type: 'submit', 'aria-label': 'Send', disabled: true }, icon('send'));
 
   const bars = Array.from({ length: BARS }, () => h('span', { class: 'bar' }));
+  const listenCap = keycap();
+  const muteCap = keycap();
+  const stopCap = keycap();
   const listen = h(
     'button',
     { class: 'listen', type: 'button', 'aria-label': 'Listen' },
     h('span', { class: 'listen-face' }, icon('mic')),
     h('span', { class: 'wave', 'aria-hidden': 'true' }, bars),
+    listenCap,
   );
-  const mute = h('button', { class: 'round plain', type: 'button', 'aria-label': 'Mute', 'aria-pressed': 'false', hidden: true }, icon('mic-off'));
+  const mute = h('button', { class: 'round plain has-key', type: 'button', 'aria-label': 'Mute', 'aria-pressed': 'false', hidden: true }, icon('mic-off'), muteCap);
   const output = h('button', { class: 'round plain', type: 'button', 'aria-label': 'Speaker off', 'aria-pressed': 'false', hidden: true }, icon('speaker-off'));
-  const stopButton = h('button', { class: 'round plain stop', type: 'button', 'aria-label': 'Stop listening', hidden: true }, icon('stop'));
+  const stopButton = h('button', { class: 'round plain stop has-key', type: 'button', 'aria-label': 'Stop listening', hidden: true }, icon('stop'), stopCap);
 
   // What a skill takes after its name, in muted type where the words will go: a placeholder shows
   // only in an empty field, and the field is not empty — it holds "/name ". The ghost is a copy of
@@ -209,6 +219,22 @@ export function composer(store, session, change) {
     if ((state['status'] ?? 'idle') === 'idle') session.listen();
   });
   mute.addEventListener('click', () => session.toggleMute());
+
+  // Push to talk: with the call up, the middle of the box is held to talk — a finger on a phone,
+  // the pointer on a laptop, Space on either (shortcuts.js). The pointer is captured, so sliding
+  // off the button is not letting go; only lifting is.
+  const holdable = () => (state['status'] ?? 'idle') === 'live' && state['settings']?.pushToTalk === true;
+  listen.addEventListener('pointerdown', (event) => {
+    if (!holdable() || event.button !== 0) return;
+    event.preventDefault();
+    listen.setPointerCapture?.(event.pointerId);
+    session.talkDown('pointer');
+  });
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) listen.addEventListener(type, () => session.talkUp('pointer'));
+  // A long press on a phone opens the browser's menu, which would end it.
+  listen.addEventListener('contextmenu', (event) => {
+    if (holdable()) event.preventDefault();
+  });
   // The speaker is a setting like the rest: kept, and applied to the session, by whoever owns them.
   output.addEventListener('click', () => change({ output: !session.output }));
 
@@ -248,14 +274,28 @@ export function composer(store, session, change) {
     const status = state['status'] ?? 'idle';
     const muted = !!state['muted'];
     const busy = isWorking(state);
-    const key = `${status}|${muted}|${busy}|${session.output}`;
+    const pushToTalk = state['settings']?.pushToTalk === true;
+    const key = `${status}|${muted}|${busy}|${session.output}|${pushToTalk}`;
     if (key === drawn && !force) return;
     drawn = key;
 
     const live = status === 'live';
     el.dataset['status'] = status;
-    listen.setAttribute('aria-label', status === 'idle' ? 'Listen' : status === 'connecting' ? 'Connecting' : 'Listening');
-    mute.hidden = !live;
+    const hints = controlHints({ status, muted, busy, pushToTalk });
+    /** @param {HTMLElement} button @param {HTMLElement} cap @param {import('./shortcut-hints.js').Hint} hint */
+    const wear = (button, cap, hint) => {
+      button.setAttribute('aria-label', hint.label);
+      button.setAttribute('title', hint.title);
+      button.setAttribute('aria-keyshortcuts', hint.keys);
+      cap.textContent = hint.cap;
+      cap.hidden = !hint.cap;
+    };
+    wear(listen, listenCap, hints.listen);
+    wear(mute, muteCap, hints.mute);
+    wear(stopButton, stopCap, hints.stop);
+    el.classList.toggle('ptt', live && pushToTalk);
+    el.classList.toggle('talking', live && pushToTalk && !muted);
+    mute.hidden = !live || pushToTalk; // Push to talk closes the microphone itself
     output.hidden = !live;
     mute.setAttribute('aria-pressed', String(muted));
     mute.classList.toggle('lit', muted);
@@ -264,7 +304,6 @@ export function composer(store, session, change) {
     el.classList.toggle('muted', muted);
     stopButton.hidden = !(status !== 'idle' || busy);
     mode.hidden = modeLocked(state);
-    stopButton.setAttribute('aria-label', busy ? (status !== 'idle' ? 'Stop Claude and listening' : 'Stop Claude') : 'Stop listening');
   }
 
   draw(state, true);
