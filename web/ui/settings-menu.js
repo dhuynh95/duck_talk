@@ -24,7 +24,7 @@ import { icon } from './icons.js';
 import { modeLocked } from './pickers.js';
 
 /** @typedef {{ get: () => Record<string, any>, subscribe: (fn: (state: Record<string, any>) => void) => () => void }} Store */
-/** @typedef {'prompts' | 'corrections' | 'autocorrect' | 'gate' | 'connection'} RowId */
+/** @typedef {'prompts' | 'corrections' | 'autocorrect' | 'gate' | 'chimes' | 'connection'} RowId */
 /**
  * One row: something that opens a screen (`item`), or a switch (`toggle`), which is checked or not
  * and may be disabled with a reason in `detail`.
@@ -41,6 +41,7 @@ import { modeLocked } from './pickers.js';
 /** @typedef {Row | { id: 'divider', kind: 'divider', title: string }} MenuItem */
 
 const GATE_DETAIL = 'Stops the microphone hearing the reply (echo). Turn off with headphones to interrupt by voice.';
+const CHIMES_DETAIL = 'A soft loop that plays while Claude is working and nothing is being said.';
 
 /**
  * Auto-correct rides the chat socket's address (`?correct=1`), so it is fixed while a socket is
@@ -74,6 +75,7 @@ export function menuItems(state) {
       disabled: locked,
     },
     { id: 'gate', kind: 'toggle', title: 'Mute mic while Claude speaks', detail: GATE_DETAIL, icon: 'mic-off', checked: settings.gate !== false, disabled: false },
+    { id: 'chimes', kind: 'toggle', title: 'Wait chimes', detail: CHIMES_DETAIL, icon: 'speaker', checked: settings.chimes === true, disabled: false },
     { id: 'divider', kind: 'divider', title: '' },
     { id: 'connection', kind: 'item', title: 'Connection', icon: 'network' },
   ];
@@ -188,6 +190,9 @@ export function settingsMenu(store, actions) {
           return;
         case 'gate':
           actions.change({ gate: state['settings']?.gate === false });
+          return;
+        case 'chimes':
+          actions.change({ chimes: state['settings']?.chimes !== true });
           return;
         case 'prompts':
           close();

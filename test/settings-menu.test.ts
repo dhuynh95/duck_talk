@@ -7,20 +7,20 @@ import { autocorrectLocked, menuItems } from '../web/ui/settings-menu.js';
 
 const state = (status: string, settings: Record<string, unknown> = {}) => ({
   status,
-  settings: { autocorrect: false, gate: true, ...settings },
+  settings: { autocorrect: false, gate: true, chimes: false, ...settings },
 });
 
 describe('menuItems', () => {
-  it('are Prompts, Corrections, Auto-correct, Mute mic, a divider, then Connection', () => {
+  it('are Prompts, Corrections, Auto-correct, Mute mic, Wait chimes, a divider, then Connection', () => {
     const items = menuItems(state('idle'));
-    assert.deepEqual(items.map((i) => i.id), ['prompts', 'corrections', 'autocorrect', 'gate', 'divider', 'connection']);
+    assert.deepEqual(items.map((i) => i.id), ['prompts', 'corrections', 'autocorrect', 'gate', 'chimes', 'divider', 'connection']);
     assert.deepEqual(
       items.filter((i) => i.kind !== 'divider').map((i) => i.title),
-      ['Prompts', 'Corrections', 'Auto-correct', 'Mute mic while Claude speaks', 'Connection'],
+      ['Prompts', 'Corrections', 'Auto-correct', 'Mute mic while Claude speaks', 'Wait chimes', 'Connection'],
     );
   });
 
-  it('the two switches are checkboxes that say what they are bound to', () => {
+  it('the switches are checkboxes that say what they are bound to', () => {
     const on = menuItems(state('idle', { autocorrect: true, gate: true }));
     const off = menuItems(state('idle', { autocorrect: false, gate: false }));
     const by = (items: ReturnType<typeof menuItems>, id: string) => items.find((i) => i.id === id);
@@ -29,6 +29,9 @@ describe('menuItems', () => {
     assert.equal(by(on, 'gate')?.checked, true);
     assert.equal(by(off, 'autocorrect')?.checked, false);
     assert.equal(by(off, 'gate')?.checked, false);
+    assert.equal(by(on, 'chimes')?.kind, 'toggle');
+    assert.equal(by(on, 'chimes')?.checked, false, 'the wait loop is off until asked for');
+    assert.equal(by(menuItems(state('idle', { chimes: true })), 'chimes')?.checked, true);
     assert.equal(by(on, 'prompts')?.kind, 'item');
   });
 
@@ -70,6 +73,7 @@ describe('menuItems', () => {
     assert.equal(items.find((i) => i.id === 'autocorrect')?.disabled, false);
     assert.equal(items.find((i) => i.id === 'autocorrect')?.checked, false);
     assert.equal(items.find((i) => i.id === 'gate')?.checked, true);
+    assert.equal(items.find((i) => i.id === 'chimes')?.checked, false);
   });
 });
 

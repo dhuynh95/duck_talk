@@ -60,6 +60,7 @@ class FakePipe {
   output = true;
   waiting = false;
   gate = true;
+  chimes = false;
   startCalls = 0;
   stopCalls = 0;
   flushes = 0;
@@ -652,7 +653,34 @@ describe('VoiceSession: output and gate, held for the pipe', () => {
     const { session, pipes } = rig();
     session.output = false;
     session.gate = false;
+    session.chimes = true;
     assert.equal(pipes.length, 0);
+  });
+});
+
+describe('VoiceSession: wait chimes, held for the pipe', () => {
+  it('are off until told otherwise, and say so', () => {
+    const { session } = rig();
+    assert.equal(session.chimes, false);
+  });
+
+  it('hands the choice made before listening to the pipe that listen() makes, every time', () => {
+    const { session, pipes } = rig();
+    session.chimes = true;
+    session.listen();
+    assert.equal(pipes[0]!.chimes, true);
+    session.stopListening();
+    session.listen();
+    assert.equal(pipes[1]!.chimes, true);
+  });
+
+  it('applies a change to the live pipe at once', async () => {
+    const { session, pipe } = await live();
+    assert.equal(pipe.chimes, false);
+    session.chimes = true;
+    assert.equal(pipe.chimes, true);
+    session.chimes = false;
+    assert.equal(pipe.chimes, false);
   });
 });
 

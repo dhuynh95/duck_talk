@@ -576,3 +576,46 @@ describe('AudioPipe gate: the microphone goes quiet while the reply is on the sp
     pipe.stop();
   });
 });
+
+describe('AudioPipe wait chimes', () => {
+  afterEach(restoreGlobals);
+
+  /** The loop's sound file loads in the background, so a test lets that finish before a wait begins. */
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  async function started() {
+    const stub = installWebAudio({ getUserMedia: async (s) => micStream(s) });
+    const pipe = new AudioPipe();
+    await pipe.start();
+    await settle();
+    return { pipe, stub };
+  }
+
+  it('are off until asked for: a wait that would chime at once makes no sound', async () => {
+    const { pipe, stub } = await started();
+    assert.equal(pipe.chimes, false);
+    pipe.waiting = true; // a reply is owed and nothing has played yet
+    assert.equal(stub.sources.length, 0);
+    pipe.stop();
+  });
+
+  it('start the loop for that same wait when they are on', async () => {
+    const { pipe, stub } = await started();
+    pipe.chimes = true;
+    pipe.waiting = true;
+    assert.equal(stub.sources.length, 1);
+    assert.equal(stub.sources[0]?.stopped, 0);
+    pipe.stop();
+  });
+
+  it('turning them on in the middle of a wait starts the loop, and turning them off fades it out', async () => {
+    const { pipe, stub } = await started();
+    pipe.waiting = true;
+    assert.equal(stub.sources.length, 0);
+    pipe.chimes = true;
+    assert.equal(stub.sources.length, 1);
+    pipe.chimes = false;
+    await new Promise((resolve) => setTimeout(resolve, 300)); // past the fade-out
+    assert.equal(stub.sources[0]?.stopped, 1);
+    pipe.stop();
+  });
+});

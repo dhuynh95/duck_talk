@@ -94,6 +94,7 @@ function app(key, storage, keyRequired) {
     }
     session.output = settings.output;
     session.gate = settings.gate;
+    session.chimes = settings.chimes;
     if (was && (was.mode !== settings.mode || was.autocorrect !== settings.autocorrect)) session.reconnect();
   };
   apply(null);

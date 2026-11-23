@@ -88,6 +88,21 @@ export class AudioPipe {
    */
   gate = true;
 
+  /**
+   * Whether a wait is filled with the chime loop. Off unless the person turned it on: the
+   * queue still works out when a wait is long enough to chime, and this decides whether that
+   * is heard. Turning it off mid-wait fades the loop out like the end of a wait does.
+   */
+  get chimes() {
+    return this.#chimesOn;
+  }
+  set chimes(on) {
+    if (on === this.#chimesOn) return;
+    this.#chimesOn = on;
+    this.#applyChime();
+  }
+
+  #chimesOn = false;
   #output = true;
   #waiting = false;
 
@@ -446,7 +461,7 @@ export class AudioPipe {
     const gen = ++this.#chimeGen;
     volume.cancelScheduledValues(t);
 
-    if (this.#chimeWanted) {
+    if (this.#chimeWanted && this.#chimesOn) {
       if (this.#chimeSource) {
         volume.setValueAtTime(volume.value, t);
       } else {

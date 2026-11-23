@@ -17,6 +17,8 @@ export const PERMISSION_IDS = /** @type {const} */ (['plan', 'acceptEdits', 'byp
 /**
  * `model` and `effort` are whatever the relay's list offers (`default` means the CLI's own choice);
  * `output` is the speaker; `gate` keeps the microphone quiet while the reply is in the room;
+ * `chimes` is the soft loop that fills a wait while Claude works — off unless asked for, because
+ * a loop under a long tool run is exactly what people find grating;
  * `lastChat` is the chat that was on screen, reopened when the page is (null: a new chat).
  * @typedef {{
  *   mode: typeof MODE_IDS[number],
@@ -26,6 +28,7 @@ export const PERMISSION_IDS = /** @type {const} */ (['plan', 'acceptEdits', 'byp
  *   autocorrect: boolean,
  *   output: boolean,
  *   gate: boolean,
+ *   chimes: boolean,
  *   lastChat: string | null,
  * }} Settings
  */
@@ -34,7 +37,7 @@ export const PERMISSION_IDS = /** @type {const} */ (['plan', 'acceptEdits', 'byp
 
 /** @returns {Settings} */
 function defaults() {
-  return { mode: 'direct', model: 'default', effort: 'default', permission: 'plan', autocorrect: false, output: true, gate: true, lastChat: null };
+  return { mode: 'direct', model: 'default', effort: 'default', permission: 'plan', autocorrect: false, output: true, gate: true, chimes: false, lastChat: null };
 }
 
 /**
@@ -56,7 +59,7 @@ export function normalizeSettings(raw) {
   if (typeof model === 'string' && model) out.model = model;
   const effort = get('effort');
   if (typeof effort === 'string' && effort) out.effort = effort;
-  for (const key of /** @type {const} */ (['autocorrect', 'output', 'gate'])) {
+  for (const key of /** @type {const} */ (['autocorrect', 'output', 'gate', 'chimes'])) {
     const value = get(key);
     if (typeof value === 'boolean') out[key] = value;
   }
